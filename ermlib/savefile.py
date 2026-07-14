@@ -39,7 +39,45 @@ class Entry:
         return hashlib.md5(self.body).digest() == self.stored_md5
 
 
-class SaveFile:
+# --- profile summary (entry 10) ---
+_PROFILE_BODY_FILE_BASE = 0x19003B0     # data_offset(0x19003A0) + 0x10 MD5
+_ACTIVE_FILE = 0x1901D04
+_REC0_FILE = 0x1901D0E
+_REC_STRIDE = 0x24C
+
+
+class Character:
+    def __init__(self, slot, name, level, seconds, active):
+        self.slot = slot
+        self.name = name
+        self.level = level
+        self.seconds = seconds
+        self.active = active
+
+
+def _profile_local(file_off):
+    return file_off - _PROFILE_BODY_FILE_BASE
+
+
+class _CharactersMixin:
+    @property
+    def characters(self):
+        body = self.profile_entry.body
+        active_base = _profile_local(_ACTIVE_FILE)
+        rec0 = _profile_local(_REC0_FILE)
+        out = []
+        for i in range(10):
+            if body[active_base + i] != 1:
+                continue
+            b = rec0 + i * _REC_STRIDE
+            name = body[b:b + 0x22].decode("utf-16-le", "ignore").split("\x00")[0]
+            level = _u32(body, b + 0x22)
+            seconds = _u32(body, b + 0x26)
+            out.append(Character(i, name, level, seconds, active=True))
+        return out
+
+
+class SaveFile(_CharactersMixin):
     def __init__(self, entries):
         self.entries = entries
 
