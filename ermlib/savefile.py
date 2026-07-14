@@ -77,7 +77,123 @@ class _CharactersMixin:
         return out
 
 
-class SaveFile(_CharactersMixin):
+_STAT_NAMES = ["vigor", "mind", "endurance", "strength",
+               "dexterity", "intelligence", "faith", "arcane"]
+_INV_OFFSET = 0x3A4
+_COMMON_CAP = 0xA80
+_KEY_CAP = 0x180
+
+
+class Item:
+    __slots__ = ("category", "item_id", "quantity", "acq")
+
+    def __init__(self, category, item_id, quantity, acq):
+        self.category = category
+        self.item_id = item_id
+        self.quantity = quantity
+        self.acq = acq
+
+
+class SlotData:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def _walk_gaitems(body):
+    version = _u32(body, 0)
+    n = 0x13FE if version <= 81 else 0x1400
+    o = 0x20
+    gmap = {}
+    for _ in range(n):
+        h = _u32(body, o)
+        iid = _u32(body, o + 4)
+        gmap[h] = iid
+        top = h & 0xF0000000
+        step = 8
+        if h != 0 and top != 0xC0000000:
+            step += 8
+            if top == 0x80000000:
+                step += 5
+        o += step
+    return gmap, o
+
+
+def _find_pgd(body, name):
+    wn = name.encode("utf-16-le")
+    for base in range(0x20, min(len(body) - 0x100, 0x60000)):
+        stats = [_u32(body, base + 0x34 + 4 * k) for k in range(8)]
+        if not all(1 <= s <= 99 for s in stats):
+            continue
+        if _u32(body, base + 0x60) != sum(stats) - 79:
+            continue
+        if any(_u32(body, base + z) != 0 for z in (0x20, 0x30, 0x54, 0x58, 0x5c)):
+            continue
+        if wn[:8] not in body[base + 0x94:base + 0xD4]:
+            continue
+        return base
+    return None
+
+
+def _resolve(handle, gmap):
+    top = handle & 0xF0000000
+    if handle == 0:
+        return None
+    if top in (0xA0000000, 0xB0000000):
+        return handle & 0x0FFFFFFF
+    if top in (0x80000000, 0x90000000, 0xC0000000):
+        iid = gmap.get(handle)
+        return None if iid is None else iid & 0x0FFFFFFF
+    return -1  # corrupt nibble
+
+
+class _InventoryMixin:
+    def slot_data(self, slot, name):
+        body = self.slots[slot].body
+        gmap, cursor = _walk_gaitems(body)
+        pgd = _find_pgd(body, name)
+        if pgd is None:
+            raise NotAnEldenRingSave(f"could not locate PlayerGameData for slot {slot}")
+        stats = {n: _u32(body, pgd + 0x34 + 4 * k) for k, n in enumerate(_STAT_NAMES)}
+        level = _u32(body, pgd + 0x60)
+        runes = _u32(body, pgd + 0x64)
+
+        inv = pgd + _INV_OFFSET
+        common_count = _u32(body, inv)
+        items, corrupt = [], 0
+        o = inv + 4
+        for _ in range(_COMMON_CAP):
+            h = _u32(body, o); qty = _u32(body, o + 4); acq = _u32(body, o + 8)
+            o += 12
+            if h == 0:
+                continue
+            r = _resolve(h, gmap)
+            if r == -1:
+                corrupt += 1
+                continue
+            if r is None:
+                continue
+            items.append(Item(h >> 28, r, qty, acq))
+        key_count = _u32(body, o)
+        o += 4
+        keys = []
+        for _ in range(_KEY_CAP):
+            h = _u32(body, o); qty = _u32(body, o + 4); acq = _u32(body, o + 8)
+            o += 12
+            if h == 0:
+                continue
+            r = _resolve(h, gmap)
+            if r not in (None, -1):
+                keys.append(Item(h >> 28, r, qty, acq))
+
+        return SlotData(
+            stats=stats, level=level, runes=runes, pgd_base=pgd,
+            walk_cursor=cursor, items=items, key_items=keys,
+            common_count_field=common_count, key_count_field=key_count,
+            corrupt_handles=corrupt,
+        )
+
+
+class SaveFile(_CharactersMixin, _InventoryMixin):
     def __init__(self, entries):
         self.entries = entries
 
