@@ -146,6 +146,24 @@ def _resolve(handle, gmap):
     return -1  # corrupt nibble
 
 
+def _read_inventory_slot(body, offset, gmap):
+    """Read one 12-byte {handle, qty, acq} inventory slot.
+
+    Returns (item_or_None, is_corrupt). An empty or unresolvable handle yields
+    (None, False); a handle with an unknown nibble yields (None, True) so both
+    inventory sections count corruption identically.
+    """
+    h = _u32(body, offset)
+    qty = _u32(body, offset + 4)
+    acq = _u32(body, offset + 8)
+    r = _resolve(h, gmap)
+    if r == -1:
+        return None, True
+    if r is None:
+        return None, False
+    return Item(h >> 28, r, qty, acq), False
+
+
 class _InventoryMixin:
     def slot_data(self, slot, name):
         body = self.slots[slot].body
@@ -162,28 +180,20 @@ class _InventoryMixin:
         items, corrupt = [], 0
         o = inv + 4
         for _ in range(_COMMON_CAP):
-            h = _u32(body, o); qty = _u32(body, o + 4); acq = _u32(body, o + 8)
+            item, is_corrupt = _read_inventory_slot(body, o, gmap)
             o += 12
-            if h == 0:
-                continue
-            r = _resolve(h, gmap)
-            if r == -1:
-                corrupt += 1
-                continue
-            if r is None:
-                continue
-            items.append(Item(h >> 28, r, qty, acq))
+            corrupt += is_corrupt
+            if item is not None:
+                items.append(item)
         key_count = _u32(body, o)
         o += 4
         keys = []
         for _ in range(_KEY_CAP):
-            h = _u32(body, o); qty = _u32(body, o + 4); acq = _u32(body, o + 8)
+            item, is_corrupt = _read_inventory_slot(body, o, gmap)
             o += 12
-            if h == 0:
-                continue
-            r = _resolve(h, gmap)
-            if r not in (None, -1):
-                keys.append(Item(h >> 28, r, qty, acq))
+            corrupt += is_corrupt
+            if item is not None:
+                keys.append(item)
 
         return SlotData(
             stats=stats, level=level, runes=runes, pgd_base=pgd,

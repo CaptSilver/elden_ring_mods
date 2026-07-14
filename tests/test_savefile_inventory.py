@@ -1,4 +1,6 @@
-from ermlib.savefile import SaveFile
+import struct
+
+from ermlib.savefile import SaveFile, _read_inventory_slot, _resolve
 
 
 def test_slot0_stats_inventory_and_method_agreement(real_save_bytes):
@@ -21,3 +23,27 @@ def test_slot1_also_parses(real_save_bytes):
     assert sd.walk_cursor == sd.pgd_base
     assert sd.level == 346
     assert sd.corrupt_handles == 0
+
+
+def test_unknown_nibble_resolves_corrupt():
+    # nibble 3 is not in {0,8,9,A,B,C} → corrupt handle
+    assert _resolve(0x30000000, {}) == -1
+
+
+def test_read_inventory_slot_counts_corrupt_handle():
+    # a 12-byte {handle, qty, acq} record with an unknown-nibble handle
+    body = struct.pack("<III", 0x30000000, 1, 0)
+    item, is_corrupt = _read_inventory_slot(body, 0, {})
+    assert item is None
+    assert is_corrupt is True
+
+
+def test_read_inventory_slot_empty_and_valid_not_corrupt():
+    empty = struct.pack("<III", 0, 0, 0)
+    item, is_corrupt = _read_inventory_slot(empty, 0, {})
+    assert item is None and is_corrupt is False
+    # nibble A resolves directly, not corrupt
+    valid = struct.pack("<III", 0xA0000123, 5, 0)
+    item, is_corrupt = _read_inventory_slot(valid, 0, {})
+    assert is_corrupt is False
+    assert item is not None and item.item_id == 0x123 and item.quantity == 5
