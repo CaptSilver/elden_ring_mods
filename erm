@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+import argparse
+import sys
+
+from ermlib import __version__
+from ermlib.errors import ErmError
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="erm", description="Elden Ring Seamless Co-op mod manager")
+    p.add_argument("--version", action="version", version=f"erm {__version__}")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.set_defaults(func=None)
+    p.add_subparsers(dest="command")
+    return p
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.func is None:
+        parser.print_help()
+        return 2
+    try:
+        return args.func(args) or 0
+    except ErmError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
