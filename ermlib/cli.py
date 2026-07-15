@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from . import paths, steam
+from .errors import PathError
 from .report import Report
 from .savefile import SaveFile
 from .audit import audit_save
@@ -27,7 +28,11 @@ def cmd_launch_option(args):
 def cmd_audit(args):
     save_path = Path(args.save) if getattr(args, "save", None) else \
         paths.find_save_dir(paths.find_steam_root()) / "ER0000.sl2"
-    sf = SaveFile.from_bytes(Path(save_path).read_bytes())
+    try:
+        data = save_path.read_bytes()
+    except OSError as exc:
+        raise PathError(f"cannot read save: {save_path} ({exc})") from exc
+    sf = SaveFile.from_bytes(data)
     res = audit_save(sf)
     r = Report()
     if not res.findings:
