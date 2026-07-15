@@ -3,7 +3,7 @@ import time
 import urllib.error
 from pathlib import Path, PurePosixPath
 
-from . import paths, steam, manifest, github, install, saves, nexus
+from . import paths, steam, manifest, github, install, saves, nexus, harden
 from . import state as state_mod
 from .errors import NetworkError, PathError
 from .report import Report
@@ -366,6 +366,41 @@ def cmd_restore(args):
     return 0
 
 
+def cmd_harden(args):
+    game = paths.find_game_dir(paths.find_steam_root())
+    r = Report()
+    if harden.is_hardened(game):
+        r.info("already hardened — re-asserting the immutable flag")
+    else:
+        harden.harden_swap(game)
+        r.ok("backed up start_protected_game.exe and swapped in an eldenring.exe copy")
+    spg = game / "start_protected_game.exe"
+    harden.set_immutable(spg, True)   # interactive sudo
+    r.ok("start_protected_game.exe is now immutable — Steam Verify/patch can't restore EAC")
+    r.warn("run `erm unharden` before any Steam game update, or the update will fail on the immutable file")
+    r.warn("vanilla online (invasions/summons) is disabled while hardened")
+    print(r.render(as_json=args.json))
+    print("\nSafety check (erm doctor):")
+    print(run_doctor(game, Report()).render(as_json=args.json))
+    return 0
+
+
+def cmd_unharden(args):
+    game = paths.find_game_dir(paths.find_steam_root())
+    r = Report()
+    spg = game / "start_protected_game.exe"
+    if harden.is_hardened(game):
+        harden.set_immutable(spg, False)   # interactive sudo, remove immutable FIRST
+        harden.unharden_restore(game)
+        r.ok("removed immutable flag and restored the real start_protected_game.exe (EAC)")
+    else:
+        r.info("not hardened — nothing to restore")
+    print(r.render(as_json=args.json))
+    print("\nSafety check (erm doctor):")
+    print(run_doctor(game, Report()).render(as_json=args.json))
+    return 0
+
+
 def register(subparsers):
     subparsers.add_parser("doctor", help="safety report").set_defaults(func=cmd_doctor)
     a = subparsers.add_parser("audit", help="forensic audit of a save")
@@ -395,3 +430,11 @@ def register(subparsers):
     rs.add_argument("backup")
     rs.set_defaults(func=cmd_restore)
     subparsers.add_parser("quarantine", help="move the vanilla save out of harm's way").set_defaults(func=cmd_quarantine)
+    subparsers.add_parser(
+        "harden",
+        help="swap in a non-EAC launcher and lock it immutable (sudo)",
+    ).set_defaults(func=cmd_harden)
+    subparsers.add_parser(
+        "unharden",
+        help="undo `erm harden`: restore the real EAC launcher (sudo)",
+    ).set_defaults(func=cmd_unharden)

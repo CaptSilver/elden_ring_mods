@@ -1,5 +1,6 @@
 from ermlib.report import Report
-from ermlib.doctor import scan_game_dir, run_doctor
+from ermlib.doctor import scan_game_dir, run_doctor, eac_state
+from ermlib import harden
 
 
 def test_scan_flags_proxy_and_modengine(tmp_game):
@@ -60,3 +61,18 @@ def test_doctor_warns_on_spawner_regardless_of_name_case(tmp_game):
     r = run_doctor(tmp_game, Report())
     assert r.worst_level == "warn"
     assert any("spawner" in msg.lower() for _, msg in r.items)
+
+
+def test_eac_state_reports_hardened_when_backup_exists(tmp_game):
+    # After harden_swap, start_protected_game.exe exists (it's the eldenring
+    # copy), so without this check eac_state would misread it as "armed".
+    # is_hardened (backup present) must win over the exe-presence check.
+    harden.harden_swap(tmp_game)
+    assert eac_state(tmp_game) == "hardened"
+
+
+def test_doctor_reports_hardened_as_safe_not_fail(tmp_game):
+    harden.harden_swap(tmp_game)
+    r = run_doctor(tmp_game, Report())
+    assert r.worst_level != "fail"
+    assert any("hardened" in msg.lower() for _, msg in r.items)
