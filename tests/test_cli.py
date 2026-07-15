@@ -1,7 +1,7 @@
 import pytest
 
 from ermlib import cli
-from ermlib.errors import PathError
+from ermlib.errors import ErmError, PathError
 
 
 def test_launch_option_string(capsys):
@@ -50,3 +50,45 @@ def test_restore_resolves_snapshot_name_under_backups(tmp_path, monkeypatch):
     rc = cli.cmd_restore(args)
     assert rc == 0
     assert (save_dir / "ER0000.co2").read_bytes() == b"snapshot-data"
+
+
+def test_apply_missing_vendor_archive_raises_clean_error(tmp_path, monkeypatch):
+    # Fresh clone that runs `apply` before `fetch`: the lockfile names an asset
+    # that was never downloaded. Must be a clean ErmError, not a raw
+    # FileNotFoundError from zipfile.ZipFile deep inside install.apply_ersc.
+    from ermlib import paths
+
+    game_dir = tmp_path / "Game"
+    game_dir.mkdir()
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "mods.lock.toml").write_text(
+        '[seamless-coop]\n'
+        'version = "v1.9.8"\n'
+        'asset = "seamless-coop-v1.9.8.zip"\n'
+        'sha256 = "abc"\n'
+        'source = "github"\n'
+    )
+
+    args = type("A", (), {})()
+    with pytest.raises(ErmError):
+        cli.cmd_apply(args)
+
+
+def test_verify_missing_asset_key_warns_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    # A lock entry missing "asset" made Path("vendor")/"" resolve to the vendor
+    # dir itself -> IsADirectoryError from sha256_file. Must warn and move on.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "mods.lock.toml").write_text(
+        '[seamless-coop]\n'
+        'version = "v1.9.8"\n'
+        'source = "github"\n'
+    )
+    args = type("A", (), {"json": False})()
+    rc = cli.cmd_verify(args)
+    out = capsys.readouterr().out
+    assert "no asset" in out.lower()

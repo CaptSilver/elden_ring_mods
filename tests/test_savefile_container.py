@@ -22,3 +22,12 @@ def test_rejects_playstation_save():
 def test_rejects_non_save():
     with pytest.raises(NotAnEldenRingSave):
         SaveFile.from_bytes(b"not a save at all")
+
+
+def test_rejects_truncated_bnd4_cleanly():
+    # Tagged BND4 but far too short for a real entry table — the parse must
+    # raise our own error, not leak a bare struct.error/IndexError/ValueError
+    # up through cmd_audit as a raw traceback.
+    truncated = b"BND4" + b"\x00" * 8
+    with pytest.raises(NotAnEldenRingSave):
+        SaveFile.from_bytes(truncated)

@@ -213,8 +213,11 @@ class SaveFile(_CharactersMixin, _InventoryMixin):
             raise NotAnEldenRingSave("PlayStation save (no per-entry MD5) — not supported")
         if data[:4] != b"BND4":
             raise NotAnEldenRingSave("not a BND4 Elden Ring save")
-        count = _u32(data, 0x0C)
-        entries = [Entry(data, i) for i in range(count)]
+        try:
+            count = _u32(data, 0x0C)
+            entries = [Entry(data, i) for i in range(count)]
+        except (struct.error, ValueError, IndexError) as exc:
+            raise NotAnEldenRingSave(f"malformed/truncated save: {exc}") from exc
         return cls(entries)
 
     @property

@@ -1,9 +1,10 @@
 import shutil
 import time
+import urllib.error
 from pathlib import Path
 
 from . import paths, steam, manifest, github, install, saves
-from .errors import PathError
+from .errors import NetworkError, PathError
 from .report import Report
 from .savefile import SaveFile
 from .audit import audit_save
@@ -66,17 +67,23 @@ def cmd_doctor(args):
 
 
 def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles")):
-    prof = manifest.load_profile(profile_name, base=profiles_base)
+    try:
+        prof = manifest.load_profile(profile_name, base=profiles_base)
+    except OSError as exc:
+        raise PathError(f"unknown profile '{profile_name}': {exc}") from exc
     lock = manifest.load_lock(lock_path)
     vendor = Path(vendor)
     vendor.mkdir(exist_ok=True)
     for mod in prof["mods"]:
         if mod["source"] == "github":
-            rel = github.latest_release(mod["repo_id"])
-            asset = github.pick_asset(rel, suffix=".zip")
-            digest = (asset.get("digest") or "").removeprefix("sha256:")
-            dest = vendor / f'{mod["id"]}-{rel["tag"]}.zip'
-            github.download_verified(asset["url"], dest, digest)
+            try:
+                rel = github.latest_release(mod["repo_id"])
+                asset = github.pick_asset(rel, suffix=".zip")
+                digest = (asset.get("digest") or "").removeprefix("sha256:")
+                dest = vendor / f'{mod["id"]}-{rel["tag"]}.zip'
+                github.download_verified(asset["url"], dest, digest)
+            except (OSError, urllib.error.URLError, ValueError, KeyError) as exc:
+                raise NetworkError(f"failed to fetch {mod['id']} from GitHub: {exc}") from exc
             manifest.set_mod(lock, mod["id"], version=rel["tag"],
                              asset=dest.name, sha256=digest, source="github")
             print(f"✓ {mod['id']} {rel['tag']} verified → {dest.name}")
@@ -102,11 +109,17 @@ def cmd_apply(args):
     if not ersc:
         print("no seamless-coop in lockfile — run `erm fetch` first")
         return 1
+    asset = ersc.get("asset")
+    if not asset:
+        raise PathError("seamless-coop lock entry has no asset recorded — run `erm fetch` first")
+    vendor_path = Path("vendor") / asset
+    if not vendor_path.exists():
+        raise PathError(f"run `erm fetch` first — vendor archive missing: {vendor_path}")
     password = install.read_secret(Path("secrets.env")) if Path("secrets.env").exists() else ""
     if not password:
         print("warning: no COOP_PASSWORD in secrets.env — password will be blank")
-    install.apply_ersc(Path("vendor") / ersc["asset"], game, password)
-    print(f"applied seamless-coop {ersc['version']} to {game}")
+    install.apply_ersc(vendor_path, game, password)
+    print(f"applied seamless-coop {ersc.get('version', '?')} to {game}")
     return 0
 
 
@@ -114,7 +127,11 @@ def cmd_verify(args):
     lock = manifest.load_lock("mods.lock.toml")
     r = Report()
     for mod_id, meta in lock.items():
-        p = Path("vendor") / meta.get("asset", "")
+        asset = meta.get("asset")
+        if not asset:
+            r.warn(f"{mod_id}: no asset recorded in lockfile")
+            continue
+        p = Path("vendor") / asset
         if not p.exists():
             r.warn(f"{mod_id}: archive missing from vendor/")
             continue
