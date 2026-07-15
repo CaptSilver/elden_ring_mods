@@ -86,7 +86,7 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                     # upstream mutated the tagged asset, fail closed.
                     rel = github.release_by_tag(mod["repo_id"], locked["version"])
                     asset = github.pick_asset(rel, suffix=".zip")
-                    digest = locked.get("sha256", "")
+                    digest = locked.get("sha256") or ""
                 else:
                     rel = github.latest_release(mod["repo_id"])
                     asset = github.pick_asset(rel, suffix=".zip")

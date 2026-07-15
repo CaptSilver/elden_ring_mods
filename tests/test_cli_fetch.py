@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from ermlib import cli, manifest, github
-from ermlib.errors import ErmError
+from ermlib.errors import ErmError, IntegrityError
 
 
 def test_fetch_downloads_github_and_prints_nexus(tmp_path, monkeypatch, capsys):
@@ -77,10 +77,16 @@ def test_fetch_profile_honors_locked_version_by_default(tmp_path, monkeypatch):
         calls["latest_release"].append(repo_id)
         raise AssertionError("latest_release must not run when a pin exists and update=False")
 
+    def fake_download_verified(url, dest, sha256):
+        # The digest handed to download_verified on the pinned path must be the
+        # LOCKED sha256 (the release's own digest was None here) — otherwise the
+        # pin verifies nothing.
+        assert sha256 == "a" * 64
+        Path(dest).write_bytes(b"zip-bytes")
+
     monkeypatch.setattr(github, "release_by_tag", fake_release_by_tag)
     monkeypatch.setattr(github, "latest_release", fake_latest_release)
-    monkeypatch.setattr(github, "download_verified",
-                        lambda url, dest, sha256: Path(dest).write_bytes(b"zip-bytes"))
+    monkeypatch.setattr(github, "download_verified", fake_download_verified)
 
     vendor = tmp_path / "vendor"; vendor.mkdir()
     updated = cli.fetch_profile("seamless-only", vendor, lock_path,
@@ -129,3 +135,37 @@ def test_fetch_subparser_has_update_flag():
     assert args.update is True
     args_default = parser.parse_args(["fetch"])
     assert args_default.update is False
+
+
+def test_pinned_fetch_fails_closed_on_hash_mismatch(tmp_path, monkeypatch):
+    # The security property behind the pin: on the pinned path the download is
+    # verified against the LOCKED sha256, NOT the release's own digest. The
+    # release digest here deliberately MATCHES the payload while the locked hash
+    # does not — so if the code (wrongly) trusted the fresh digest the fetch
+    # would succeed, and this test would go green. It stays red only because the
+    # locked hash is what's enforced. Real download_verified runs (not mocked).
+    import hashlib
+
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path, sha="a" * 64)  # will not match the payload
+
+    payload = b"whatever"
+    payload_hash = hashlib.sha256(payload).hexdigest()
+
+    def fake_release_by_tag(repo_id, tag):
+        # Release's own digest MATCHES the payload — the trap for a regression
+        # that reverts to trusting asset.get("digest").
+        return {"tag": tag, "assets": [{"name": "Seamless.zip",
+                                         "url": "http://x/Seamless.zip",
+                                         "digest": "sha256:" + payload_hash}]}
+
+    monkeypatch.setattr(github, "release_by_tag", fake_release_by_tag)
+    monkeypatch.setattr(github, "_fetch_bytes", lambda url: payload)
+
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    with pytest.raises(IntegrityError):
+        cli.fetch_profile("seamless-only", vendor, lock_path,
+                          profiles_base=Path("profiles"), update=False)
+
+    # Fail-closed: nothing landed on disk.
+    assert list(vendor.iterdir()) == []
