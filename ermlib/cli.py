@@ -4,6 +4,7 @@ import urllib.error
 from pathlib import Path
 
 from . import paths, steam, manifest, github, install, saves, nexus
+from . import state as state_mod
 from .errors import NetworkError, PathError
 from .report import Report
 from .savefile import SaveFile
@@ -172,8 +173,12 @@ def _install_ersc(game, lock):
     if not vendor_path.exists():
         raise PathError(f"run `erm fetch` first — vendor archive missing: {vendor_path}")
     password = install.read_secret(Path("secrets.env")) if Path("secrets.env").exists() else ""
-    install.apply_ersc(vendor_path, game, password)
-    return ersc.get("version", "?"), bool(password)
+    files = install.apply_ersc(vendor_path, game, password)
+    version = ersc.get("version", "?")
+    state = state_mod.load_state()
+    state_mod.record_install(state, "seamless-coop", version, asset, files)
+    state_mod.write_state(Path("installed.json"), state)
+    return version, bool(password)
 
 
 def cmd_apply(args):
@@ -226,6 +231,58 @@ def cmd_update(args):
     else:
         print("\nAlready up to date — nothing to install.")
     return doctor_report.exit_code if doctor_report is not None else 0
+
+
+def cmd_uninstall(args):
+    game = paths.find_game_dir(paths.find_steam_root())
+    mod_id = args.mod
+    state = state_mod.load_state()
+    entry = state.get(mod_id)
+    if entry and entry.get("files"):
+        files = entry["files"]
+        source = "install manifest"
+    else:
+        # No record of what was installed (manifest predates this feature, or
+        # was deleted) — fall back to the vendor archive's own file list. If
+        # neither exists there's nothing safe to remove.
+        lock = manifest.load_lock("mods.lock.toml")
+        meta = lock.get(mod_id, {})
+        asset = meta.get("asset")
+        vpath = Path("vendor") / asset if asset else None
+        if not (vpath and vpath.exists()):
+            raise PathError(
+                f"nothing recorded for {mod_id} and no vendor archive to derive from — nothing to uninstall")
+        import zipfile
+        with zipfile.ZipFile(vpath) as z:
+            files = [n for n in z.namelist() if not n.endswith("/")]
+        source = f"vendor archive {asset}"
+    r = Report()
+    removed = 0
+    for rel in files:
+        p = game / rel
+        try:
+            if p.is_file() or p.is_symlink():
+                p.unlink()
+                removed += 1
+        except OSError as exc:
+            r.warn(f"could not remove {rel}: {exc}")
+    # Prune now-empty dirs these files lived in, deepest first, so a parent
+    # dir left empty by its last child doesn't linger — but never the game
+    # root itself, and never a dir that still has something in it.
+    for d in sorted({(game / rel).parent for rel in files}, key=lambda x: len(str(x)), reverse=True):
+        try:
+            if d != game and d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            pass
+    state_mod.forget(state, mod_id)
+    state_mod.write_state(Path("installed.json"), state)
+    r.ok(f"removed {removed} file(s) for {mod_id} (from {source})")
+    print(r.render(as_json=args.json))
+    print("\nSafety check (erm doctor):")
+    dr = run_doctor(game, Report())
+    print(dr.render(as_json=args.json))
+    return 0
 
 
 def cmd_verify(args):
@@ -308,6 +365,9 @@ def register(subparsers):
     up = subparsers.add_parser("update", help="fetch the latest Seamless Co-op, re-pin, and install it")
     up.add_argument("profile", nargs="?", default="seamless-only")
     up.set_defaults(func=cmd_update)
+    un = subparsers.add_parser("uninstall", help="remove an installed mod's files from Game/")
+    un.add_argument("mod", nargs="?", default="seamless-coop")
+    un.set_defaults(func=cmd_uninstall)
     subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
     b = subparsers.add_parser("backup", help="snapshot the co-op save")
     b.add_argument("--label", default="")

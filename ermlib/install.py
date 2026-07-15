@@ -29,6 +29,12 @@ def inject_password(settings_ini, password):
 
 
 def apply_ersc(zip_path, game_dir, password):
+    """Extract the ERSC archive into game_dir and re-inject the password.
+
+    Returns the list of real files it wrote (relative POSIX paths under
+    game_dir, directories excluded) — `erm uninstall` records this so it
+    knows exactly what to remove later.
+    """
     game_dir = Path(game_dir)
     legacy = game_dir / "launch_elden_ring_seamlesscoop.exe"
     if legacy.exists():
@@ -38,4 +44,6 @@ def apply_ersc(zip_path, game_dir, password):
         shutil.rmtree(sc)
     with zipfile.ZipFile(zip_path) as z:
         z.extractall(game_dir)
+        files = [n for n in z.namelist() if not n.endswith("/")]
     inject_password(game_dir / "SeamlessCoop" / "ersc_settings.ini", password)
+    return files
