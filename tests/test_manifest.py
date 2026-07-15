@@ -20,3 +20,26 @@ def test_lock_roundtrip(tmp_path):
     back = load_lock(p)
     assert back["seamless-coop"]["version"] == "v1.9.8"
     assert back["seamless-coop"]["sha256"] == "1a956a30"
+
+
+def test_lock_roundtrip_escapes_special_chars(tmp_path):
+    lock = {}
+    nasty = 'we"ird\\name\nx.zip'
+    set_mod(lock, "seamless-coop", version="v1.9.8", asset=nasty,
+            sha256="1a956a30", source="github")
+    p = tmp_path / "mods.lock.toml"
+    write_lock(p, lock)
+    back = load_lock(p)
+    assert back["seamless-coop"]["asset"] == nasty
+
+
+def test_lock_deterministic_multi_mod_order(tmp_path):
+    lock = {}
+    set_mod(lock, "zebra", version="v1", asset="z.zip",
+            sha256="ff", source="github")
+    set_mod(lock, "alpha", version="v1", asset="a.zip",
+            sha256="aa", source="github")
+    p = tmp_path / "mods.lock.toml"
+    write_lock(p, lock)
+    text = p.read_text()
+    assert text.index("[alpha]") < text.index("[zebra]")
