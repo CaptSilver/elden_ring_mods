@@ -286,6 +286,150 @@ def test_apply_unknown_profile_raises_patherror_not_filenotfound(
         cli.cmd_apply(_apply_args("no-such-profile-xyz"))
 
 
+def test_apply_randomizer_extracts_to_tools_and_prints_proton_command(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # install="randomizer" is a special handler: the generator is a Windows
+    # .exe the player has to run themselves under Proton to produce
+    # regulation.bin — erm can't do that step for them, only extract the
+    # generator and hand back the exact command to run it.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    # find_compatdata needs a real compatdata/<APPID> dir under the (fake)
+    # steam root, which here is tmp_path itself.
+    (tmp_path / "steamapps" / "compatdata" / paths.APPID).mkdir(parents=True)
+    fake_proton = tmp_path / "compatibilitytools.d" / "GE-Proton10-31" / "proton"
+    fake_proton.parent.mkdir(parents=True)
+    fake_proton.write_bytes(b"\x00")
+    monkeypatch.setattr(paths, "find_proton", lambda: fake_proton)
+
+    _write_profile(tmp_path / "profiles", "randomizer-only",
+        '[[mods]]\n'
+        'id = "item-enemy-randomizer"\n'
+        'source = "nexus"\n'
+        'nexus_id = 428\n'
+        'kind = "randomizer"\n'
+        'install = "randomizer"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml",
+               {"item-enemy-randomizer": ("1.0", "randomizer.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "randomizer.zip", "randomizer/EldenRingRandomizer.exe")
+
+    rc = cli.cmd_apply(_apply_args("randomizer-only"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    extracted = (tmp_path / "tools" / "item-enemy-randomizer"
+                 / "randomizer" / "EldenRingRandomizer.exe")
+    assert extracted.exists()
+    assert "EldenRingRandomizer.exe" in out
+    assert str(fake_proton) in out          # the printed Proton run command
+    assert "run" in out
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "item-enemy-randomizer" not in state   # a tool, not a Game/ mod
+
+
+def test_apply_randomizer_falls_back_when_no_proton_found(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "steamapps" / "compatdata" / paths.APPID).mkdir(parents=True)
+    monkeypatch.setattr(paths, "find_proton", lambda: None)
+
+    _write_profile(tmp_path / "profiles", "randomizer-only",
+        '[[mods]]\n'
+        'id = "item-enemy-randomizer"\n'
+        'source = "nexus"\n'
+        'nexus_id = 428\n'
+        'kind = "randomizer"\n'
+        'install = "randomizer"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml",
+               {"item-enemy-randomizer": ("1.0", "randomizer.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "randomizer.zip", "randomizer/EldenRingRandomizer.exe")
+
+    rc = cli.cmd_apply(_apply_args("randomizer-only"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "EldenRingRandomizer.exe" in out
+    assert "no Proton" in out or "Proton/Wine" in out   # fallback note, no crash
+
+
+def test_apply_me3_extracts_scaffolds_profile_and_not_recorded(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "me3-only",
+        '[[mods]]\n'
+        'id = "me3"\n'
+        'source = "github"\n'
+        'repo_id = 540883721\n'
+        'kind = "loader"\n'
+        'install = "me3"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"me3": ("v1.0", "me3.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "me3.zip", "bin/me3.exe")
+
+    rc = cli.cmd_apply(_apply_args("me3-only"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert (tmp_path / "tools" / "me3" / "bin" / "me3.exe").exists()
+    prof = tmp_path / "tools" / "me3" / "erm-coop.me3"
+    assert prof.exists()
+    assert "me3.help" in out
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "me3" not in state           # a loader/tool, not a Game/ mod
+
+
+def test_apply_me3_does_not_clobber_existing_profile(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # A player edits tools/me3/erm-coop.me3 by hand (pointing it at their
+    # ersc.dll + randomizer output); re-running apply must leave it alone.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "me3-only",
+        '[[mods]]\n'
+        'id = "me3"\n'
+        'source = "github"\n'
+        'repo_id = 540883721\n'
+        'kind = "loader"\n'
+        'install = "me3"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"me3": ("v1.0", "me3.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "me3.zip", "bin/me3.exe")
+
+    prof_dir = tmp_path / "tools" / "me3"
+    prof_dir.mkdir(parents=True)
+    prof = prof_dir / "erm-coop.me3"
+    prof.write_text("# hand-edited by the player\n")
+
+    cli.cmd_apply(_apply_args("me3-only"))
+
+    assert prof.read_text() == "# hand-edited by the player\n"
+
+
 def test_switch_survives_bad_state_entry_and_ends_consistent(
         tmp_path, monkeypatch, capsys, tmp_game):
     # installed.json carries a normal entry plus a broken one (empty files, no

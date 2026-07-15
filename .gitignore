@@ -4,6 +4,7 @@ __pycache__/
 vendor/
 backups/
 recovered/
+tools/
 secrets.env
 erm.local.toml
 installed.json

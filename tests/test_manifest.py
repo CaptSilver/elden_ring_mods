@@ -16,7 +16,7 @@ def test_seamless_only_profile_has_ersc():
 def test_seamless_full_profile_loads_all_mods():
     prof = load_profile("seamless-full", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    assert len(prof["mods"]) >= 18   # ~20 mod stack
+    assert len(prof["mods"]) == 18   # eac-toggler dropped (redundant with erm harden)
 
     ersc = next(m for m in prof["mods"] if m["id"] == "seamless-coop")
     assert ersc["source"] == "nexus"
@@ -26,14 +26,19 @@ def test_seamless_full_profile_loads_all_mods():
     assert me3["source"] == "github"
     assert me3["repo_id"] == 540883721
     assert me3["asset_match"] == "me3-windows-amd64"
+    assert me3["install"] == "me3"
 
     randomizer = next(m for m in prof["mods"] if m["id"] == "item-enemy-randomizer")
     assert randomizer["source"] == "nexus"
     assert randomizer["nexus_id"] == 428
     assert randomizer["requires_all_players"] is True
+    assert randomizer["install"] == "randomizer"
 
     # pause-the-game is excluded — it can't work in a networked co-op session
     assert "pause-the-game" not in ids
+    # eac-toggler is redundant with the launch-option method + `erm harden`,
+    # and its own winhttp.dll is itself an artifact `erm doctor` flags
+    assert "eac-toggler" not in ids
 
     assert len(ids) == len(set(ids))   # no duplicate mod ids
 

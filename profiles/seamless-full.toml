@@ -1,8 +1,8 @@
 # The full 2025 randomizer-coop stack. Requires a Nexus Premium key
 # (NEXUS_API_KEY) to auto-fetch the Nexus-sourced mods; GitHub mods fetch
-# without a key. NOT all auto-installable — `erm apply` installs Seamless
-# Co-op; the loader/DLL/randomizer stack still needs manual placement into
-# Game/mods per each mod's instructions.
+# without a key. `erm apply` installs Seamless Co-op straight into Game/;
+# me3 and the randomizer are tools, not Game/ mods, so apply extracts them
+# to tools/ and prints what to do next instead of placing files itself.
 name = "seamless-full"
 description = "The full 2025 randomizer-coop mod set: framework, loaders, randomizer, item spawners, cosmetics, and QoL."
 
@@ -27,14 +27,7 @@ source = "github"
 repo_id = 540883721
 asset_match = "me3-windows-amd64"
 kind = "loader"
-install = "manual"
-
-[[mods]]
-id = "eac-toggler"                # winhttp fail-loud EAC tripwire (safety piece)
-source = "nexus"
-nexus_id = 90
-kind = "loader"
-install = "manual"
+install = "me3"
 
 # --- randomizer (ALL players need the identical generated regulation.bin + seed) ---
 [[mods]]
@@ -43,7 +36,7 @@ source = "nexus"
 nexus_id = 428
 kind = "randomizer"
 requires_all_players = true
-install = "manual"
+install = "randomizer"
 
 # --- item spawners: BAN-RELEVANT. Client-side under seamless, but can put
 #     illegitimate items in your save. This is what erm quarantine/doctor guard. ---

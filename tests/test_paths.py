@@ -5,6 +5,8 @@ from ermlib.paths import (
     find_game_dir,
     find_prefix,
     find_save_dir,
+    find_proton,
+    find_compatdata,
     is_safe_relpath,
     APPID,
 )
@@ -118,6 +120,55 @@ def test_find_game_dir_finds_game_in_secondary_library(tmp_path):
         "}\n"
     )
     assert find_game_dir(steam_root).samefile(game)
+
+
+def test_find_proton_prefers_ge_proton_over_plain(tmp_path, monkeypatch):
+    # A real steam install can have both a stock "Proton 9.0" and a
+    # GE-Proton build under compatibilitytools.d; the GE build is the one
+    # that actually runs Windows .exe tools reliably, so it must win even
+    # though it's not first alphabetically.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tools_dir = tmp_path / ".steam" / "root" / "compatibilitytools.d"
+    plain = tools_dir / "Proton 9.0"
+    plain.mkdir(parents=True)
+    (plain / "proton").write_bytes(b"\x00")
+    ge = tools_dir / "GE-Proton10-31"
+    ge.mkdir(parents=True)
+    (ge / "proton").write_bytes(b"\x00")
+
+    found = find_proton()
+
+    assert found is not None
+    assert found.parent.name == "GE-Proton10-31"
+
+
+def test_find_proton_picks_highest_ge_proton_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tools_dir = tmp_path / ".steam" / "root" / "compatibilitytools.d"
+    for name in ("GE-Proton9-20", "GE-Proton10-31", "GE-Proton10-2"):
+        d = tools_dir / name
+        d.mkdir(parents=True)
+        (d / "proton").write_bytes(b"\x00")
+
+    found = find_proton()
+
+    assert found.parent.name == "GE-Proton10-31"
+
+
+def test_find_proton_returns_none_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert find_proton() is None
+
+
+def test_find_compatdata_locates_and_raises(tmp_path):
+    cd = tmp_path / "steamapps" / "compatdata" / APPID
+    cd.mkdir(parents=True)
+    assert find_compatdata(tmp_path).samefile(cd)
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(PathError):
+        find_compatdata(empty)
 
 
 def test_find_save_dir_skips_unreadable_root(tmp_path):

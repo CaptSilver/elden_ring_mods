@@ -189,7 +189,6 @@ _MANUAL_NOTES = {
                               "regulation.bin, then place it per its README; the whole group needs "
                               "the identical output",
     "me3": "me3 is a loader — install per me3.help; it chainloads ersc.dll and the randomizer",
-    "eac-toggler": "extract and rename _winhttp.dll -> winhttp.dll to arm the EAC tripwire",
 }
 
 
@@ -200,7 +199,8 @@ def cmd_apply(args):
     The default profile is seamless-only, so a bare `erm apply` still just
     installs seamless-coop — same as before this generalized to profiles.
     """
-    game = paths.find_game_dir(paths.find_steam_root())
+    steam_root = paths.find_steam_root()
+    game = paths.find_game_dir(steam_root)
     try:
         profile = manifest.load_profile(args.profile)
     except OSError as exc:
@@ -224,6 +224,55 @@ def cmd_apply(args):
         vpath = Path("vendor") / asset
         if not vpath.exists():
             r.warn(f"{mid}: archive missing from vendor/ ({asset})")
+            continue
+        # randomizer/me3 are tools, not Game/ mods: extract to tools/<mid>/
+        # instead of Game/ and never touch installed.json — `erm uninstall`
+        # only knows how to clean up files it put inside the game dir.
+        if kind == "randomizer":
+            try:
+                install.extract_archive(vpath, Path("tools"), mid)
+            except (OSError, zipfile.BadZipFile) as exc:
+                r.warn(f"{mid}: extract failed ({exc})")
+                continue
+            r.ok(f"{mid}: generator extracted to tools/{mid}/")
+            exe = (Path("tools") / mid / "randomizer" / "EldenRingRandomizer.exe").resolve()
+            proton = paths.find_proton()
+            try:
+                compatdata = paths.find_compatdata(steam_root)
+            except PathError:
+                compatdata = None
+            if proton and compatdata:
+                r.info(
+                    "generate regulation.bin (run the generator under Proton):\n"
+                    f'  STEAM_COMPAT_DATA_PATH="{compatdata}" '
+                    f'STEAM_COMPAT_CLIENT_INSTALL_PATH="{steam_root}" "{proton}" run "{exe}"'
+                )
+            else:
+                r.info(f"generate regulation.bin by running {exe} under Proton/Wine "
+                        "(couldn't auto-fill the Proton run command — no Proton found "
+                        "or no compat data yet)")
+            r.info("pick options + a seed, generate, then load the output via me3; "
+                    "share the identical output with your group")
+            continue
+        if kind == "me3":
+            try:
+                install.extract_archive(vpath, Path("tools"), mid)
+            except (OSError, zipfile.BadZipFile) as exc:
+                r.warn(f"{mid}: extract failed ({exc})")
+                continue
+            me3dir = Path("tools") / mid
+            prof = me3dir / "erm-coop.me3"
+            if not prof.exists():
+                prof.write_text(
+                    'profileVersion = "v1"\n\n[[supports]]\ngame = "eldenring"\n\n'
+                    '# Chainload Seamless Co-op — point at your installed ersc.dll:\n'
+                    '# [[native]]\n# path = "/abs/path/to/Game/SeamlessCoop/ersc.dll"\n\n'
+                    '# Load the randomizer output — point at the generated mod folder:\n'
+                    '# [[package]]\n# id = "randomizer"\n# path = "/abs/path/to/generated/mod"\n'
+                )
+            r.ok(f"{mid}: extracted to tools/{mid}/ (loader — replaces the Steam launch-option method)")
+            r.info(f"edit the starter profile {prof} to point at your ersc.dll + randomizer output, "
+                    "then launch via me3 (Linux setup differs — see https://me3.help)")
             continue
         subdir = "mods" if kind == "mods" else ""
         # A corrupt/truncated archive (BadZipFile) or an I/O error on one mod

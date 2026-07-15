@@ -1,3 +1,4 @@
+import re
 from pathlib import Path, PurePosixPath
 
 from .errors import PathError
@@ -70,6 +71,54 @@ def find_prefix(steam_root):
         if pfx.is_dir():
             return pfx
     raise PathError(f"Proton prefix compatdata/{APPID}/pfx not found")
+
+
+def find_compatdata(steam_root):
+    """The compatdata/<APPID> dir (parent of pfx) for STEAM_COMPAT_DATA_PATH."""
+    for sa in _library_dirs(steam_root):
+        cd = sa / "compatdata" / APPID
+        if cd.is_dir():
+            return cd
+    raise PathError(f"compatdata/{APPID} not found")
+
+
+_PROTON_ROOTS = [
+    "~/.steam/root/compatibilitytools.d",
+    "~/.steam/steam/steamapps/common",
+    "~/.local/share/Steam/steamapps/common",
+]
+
+
+def _proton_version_key(proton_path):
+    # Natural sort on the install dir name (e.g. "GE-Proton10-31") so
+    # "GE-Proton10-31" correctly outranks "GE-Proton9-20" — a plain string
+    # sort puts "9" after "1" and picks the wrong "highest" version once a
+    # major version hits double digits.
+    return [int(t) if t.isdigit() else t
+            for t in re.split(r"(\d+)", proton_path.parent.name)]
+
+
+def find_proton():
+    """Locate a Proton install to run Windows tools under.
+
+    Prefers the newest GE-Proton (better compatibility for odd tools like
+    mod generators) over a stock Proton build. Returns the path to the
+    `proton` launcher script, or None if no Steam Play tool is installed.
+    """
+    candidates = []
+    for root in _PROTON_ROOTS:
+        root = Path(root).expanduser()
+        if not root.is_dir():
+            continue
+        for d in root.iterdir():
+            p = d / "proton"
+            if p.exists():
+                candidates.append(p)
+    if not candidates:
+        return None
+    ge = [c for c in candidates if "GE-Proton" in c.parent.name]
+    pool = ge or candidates
+    return max(pool, key=_proton_version_key)
 
 
 def find_save_dir(steam_root):
