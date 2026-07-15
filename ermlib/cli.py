@@ -6,7 +6,7 @@ from pathlib import Path
 
 from . import paths, steam, manifest, github, install, saves, nexus, harden
 from . import state as state_mod
-from .errors import NetworkError, PathError
+from .errors import ErmError, NetworkError, PathError
 from .report import Report
 from .savefile import SaveFile
 from .audit import audit_save
@@ -302,6 +302,27 @@ def cmd_apply(args):
     state_mod.write_state(Path("installed.json"), state)
     if installed_seamless and not password:
         r.warn("no COOP_PASSWORD in secrets.env — password left blank")
+    # A loader mod (Elden Mod Loader's dinput8.dll, or me3) can be picked up by
+    # an accidental vanilla "Play" click, which lets EAC see the injected DLL.
+    # Harden automatically so that stray launch can't fire EAC. seamless-only
+    # (no loader) never trips this. Don't re-harden if already hardened — the
+    # backup-once invariant in harden_swap already protects the real EAC
+    # backup, but skipping here avoids pointlessly re-prompting for sudo.
+    needs_harden = any(m.get("kind") == "loader" for m in profile["mods"])
+    if needs_harden and not getattr(args, "no_harden", False) and not harden.is_hardened(game):
+        r.info("this profile loads mods via a proxy DLL — hardening so an accidental vanilla "
+               "launch can't fire EAC on the injected DLLs (run `erm unharden` before a Steam "
+               "game update; vanilla online is disabled while hardened)")
+        try:
+            harden.harden_swap(game)                                          # fs-only, no privilege
+            harden.set_immutable(game / "start_protected_game.exe", True)      # interactive sudo
+            r.ok("hardened: start_protected_game.exe swapped to an eldenring copy and locked immutable")
+        except ErmError as exc:
+            # harden_swap may have succeeded even if the immutable step failed
+            # — the swap alone still blocks an accidental EAC launch; just tell
+            # the user the lock didn't complete. Mods are already installed, so
+            # this warns rather than aborting the rest of apply.
+            r.warn(f"auto-harden incomplete: {exc} — run `erm harden` to finish (or `erm unharden` to revert)")
     print(r.render(as_json=args.json))
     print("\nSafety check (erm doctor):")
     dr = run_doctor(game, Report())
@@ -487,7 +508,11 @@ def cmd_switch(args):
     state_mod.write_state(Path("installed.json"), state)
     r.info(f"switching to {args.profile}")
     print(r.render(as_json=args.json))
-    return cmd_apply(type("A", (), {"profile": args.profile, "json": args.json})())
+    return cmd_apply(type("A", (), {
+        "profile": args.profile,
+        "json": args.json,
+        "no_harden": getattr(args, "no_harden", False),
+    })())
 
 
 def cmd_verify(args):
@@ -601,6 +626,8 @@ def register(subparsers):
     f.set_defaults(func=cmd_fetch)
     ap = subparsers.add_parser("apply", help="install the fetched mods into Game/")
     ap.add_argument("profile", nargs="?", default="seamless-only")
+    ap.add_argument("--no-harden", action="store_true",
+                     help="skip auto-harden even if the profile loads mods via a proxy DLL/me3")
     ap.set_defaults(func=cmd_apply)
     up = subparsers.add_parser("update", help="fetch the latest Seamless Co-op, re-pin, and install it")
     up.add_argument("profile", nargs="?", default="seamless-only")
@@ -610,6 +637,8 @@ def register(subparsers):
     un.set_defaults(func=cmd_uninstall)
     sw = subparsers.add_parser("switch", help="uninstall whatever's installed, then apply a different profile")
     sw.add_argument("profile")
+    sw.add_argument("--no-harden", action="store_true",
+                     help="skip auto-harden even if the new profile loads mods via a proxy DLL/me3")
     sw.set_defaults(func=cmd_switch)
     subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
     b = subparsers.add_parser("backup", help="snapshot the co-op save")

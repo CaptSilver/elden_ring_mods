@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from ermlib import cli, paths
-from ermlib.errors import PathError
+from ermlib import cli, harden, paths
+from ermlib.errors import ErmError, PathError
 from tests.conftest import REPO
 
 
@@ -91,6 +91,9 @@ def test_apply_two_mod_profile_installs_game_and_mods_targets_and_skips_manual(
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
+    # the "two-mod" fixture's me3 entry is kind="loader" -> apply now auto-hardens;
+    # mock set_immutable so this never shells out to real sudo.
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
     _seed_two_mod_profile(tmp_path)
 
     rc = cli.cmd_apply(_apply_args("two-mod"))
@@ -148,6 +151,9 @@ def test_uninstall_profile_removes_all_its_mods_prunes_dirs_and_spares_stock(
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
+    # the "two-mod" fixture's me3 entry is kind="loader" -> apply now auto-hardens;
+    # mock set_immutable so this never shells out to real sudo.
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
     _seed_two_mod_profile(tmp_path)
 
     cli.cmd_apply(_apply_args("two-mod"))
@@ -371,6 +377,9 @@ def test_apply_me3_extracts_scaffolds_profile_and_not_recorded(
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
+    # me3 is kind="loader" -> apply now auto-hardens; mock set_immutable so
+    # this never shells out to real sudo.
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
 
     _write_profile(tmp_path / "profiles", "me3-only",
         '[[mods]]\n'
@@ -408,6 +417,9 @@ def test_apply_me3_scaffold_write_failure_warns_and_preserves_earlier_state(
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
+    # me3 is kind="loader" -> apply now auto-hardens; mock set_immutable so
+    # this never shells out to real sudo.
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
 
     _write_profile(tmp_path / "profiles", "game-then-me3",
         '[[mods]]\n'
@@ -468,6 +480,9 @@ def test_uninstall_profile_skips_tools_kind_mods(
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.setattr(paths, "find_proton", lambda: None)
     monkeypatch.chdir(tmp_path)
+    # me3 is kind="loader" -> apply now auto-hardens; mock set_immutable so
+    # this never shells out to real sudo.
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
     (tmp_path / "steamapps" / "compatdata" / paths.APPID).mkdir(parents=True)
 
     _write_profile(tmp_path / "profiles", "tools-mix",
@@ -533,6 +548,9 @@ def test_apply_me3_does_not_clobber_existing_profile(
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
+    # me3 is kind="loader" -> apply now auto-hardens; mock set_immutable so
+    # this never shells out to real sudo.
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
 
     _write_profile(tmp_path / "profiles", "me3-only",
         '[[mods]]\n'
@@ -596,3 +614,155 @@ def test_switch_survives_bad_state_entry_and_ends_consistent(
     assert "bad-mod" in out                            # warned about the broken entry
     after = json.loads((tmp_path / "installed.json").read_text())
     assert list(after.keys()) == ["mod-c"]             # no stale entry lingers
+
+
+# --- auto-harden on apply/switch ---
+
+_LOADER_PLUS_GAME_MOD = (
+    '[[mods]]\n'
+    'id = "mod-a"\n'
+    'source = "github"\n'
+    'repo_id = 1\n'
+    'kind = "test"\n'
+    'install = "game"\n'
+    '\n'
+    '[[mods]]\n'
+    'id = "elden-mod-loader"\n'
+    'source = "nexus"\n'
+    'nexus_id = 117\n'
+    'kind = "loader"\n'
+    'install = "manual"\n'
+)
+
+
+def _seed_loader_profile(tmp_path, name="loader-profile"):
+    _write_profile(tmp_path / "profiles", name, _LOADER_PLUS_GAME_MOD)
+    _seed_lock(tmp_path / "mods.lock.toml", {"mod-a": ("1.0", "mod-a.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "mod-a.zip", "a.dll")
+
+
+def test_apply_loader_profile_auto_hardens(tmp_path, monkeypatch, capsys, tmp_game):
+    # A profile that loads mods via a proxy DLL (elden-mod-loader, kind="loader")
+    # must trigger harden automatically, so an accidental vanilla "Play" click
+    # can't fire EAC on the injected DLL.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _seed_loader_profile(tmp_path)
+
+    calls = []
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: calls.append((path, on)))
+
+    rc = cli.cmd_apply(_apply_args("loader-profile"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    spg = game_dir / "start_protected_game.exe"
+    backup = game_dir / "start_protected_game.exe.erm-backup"
+    assert backup.exists()                                          # real EAC launcher preserved
+    assert spg.read_bytes() == (game_dir / "eldenring.exe").read_bytes()  # swapped
+    assert calls == [(spg, True)]                                   # set_immutable called (mocked)
+    assert "harden" in out.lower()
+    assert "hardened" in out.lower()      # doctor now reports the hardened state as safe
+
+
+def test_apply_no_loader_profile_does_not_harden(tmp_path, monkeypatch, capsys, tmp_game):
+    # seamless-only-like: no loader mod at all -> ERSC can't auto-load a proxy
+    # DLL, so there's nothing for harden to protect against. Must not trigger.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _write_profile(tmp_path / "profiles", "no-loader",
+        '[[mods]]\n'
+        'id = "mod-a"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "coop-framework"\n'
+        'install = "game"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"mod-a": ("1.0", "mod-a.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "mod-a.zip", "a.dll")
+
+    calls = []
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: calls.append((path, on)))
+
+    rc = cli.cmd_apply(_apply_args("no-loader"))
+    capsys.readouterr()
+
+    assert rc == 0
+    assert calls == []
+    assert not (game_dir / "start_protected_game.exe.erm-backup").exists()
+    assert not harden.is_hardened(game_dir)
+
+
+def test_apply_no_harden_flag_skips(tmp_path, monkeypatch, capsys, tmp_game):
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _seed_loader_profile(tmp_path)
+
+    calls = []
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: calls.append((path, on)))
+
+    args = type("A", (), {"profile": "loader-profile", "json": False, "no_harden": True})()
+    rc = cli.cmd_apply(args)
+    capsys.readouterr()
+
+    assert rc == 0
+    assert calls == []
+    assert not harden.is_hardened(game_dir)
+
+
+def test_apply_already_hardened_does_not_reharden(tmp_path, monkeypatch, capsys, tmp_game):
+    # If the real EAC backup already exists (from an earlier `erm harden` or a
+    # prior auto-harden), apply must not re-run harden_swap -- that's the exact
+    # bug that would let a second backup overwrite the real EAC launcher with
+    # the eldenring copy, destroying the only copy of the real launcher.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _seed_loader_profile(tmp_path)
+
+    harden.harden_swap(game_dir)   # pre-harden
+    backup = game_dir / "start_protected_game.exe.erm-backup"
+    backup_bytes = backup.read_bytes()
+
+    calls = []
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: calls.append((path, on)))
+
+    rc = cli.cmd_apply(_apply_args("loader-profile"))
+    capsys.readouterr()
+
+    assert rc == 0
+    assert backup.read_bytes() == backup_bytes    # the real EAC backup untouched
+    assert calls == []                            # is_hardened guard: apply doesn't touch it
+
+
+def test_apply_auto_harden_sudo_failure_warns_not_crash(tmp_path, monkeypatch, capsys, tmp_game):
+    # set_immutable raising (e.g. sudo declined) must warn and keep going --
+    # the mods are already installed; harden is a safety add-on, not a gate.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _seed_loader_profile(tmp_path)
+
+    def _boom(path, on):
+        raise ErmError("chattr +i failed (rc 1) — sudo declined")
+    monkeypatch.setattr(harden, "set_immutable", _boom)
+
+    rc = cli.cmd_apply(_apply_args("loader-profile"))   # must NOT raise
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "auto-harden incomplete" in out.lower()
+    assert "safety check" in out.lower()   # final doctor block still ran
+    assert "traceback" not in out.lower()
