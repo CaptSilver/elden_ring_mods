@@ -1,6 +1,6 @@
 import hashlib
 import pytest
-from ermlib.github import pick_asset, download_verified, sha256_file
+from ermlib.github import pick_asset, download_verified, sha256_file, release_by_tag
 from ermlib.errors import IntegrityError
 
 
@@ -31,3 +31,23 @@ def test_download_verified_ok(tmp_path, monkeypatch):
     download_verified("http://x/mod.zip", dest, sha256=good)
     assert dest.read_bytes() == payload
     assert sha256_file(dest) == good
+
+
+def test_release_by_tag_hits_the_tags_endpoint(monkeypatch):
+    import ermlib.github as gh
+    captured = {}
+
+    def fake_fetch_json(url):
+        captured["url"] = url
+        return {
+            "tag_name": "v1.9.8",
+            "assets": [{"name": "Seamless.zip", "browser_download_url": "u2",
+                        "digest": "sha256:abc"}],
+        }
+
+    monkeypatch.setattr(gh, "_fetch_json", fake_fetch_json)
+    rel = release_by_tag(497113840, "v1.9.8")
+    assert captured["url"] == \
+        "https://api.github.com/repositories/497113840/releases/tags/v1.9.8"
+    assert rel == {"tag": "v1.9.8",
+                    "assets": [{"name": "Seamless.zip", "url": "u2", "digest": "sha256:abc"}]}

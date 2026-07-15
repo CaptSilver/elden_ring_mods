@@ -66,7 +66,7 @@ def cmd_doctor(args):
     return r.exit_code
 
 
-def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles")):
+def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"), update=False):
     try:
         prof = manifest.load_profile(profile_name, base=profiles_base)
     except OSError as exc:
@@ -76,17 +76,29 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
     vendor.mkdir(exist_ok=True)
     for mod in prof["mods"]:
         if mod["source"] == "github":
+            locked = lock.get(mod["id"])
+            pinned = not update and locked and locked.get("version")
             try:
-                rel = github.latest_release(mod["repo_id"])
-                asset = github.pick_asset(rel, suffix=".zip")
-                digest = (asset.get("digest") or "").removeprefix("sha256:")
+                if pinned:
+                    # Reproducibility promise: everyone who clones the repo and
+                    # runs `erm fetch` gets THIS exact release, not whatever's
+                    # newest. Verify against the sha we already trust — if
+                    # upstream mutated the tagged asset, fail closed.
+                    rel = github.release_by_tag(mod["repo_id"], locked["version"])
+                    asset = github.pick_asset(rel, suffix=".zip")
+                    digest = locked.get("sha256", "")
+                else:
+                    rel = github.latest_release(mod["repo_id"])
+                    asset = github.pick_asset(rel, suffix=".zip")
+                    digest = (asset.get("digest") or "").removeprefix("sha256:")
                 dest = vendor / f'{mod["id"]}-{rel["tag"]}.zip'
                 github.download_verified(asset["url"], dest, digest)
             except (OSError, urllib.error.URLError, ValueError, KeyError) as exc:
                 raise NetworkError(f"failed to fetch {mod['id']} from GitHub: {exc}") from exc
             manifest.set_mod(lock, mod["id"], version=rel["tag"],
                              asset=dest.name, sha256=digest, source="github")
-            print(f"✓ {mod['id']} {rel['tag']} verified → {dest.name}")
+            note = " (pinned)" if pinned else ""
+            print(f"✓ {mod['id']} {rel['tag']}{note} verified → {dest.name}")
         else:
             nid = mod.get("nexus_id")
             print(f"! {mod['id']} is a manual Nexus download: "
@@ -97,7 +109,7 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
 
 
 def cmd_fetch(args):
-    fetch_profile(args.profile, Path("vendor"), Path("mods.lock.toml"))
+    fetch_profile(args.profile, Path("vendor"), Path("mods.lock.toml"), update=args.update)
     return 0
 
 
@@ -194,6 +206,8 @@ def register(subparsers):
     subparsers.add_parser("launch-option", help="print the Steam launch option").set_defaults(func=cmd_launch_option)
     f = subparsers.add_parser("fetch", help="download + verify a profile's mods")
     f.add_argument("profile", nargs="?", default="seamless-only")
+    f.add_argument("--update", action="store_true",
+                    help="ignore the lockfile pin and fetch the latest release")
     f.set_defaults(func=cmd_fetch)
     ap = subparsers.add_parser("apply", help="install the fetched mods into Game/")
     ap.add_argument("profile", nargs="?", default="seamless-only")

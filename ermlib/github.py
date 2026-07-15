@@ -17,14 +17,23 @@ def _fetch_json(url):
     return json.loads(_fetch_bytes(url).decode())
 
 
-def latest_release(repo_id):
-    data = _fetch_json(f"https://api.github.com/repositories/{repo_id}/releases/latest")
+def _release_from_json(data):
     assets = [{
         "name": a["name"],
         "url": a["browser_download_url"],
         "digest": a.get("digest"),
     } for a in data.get("assets", [])]
     return {"tag": data.get("tag_name"), "assets": assets}
+
+
+def latest_release(repo_id):
+    data = _fetch_json(f"https://api.github.com/repositories/{repo_id}/releases/latest")
+    return _release_from_json(data)
+
+
+def release_by_tag(repo_id, tag):
+    data = _fetch_json(f"https://api.github.com/repositories/{repo_id}/releases/tags/{tag}")
+    return _release_from_json(data)
 
 
 def pick_asset(release, suffix=".zip"):

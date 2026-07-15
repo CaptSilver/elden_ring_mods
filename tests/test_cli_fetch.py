@@ -49,3 +49,83 @@ def test_fetch_profile_network_failure_raises_clean_error(tmp_path, monkeypatch)
     with pytest.raises(ErmError):
         cli.fetch_profile("seamless-only", vendor, lock,
                            profiles_base=Path("profiles"))
+
+
+def _seed_lock(lock_path, sha="a" * 64):
+    lock_path.write_text(
+        '[seamless-coop]\n'
+        'version = "v1.9.8"\n'
+        'asset = "seamless-coop-v1.9.8.zip"\n'
+        f'sha256 = "{sha}"\n'
+        'source = "github"\n'
+    )
+
+
+def test_fetch_profile_honors_locked_version_by_default(tmp_path, monkeypatch):
+    # A friend who clones the repo and runs `erm fetch` must get the PINNED
+    # version, not whatever's newest — that's the whole point of the lockfile.
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path)
+    calls = {"release_by_tag": [], "latest_release": []}
+
+    def fake_release_by_tag(repo_id, tag):
+        calls["release_by_tag"].append((repo_id, tag))
+        return {"tag": tag, "assets": [{"name": "Seamless.zip",
+                                         "url": "http://x/Seamless.zip", "digest": None}]}
+
+    def fake_latest_release(repo_id):
+        calls["latest_release"].append(repo_id)
+        raise AssertionError("latest_release must not run when a pin exists and update=False")
+
+    monkeypatch.setattr(github, "release_by_tag", fake_release_by_tag)
+    monkeypatch.setattr(github, "latest_release", fake_latest_release)
+    monkeypatch.setattr(github, "download_verified",
+                        lambda url, dest, sha256: Path(dest).write_bytes(b"zip-bytes"))
+
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    updated = cli.fetch_profile("seamless-only", vendor, lock_path,
+                                profiles_base=Path("profiles"), update=False)
+
+    assert calls["release_by_tag"] == [(497113840, "v1.9.8")]
+    assert calls["latest_release"] == []
+    assert updated["seamless-coop"]["version"] == "v1.9.8"
+
+
+def test_fetch_profile_update_true_repins_to_latest(tmp_path, monkeypatch):
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path)
+    calls = {"release_by_tag": [], "latest_release": []}
+
+    def fake_latest_release(repo_id):
+        calls["latest_release"].append(repo_id)
+        return {"tag": "v2.0.0", "assets": [{"name": "Seamless.zip",
+                                              "url": "http://x/Seamless.zip",
+                                              "digest": "sha256:" + "b" * 64}]}
+
+    def fake_release_by_tag(repo_id, tag):
+        calls["release_by_tag"].append((repo_id, tag))
+        raise AssertionError("release_by_tag must not run when update=True")
+
+    monkeypatch.setattr(github, "latest_release", fake_latest_release)
+    monkeypatch.setattr(github, "release_by_tag", fake_release_by_tag)
+    monkeypatch.setattr(github, "download_verified",
+                        lambda url, dest, sha256: Path(dest).write_bytes(b"zip-bytes"))
+
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    updated = cli.fetch_profile("seamless-only", vendor, lock_path,
+                                profiles_base=Path("profiles"), update=True)
+
+    assert calls["latest_release"] == [497113840]
+    assert calls["release_by_tag"] == []
+    assert updated["seamless-coop"]["version"] == "v2.0.0"
+
+
+def test_fetch_subparser_has_update_flag():
+    import argparse
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    cli.register(sub)
+    args = parser.parse_args(["fetch", "seamless-only", "--update"])
+    assert args.update is True
+    args_default = parser.parse_args(["fetch"])
+    assert args_default.update is False
