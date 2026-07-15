@@ -17,6 +17,9 @@ def test_quarantine_refuses_while_steam_running(tmp_path):
     with pytest.raises(SafetyError):
         saves.quarantine(save, tmp_path / "backups", cloud_saves=[], steam_up=True,
                          stamp="20260714-1200")
+    # refusal must fire before ANY filesystem mutation: save untouched, no backups dir
+    assert save.exists()
+    assert not (tmp_path / "backups").exists()
 
 
 def test_quarantine_moves_save_and_reports_cloud(tmp_path):
@@ -26,4 +29,6 @@ def test_quarantine_moves_save_and_reports_cloud(tmp_path):
                                          "relpath": "EldenRing/765../ER0000.sl2"}],
                            steam_up=False, stamp="20260714-1200")
     assert not save.exists()                                   # moved out of prefix
+    # backup taken BEFORE the move — move-without-backup would be data loss
+    assert list((tmp_path / "backups" / "quarantine-backup").glob("ER0000.sl2*"))
     assert any("cloud" in m.lower() for _, m in rep.items)     # cloud purge instruction

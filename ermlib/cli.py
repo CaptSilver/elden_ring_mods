@@ -156,8 +156,12 @@ def cmd_restore(args):
     root = paths.find_steam_root()
     save_dir = paths.find_save_dir(root)
     dest = save_dir / ("ER0000.co2" if src.name.endswith(".co2") or ".co2" in src.name else "ER0000.sl2")
-    saves.backup_save(dest, Path("backups"), label="pre-restore", stamp=_stamp()) if dest.exists() else None
-    shutil.copy2(src, dest)
+    if dest.exists():
+        saves.backup_save(dest, Path("backups"), label="pre-restore", stamp=_stamp())
+    try:
+        shutil.copy2(src, dest)
+    except OSError as exc:
+        raise PathError(f"cannot restore from {src} ({exc})") from exc
     print(f"restored {src} → {dest}")
     return 0
 
