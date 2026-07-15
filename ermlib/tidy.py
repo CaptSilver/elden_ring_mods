@@ -29,6 +29,21 @@ def _contained(game_res, p):
         return False
 
 
+def _dir_is_pure_runtime(d, recorded_abs, game_res):
+    """True iff EVERY file under d is a recognized runtime type, none is
+    recorded as an active mod file, and none escapes containment. One
+    non-runtime/recorded/escaping file spares the whole dir — the same audit
+    the mods/<Name> and crashdumps/crashpad cases both rely on."""
+    files = [f for f in d.rglob("*") if f.is_file()]
+    if files and not all(_is_runtime_file(f) for f in files):
+        return False
+    if any(f.resolve() in recorded_abs for f in files):
+        return False
+    if not all(_contained(game_res, f) for f in files):
+        return False
+    return True
+
+
 def find_cruft(game_dir, recorded):
     """Return a list of Paths safe to remove. `recorded` = set of installed.json-relative file paths
     (active mod files — never touched). Every returned path passed ALL safety checks below."""
@@ -44,6 +59,8 @@ def find_cruft(game_dir, recorded):
 
     def consider(p):
         # global gates every candidate must pass
+        if not p.exists():                       # don't list/act on a path that isn't there
+            return
         if p.name in CRITICAL:
             return
         if p.is_symlink():                       # never follow/act on a symlink
@@ -64,21 +81,21 @@ def find_cruft(game_dir, recorded):
                 # and EVERY file inside is a runtime file, none recorded, all contained.
                 if (mods / f"{sub.name}.dll").exists():
                     continue                     # mod still installed — leave its dir
-                files = [f for f in sub.rglob("*") if f.is_file()]
-                if files and not all(_is_runtime_file(f) for f in files):
-                    continue                     # has a non-runtime file → skip whole dir
-                if any(f.resolve() in recorded_abs for f in files):
-                    continue
-                if not all(_contained(game_res, f) for f in files):
-                    continue
+                if not _dir_is_pure_runtime(sub, recorded_abs, game_res):
+                    continue                     # a non-runtime/recorded/escaping file → skip whole dir
                 consider(sub)
             elif sub.is_file() and (sub.name.endswith("_log.txt") or sub.suffix.lower() == ".log"):
                 consider(sub)
 
     sc = game / "SeamlessCoop"
     if sc.is_dir() and not (sc / "ersc.dll").exists():   # ERSC uninstalled → its crash artifacts are orphaned
+        # Same per-file audit as mods/<Name>: crashdumps' real contents
+        # (metadata, reports/*.dmp, settings.dat) are all runtime types, but a
+        # recorded/non-runtime/escaping file anywhere inside spares the whole dir.
         for d in ("crashdumps", "crashpad"):
-            consider(sc / d)
+            p = sc / d
+            if p.is_dir() and not p.is_symlink() and _dir_is_pure_runtime(p, recorded_abs, game_res):
+                consider(p)
 
     for name in LOOSE_LOGS:
         consider(game / name)

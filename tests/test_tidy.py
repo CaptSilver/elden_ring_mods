@@ -111,6 +111,68 @@ def test_crashdumps_removed_only_when_ersc_dll_absent(tmp_game):
     assert crashdumps not in cruft
 
 
+def test_crashdumps_with_recorded_file_is_spared(tmp_game):
+    # A crash-dump dir that happens to hold a file recorded in installed.json
+    # must spare the WHOLE dir — same per-file audit the mods/<Name> case runs,
+    # not just a check on the dir path itself.
+    game = tmp_game
+    sc = game / "SeamlessCoop"
+    crashdumps = sc / "crashdumps"
+    crashdumps.mkdir(parents=True)
+    (crashdumps / "settings.dat").write_bytes(b"\x00")   # normal runtime file
+    (crashdumps / "important.ini").write_text("keep me")  # recorded active file
+
+    cruft = tidy.find_cruft(game, recorded={"SeamlessCoop/crashdumps/important.ini"})
+
+    assert crashdumps not in cruft
+
+
+def test_crashdumps_with_non_runtime_file_is_spared(tmp_game):
+    # A non-runtime file anywhere inside crashdumps spares the whole dir,
+    # exactly like the mods/<Name> rule.
+    game = tmp_game
+    sc = game / "SeamlessCoop"
+    crashdumps = sc / "crashdumps"
+    crashdumps.mkdir(parents=True)
+    (crashdumps / "dump1.dmp").write_bytes(b"\x00")
+    (crashdumps / "payload.bin").write_bytes(b"\x00")   # not a runtime type
+
+    cruft = tidy.find_cruft(game, recorded=set())
+
+    assert crashdumps not in cruft
+
+
+def test_normal_crashdumps_still_removed(tmp_game):
+    # Regression guard: crashdumps' real contents (metadata, reports/*.dmp,
+    # settings.dat) are all runtime types, so a normal dir still gets removed.
+    game = tmp_game
+    sc = game / "SeamlessCoop"
+    crashdumps = sc / "crashdumps"
+    (crashdumps / "reports").mkdir(parents=True)
+    (crashdumps / "metadata").write_bytes(b"\x00")
+    (crashdumps / "settings.dat").write_bytes(b"\x00")
+    (crashdumps / "reports" / "abc123.dmp").write_bytes(b"\x00")
+
+    cruft = tidy.find_cruft(game, recorded=set())
+
+    assert crashdumps in cruft
+
+
+def test_nonexistent_crashpad_not_listed(tmp_game):
+    # crashpad doesn't exist on disk (only crashdumps does) — it must not be
+    # listed as a candidate.
+    game = tmp_game
+    sc = game / "SeamlessCoop"
+    crashdumps = sc / "crashdumps"
+    crashdumps.mkdir(parents=True)
+    (crashdumps / "dump1.dmp").write_bytes(b"\x00")
+
+    cruft = tidy.find_cruft(game, recorded=set())
+
+    assert (sc / "crashpad") not in cruft
+    assert crashdumps in cruft   # the one that DOES exist is still a candidate
+
+
 def test_loose_logs_removed(tmp_game):
     game = tmp_game
     (game / "mod_loader_log.txt").write_text("log")
