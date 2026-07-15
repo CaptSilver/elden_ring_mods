@@ -1,6 +1,8 @@
+import shutil
+import time
 from pathlib import Path
 
-from . import paths, steam, manifest, github, install
+from . import paths, steam, manifest, github, install, saves
 from .errors import PathError
 from .report import Report
 from .savefile import SaveFile
@@ -123,6 +125,43 @@ def cmd_verify(args):
     return r.exit_code
 
 
+def _stamp():
+    return time.strftime("%Y%m%d-%H%M%S")
+
+
+def cmd_backup(args):
+    root = paths.find_steam_root()
+    save_dir = paths.find_save_dir(root)
+    co2 = list(save_dir.glob("*.co2")) or list(save_dir.glob("*.sl2"))
+    if not co2:
+        print("no save found to back up")
+        return 1
+    out = saves.backup_save(co2[0], Path("backups"), label=args.label or "", stamp=_stamp())
+    print(f"backed up → {out}")
+    return 0
+
+
+def cmd_quarantine(args):
+    root = paths.find_steam_root()
+    save_dir = paths.find_save_dir(root)
+    sl2 = save_dir / "ER0000.sl2"
+    rep = saves.quarantine(sl2, Path("backups"), steam.cloud_saves(root),
+                           steam_up=steam.steam_running(), stamp=_stamp())
+    print(rep.render(as_json=args.json))
+    return 0
+
+
+def cmd_restore(args):
+    src = Path(args.backup)
+    root = paths.find_steam_root()
+    save_dir = paths.find_save_dir(root)
+    dest = save_dir / ("ER0000.co2" if src.name.endswith(".co2") or ".co2" in src.name else "ER0000.sl2")
+    saves.backup_save(dest, Path("backups"), label="pre-restore", stamp=_stamp()) if dest.exists() else None
+    shutil.copy2(src, dest)
+    print(f"restored {src} → {dest}")
+    return 0
+
+
 def register(subparsers):
     subparsers.add_parser("doctor", help="safety report").set_defaults(func=cmd_doctor)
     a = subparsers.add_parser("audit", help="forensic audit of a save")
@@ -137,3 +176,10 @@ def register(subparsers):
     ap.add_argument("profile", nargs="?", default="seamless-only")
     ap.set_defaults(func=cmd_apply)
     subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
+    b = subparsers.add_parser("backup", help="snapshot the co-op save")
+    b.add_argument("--label", default="")
+    b.set_defaults(func=cmd_backup)
+    rs = subparsers.add_parser("restore", help="restore a save snapshot")
+    rs.add_argument("backup")
+    rs.set_defaults(func=cmd_restore)
+    subparsers.add_parser("quarantine", help="move the vanilla save out of harm's way").set_defaults(func=cmd_quarantine)
