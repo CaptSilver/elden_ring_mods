@@ -4,7 +4,7 @@ import urllib.error
 import zipfile
 from pathlib import Path
 
-from . import paths, steam, manifest, github, install, saves, nexus, harden
+from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy
 from . import state as state_mod
 from .errors import ErmError, NetworkError, PathError
 from .report import Report
@@ -577,6 +577,44 @@ def cmd_restore(args):
     return 0
 
 
+def cmd_tidy(args):
+    """Remove runtime cruft `erm uninstall`/`switch` leave behind that
+    installed.json never tracked — per-mod log dirs, ERSC crash dumps, loader
+    logs. Dry-run by default (lists candidates); `--apply` actually deletes.
+    Every candidate already passed find_cruft's containment/recorded/critical
+    checks, so this loop just acts on what it's handed."""
+    game = paths.find_game_dir(paths.find_steam_root())
+    state = state_mod.load_state()
+    recorded = {rel for meta in state.values() for rel in meta.get("files", [])}
+    cruft = tidy.find_cruft(game, recorded)
+    r = Report()
+    if not cruft:
+        r.ok("nothing to tidy — no orphaned mod logs/dirs found")
+        print(r.render(as_json=args.json))
+        return 0
+    verb = "removing" if args.apply else "would remove"
+    for c in cruft:
+        r.info(f"{verb}: {c.relative_to(game)}")
+    if not args.apply:
+        print(r.render(as_json=args.json))
+        print(f"\n{len(cruft)} item(s) would be removed (all inside Game/, none recorded in "
+              f"installed.json). Re-run `erm tidy --apply` to delete them.")
+        return 0
+    removed = 0
+    for c in cruft:
+        try:
+            if c.is_dir():
+                shutil.rmtree(c)
+            else:
+                c.unlink()
+            removed += 1
+        except OSError as exc:
+            r.warn(f"could not remove {c.relative_to(game)}: {exc}")
+    r.ok(f"tidied {removed} item(s)")
+    print(r.render(as_json=args.json))
+    return 0
+
+
 def cmd_harden(args):
     game = paths.find_game_dir(paths.find_steam_root())
     r = Report()
@@ -656,3 +694,10 @@ def register(subparsers):
         "unharden",
         help="undo `erm harden`: restore the real EAC launcher (sudo)",
     ).set_defaults(func=cmd_unharden)
+    td = subparsers.add_parser(
+        "tidy",
+        help="remove orphaned mod logs/runtime dirs left behind by uninstall (dry-run by default)",
+    )
+    td.add_argument("--apply", action="store_true",
+                     help="actually delete the candidates (default: list only)")
+    td.set_defaults(func=cmd_tidy)
