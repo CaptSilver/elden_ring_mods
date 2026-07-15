@@ -113,14 +113,12 @@ def cmd_fetch(args):
     return 0
 
 
-def cmd_apply(args):
-    root = paths.find_steam_root()
-    game = paths.find_game_dir(root)
-    lock = manifest.load_lock("mods.lock.toml")
+def _install_ersc(game, lock):
+    """Install the locked seamless-coop archive into game/ and re-inject the password.
+    Returns (version, had_password). Raises PathError if it can't (not fetched)."""
     ersc = lock.get("seamless-coop")
     if not ersc:
-        print("no seamless-coop in lockfile — run `erm fetch` first")
-        return 1
+        raise PathError("no seamless-coop in lockfile — run `erm fetch` first")
     asset = ersc.get("asset")
     if not asset:
         raise PathError("seamless-coop lock entry has no asset recorded — run `erm fetch` first")
@@ -128,10 +126,51 @@ def cmd_apply(args):
     if not vendor_path.exists():
         raise PathError(f"run `erm fetch` first — vendor archive missing: {vendor_path}")
     password = install.read_secret(Path("secrets.env")) if Path("secrets.env").exists() else ""
-    if not password:
-        print("warning: no COOP_PASSWORD in secrets.env — password will be blank")
     install.apply_ersc(vendor_path, game, password)
-    print(f"applied seamless-coop {ersc.get('version', '?')} to {game}")
+    return ersc.get("version", "?"), bool(password)
+
+
+def cmd_apply(args):
+    game = paths.find_game_dir(paths.find_steam_root())
+    lock = manifest.load_lock("mods.lock.toml")
+    version, had_password = _install_ersc(game, lock)
+    if not had_password:
+        print("warning: no COOP_PASSWORD in secrets.env — password will be blank")
+    print(f"applied seamless-coop {version} to {game}")
+    return 0
+
+
+def cmd_update(args):
+    lock_path = Path("mods.lock.toml")
+    before = {k: v.get("version") for k, v in manifest.load_lock(lock_path).items()}
+    fetch_profile(args.profile, Path("vendor"), lock_path, update=True)
+    after = manifest.load_lock(lock_path)
+
+    r = Report()
+    changed = []
+    for mod_id, meta in after.items():
+        old, new = before.get(mod_id), meta.get("version")
+        if old != new:
+            r.ok(f"{mod_id} {old or '(new)'} -> {new}")
+            changed.append(mod_id)
+        else:
+            r.info(f"{mod_id} already latest ({new})")
+
+    installed_version = None
+    if "seamless-coop" in changed:
+        game = paths.find_game_dir(paths.find_steam_root())
+        installed_version, had_password = _install_ersc(game, after)
+        if not had_password:
+            r.warn("no COOP_PASSWORD in secrets.env — password left blank")
+
+    print(r.render(as_json=args.json))
+    if changed:
+        if installed_version:
+            print(f"\nInstalled seamless-coop {installed_version} into the game.")
+        print("LOCKSTEP: every player must update to the same version and use the shared "
+              "mods.lock.toml, or co-op won't connect. Commit and share the updated lockfile.")
+    else:
+        print("\nAlready up to date — nothing to install.")
     return 0
 
 
@@ -212,6 +251,9 @@ def register(subparsers):
     ap = subparsers.add_parser("apply", help="install the fetched mods into Game/")
     ap.add_argument("profile", nargs="?", default="seamless-only")
     ap.set_defaults(func=cmd_apply)
+    up = subparsers.add_parser("update", help="fetch the latest Seamless Co-op, re-pin, and install it")
+    up.add_argument("profile", nargs="?", default="seamless-only")
+    up.set_defaults(func=cmd_update)
     subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
     b = subparsers.add_parser("backup", help="snapshot the co-op save")
     b.add_argument("--label", default="")
