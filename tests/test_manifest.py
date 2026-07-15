@@ -45,6 +45,23 @@ def test_seamless_full_profile_loads_all_mods():
     assert len(ids) == len(set(ids))   # no duplicate mod ids
 
 
+def test_single_full_profile_is_non_coop_with_the_conflict_mods():
+    prof = load_profile("single-full", base=Path("profiles"))
+    ids = [m["id"] for m in prof["mods"]]
+    assert len(ids) == 18
+    # single-player: no Seamless Co-op
+    assert "seamless-coop" not in ids
+    # the mods that desync co-op but work solo are included
+    assert "pause-the-game" in ids
+    assert "unlock-the-fps" in ids
+    # the loaders/randomizer still route to their special install kinds
+    me3 = next(m for m in prof["mods"] if m["id"] == "me3")
+    assert me3["install"] == "me3"
+    rnd = next(m for m in prof["mods"] if m["id"] == "item-enemy-randomizer")
+    assert rnd["install"] == "randomizer"
+    assert len(ids) == len(set(ids))   # no duplicate mod ids
+
+
 def test_seamless_randomizer_me3_uses_numeric_id():
     # me3's repo_id used to be a slug ("garyttierney/me3"), which the
     # numeric-id-only GitHub fetch (api.github.com/repositories/<id>/...)

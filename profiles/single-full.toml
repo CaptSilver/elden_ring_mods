@@ -1,0 +1,127 @@
+name = "single-full"
+description = "The full SINGLE-PLAYER mod stack (no Seamless Co-op). Includes pause-the-game and unlock-the-fps, which desync co-op but are fine solo. There's no ersc_launcher here — launch via me3, or `erm harden` + a launch option that runs eldenring.exe directly, so EAC stays off. This is offline single-player: never take a modded save into vanilla online."
+
+# --- loaders ---
+[[mods]]
+id = "elden-mod-loader"           # dinput8 loader for the DLL mods
+source = "nexus"
+nexus_id = 117
+kind = "loader"
+install = "game"
+
+[[mods]]
+id = "me3"                        # loader/launcher for the randomizer regulation
+source = "github"
+repo_id = 540883721
+asset_match = "me3-windows-amd64"
+kind = "loader"
+install = "me3"
+
+# --- randomizer ---
+[[mods]]
+id = "item-enemy-randomizer"
+source = "nexus"
+nexus_id = 428
+kind = "randomizer"
+install = "randomizer"
+
+# --- item spawners: can put illegitimate items in your save. Solo they only affect
+#     your own save, but never take that save to vanilla online. ---
+[[mods]]
+id = "glorious-merchant"
+source = "nexus"
+nexus_id = 5192
+kind = "item-cheat"
+install = "mods"
+
+[[mods]]
+id = "erd-tools"                  # GitHub only (author forbids Nexus reuploads)
+source = "github"
+repo_id = 514620889
+asset_match = "For.Dummies"
+kind = "item-cheat"
+install = "mods"
+
+# --- cosmetic ---
+[[mods]]
+id = "erdyes"
+source = "nexus"
+nexus_id = 6927
+kind = "cosmetic"
+install = "mods"
+[[mods]]
+id = "ertransmogrify"
+source = "nexus"
+nexus_id = 3596
+kind = "cosmetic"
+install = "mods"
+[[mods]]
+id = "remove-chromatic-aberration"
+source = "nexus"
+nexus_id = 179
+kind = "cosmetic"
+install = "game"
+[[mods]]
+id = "remove-vignette"
+source = "nexus"
+nexus_id = 177
+kind = "cosmetic"
+install = "game"
+
+# --- QoL ---
+[[mods]]
+id = "skip-the-intro"
+source = "nexus"
+nexus_id = 421
+kind = "qol"
+install = "game"
+[[mods]]
+id = "adjust-the-fov"
+source = "nexus"
+nexus_id = 325
+kind = "qol"
+install = "game"
+[[mods]]
+id = "camera-fix"
+source = "nexus"
+nexus_id = 118
+kind = "qol"
+install = "game"
+[[mods]]
+id = "increase-animation-distance"
+source = "nexus"
+nexus_id = 349
+kind = "qol"
+install = "game"
+[[mods]]
+id = "disable-rune-loss"
+source = "nexus"
+nexus_id = 376
+kind = "qol"
+install = "game"
+[[mods]]
+id = "no-weight"
+source = "nexus"
+nexus_id = 481
+kind = "qol"
+install = "mods"
+[[mods]]
+id = "faster-respawn"
+source = "nexus"
+nexus_id = 501
+kind = "qol"
+install = "mods"
+
+# --- these two desync Seamless Co-op, but work fine in single-player ---
+[[mods]]
+id = "pause-the-game"
+source = "nexus"
+nexus_id = 43
+kind = "qol-gameplay"
+install = "game"
+[[mods]]
+id = "unlock-the-fps"             # cap at monitor refresh; >60fps has physics quirks even solo
+source = "nexus"
+nexus_id = 216
+kind = "qol"
+install = "game"
