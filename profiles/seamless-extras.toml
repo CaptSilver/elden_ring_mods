@@ -7,21 +7,25 @@ id = "seamless-coop"
 source = "nexus"
 nexus_id = 510
 kind = "coop-framework"
+install = "game"
 
 [[mods]]
 id = "elden-mod-loader"
 source = "nexus"
 nexus_id = 117
 kind = "loader"
+install = "game"
 
 [[mods]]
 id = "skip-the-intro"
 source = "nexus"
 nexus_id = 421
 kind = "qol-clientside"
+install = "game"
 
 [[mods]]
 id = "remove-vignette"
 source = "nexus"
 nexus_id = 177
 kind = "cosmetic-clientside"
+install = "game"

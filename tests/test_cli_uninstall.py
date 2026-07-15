@@ -26,8 +26,26 @@ def _seed_lock(tmp_path, version="v1.9.8", asset="seamless-coop-v1.9.8.zip"):
     return asset
 
 
+def _seed_profile(tmp_path, name="seamless-only"):
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir(exist_ok=True)
+    (profiles_dir / f"{name}.toml").write_text(
+        f'name = "{name}"\n'
+        'description = "test profile"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "seamless-coop"\n'
+        'source = "github"\n'
+        'repo_id = 497113840\n'
+        'kind = "coop-framework"\n'
+        'install = "game"\n'
+    )
+
+
 def _args(mod="seamless-coop", json=False):
-    return type("A", (), {"mod": mod, "json": json})()
+    # "profile" defaults to seamless-only so this doubles as cmd_apply's args
+    # in the tests below that install first, then uninstall what they installed.
+    return type("A", (), {"mod": mod, "json": json, "profile": "seamless-only"})()
 
 
 def test_uninstall_via_manifest_removes_recorded_files_prunes_dir_and_spares_stock(
@@ -35,6 +53,7 @@ def test_uninstall_via_manifest_removes_recorded_files_prunes_dir_and_spares_sto
     # tmp_game already seeds eldenring.exe + start_protected_game.exe (stock files).
     game_dir = tmp_game
     asset = _seed_lock(tmp_path)
+    _seed_profile(tmp_path)
     vendor = tmp_path / "vendor"
     vendor.mkdir()
     _make_ersc_zip(vendor / asset)
@@ -199,6 +218,7 @@ def test_uninstall_never_removes_stock_files(tmp_path, monkeypatch, capsys, tmp_
     # name one more time in isolation.
     game_dir = tmp_game
     asset = _seed_lock(tmp_path)
+    _seed_profile(tmp_path)
     vendor = tmp_path / "vendor"
     vendor.mkdir()
     _make_ersc_zip(vendor / asset)

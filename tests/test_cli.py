@@ -3,7 +3,7 @@ import zipfile
 import pytest
 
 from ermlib import cli, paths
-from ermlib.errors import ErmError, PathError
+from ermlib.errors import PathError
 
 
 def _make_ersc_zip(path):
@@ -14,7 +14,24 @@ def _make_ersc_zip(path):
                    "[PASSWORD]\ncooppassword = \n[SAVE]\nsave_file_extension = co2\n")
 
 
+def _seed_profile(tmp_path, name="seamless-only"):
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir(exist_ok=True)
+    (profiles_dir / f"{name}.toml").write_text(
+        f'name = "{name}"\n'
+        'description = "test profile"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "seamless-coop"\n'
+        'source = "github"\n'
+        'repo_id = 497113840\n'
+        'kind = "coop-framework"\n'
+        'install = "game"\n'
+    )
+
+
 def _seed_apply_fixture(tmp_path, game_dir):
+    _seed_profile(tmp_path)
     (tmp_path / "mods.lock.toml").write_text(
         '[seamless-coop]\n'
         'version = "v1.9.8"\n'
@@ -75,10 +92,11 @@ def test_restore_resolves_snapshot_name_under_backups(tmp_path, monkeypatch):
     assert (save_dir / "ER0000.co2").read_bytes() == b"snapshot-data"
 
 
-def test_apply_missing_vendor_archive_raises_clean_error(tmp_path, monkeypatch):
+def test_apply_missing_vendor_archive_warns_and_continues(tmp_path, monkeypatch, capsys):
     # Fresh clone that runs `apply` before `fetch`: the lockfile names an asset
-    # that was never downloaded. Must be a clean ErmError, not a raw
-    # FileNotFoundError from zipfile.ZipFile deep inside install.apply_ersc.
+    # that was never downloaded. This is now a per-mod warning (like "not
+    # fetched"), not a raised error — apply keeps going, records nothing for
+    # that mod, and still runs doctor rather than crashing the whole command.
     from ermlib import paths
 
     game_dir = tmp_path / "Game"
@@ -87,6 +105,7 @@ def test_apply_missing_vendor_archive_raises_clean_error(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
 
+    _seed_profile(tmp_path)
     (tmp_path / "vendor").mkdir()
     (tmp_path / "mods.lock.toml").write_text(
         '[seamless-coop]\n'
@@ -96,9 +115,14 @@ def test_apply_missing_vendor_archive_raises_clean_error(tmp_path, monkeypatch):
         'source = "github"\n'
     )
 
-    args = type("A", (), {})()
-    with pytest.raises(ErmError):
-        cli.cmd_apply(args)
+    args = type("A", (), {"profile": "seamless-only", "json": False})()
+    cli.cmd_apply(args)
+    out = capsys.readouterr().out
+    assert "archive missing from vendor" in out.lower()
+
+    import json
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "seamless-coop" not in state
 
 
 def test_apply_prints_doctor_section_and_returns_ok_when_clean(tmp_path, monkeypatch, capsys):

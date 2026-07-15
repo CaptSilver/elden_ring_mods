@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from ermlib.errors import ErmError
-from ermlib.install import apply_ersc, inject_password, read_secret
+from ermlib.install import apply_ersc, extract_archive, inject_password, read_secret
 
 
 def _make_ersc_zip(path):
@@ -48,3 +48,44 @@ def test_read_secret(tmp_path):
     env = tmp_path / "secrets.env"
     env.write_text("COOP_PASSWORD=swordfish\n")
     assert read_secret(env) == "swordfish"
+
+
+def _make_bare_dll_zip(path, member="y.dll"):
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(member, b"\x00")
+
+
+def test_extract_archive_to_game_root_returns_bare_relative_paths(tmp_path, tmp_game):
+    # A techiew-style mod archive that already ships its own "mods/" folder
+    # gets extracted straight into Game/ (subdir="") — the archive's own
+    # layout puts the file at the right spot.
+    z = tmp_path / "mod-a.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("mods/x.dll", b"\x00")
+    files = extract_archive(z, tmp_game, "")
+    assert (tmp_game / "mods" / "x.dll").exists()
+    assert files == ["mods/x.dll"]
+
+
+def test_extract_archive_to_mods_subdir_prefixes_returned_paths(tmp_path, tmp_game):
+    # A bare-DLL mod archive (no internal mods/ folder) installs into
+    # Game/mods/ — extract_archive must prefix the returned paths with the
+    # subdir so installed.json (and later uninstall) sees the real
+    # game-relative location, not just the name inside the zip.
+    z = tmp_path / "mod-b.zip"
+    _make_bare_dll_zip(z, "y.dll")
+    files = extract_archive(z, tmp_game, "mods")
+    assert (tmp_game / "mods" / "y.dll").exists()
+    assert files == ["mods/y.dll"]
+
+
+def test_extract_archive_rejects_traversal_before_extracting(tmp_path, tmp_game):
+    z = tmp_path / "evil.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("y.dll", b"\x00")
+        zf.writestr("../evil.txt", b"pwned")
+    with pytest.raises(ErmError):
+        extract_archive(z, tmp_game, "mods")
+    # refused whole, not partially extracted
+    assert not (tmp_path / "evil.txt").exists()
+    assert not (tmp_game / "mods").exists()

@@ -183,17 +183,58 @@ def _install_ersc(game, lock):
     return version, bool(password)
 
 
+_MANUAL_NOTES = {
+    "item-enemy-randomizer": "run the randomizer generator (in the vendor archive) to create a "
+                              "regulation.bin, then place it per its README; the whole group needs "
+                              "the identical output",
+    "me3": "me3 is a loader — install per me3.help; it chainloads ersc.dll and the randomizer",
+    "eac-toggler": "extract and rename _winhttp.dll -> winhttp.dll to arm the EAC tripwire",
+}
+
+
 def cmd_apply(args):
+    """Install every auto-installable mod in a profile into Game/ (or Game/mods/,
+    per each mod's `install` field) and record what landed where in installed.json.
+
+    The default profile is seamless-only, so a bare `erm apply` still just
+    installs seamless-coop — same as before this generalized to profiles.
+    """
     game = paths.find_game_dir(paths.find_steam_root())
+    profile = manifest.load_profile(args.profile)
     lock = manifest.load_lock("mods.lock.toml")
-    version, had_password = _install_ersc(game, lock)
-    if not had_password:
-        print("warning: no COOP_PASSWORD in secrets.env — password will be blank")
-    print(f"applied seamless-coop {version} to {game}")
-    print("\nSafety check (erm doctor):")
-    r = run_doctor(game, Report())
+    state = state_mod.load_state()
+    password = install.read_secret(Path("secrets.env")) if Path("secrets.env").exists() else ""
+    r = Report()
+    for mod in profile["mods"]:
+        mid = mod["id"]
+        kind = mod.get("install", "game")
+        if kind == "manual":
+            r.info(f"{mid}: manual — {_MANUAL_NOTES.get(mid, 'see the mod README')}")
+            continue
+        meta = lock.get(mid)
+        asset = meta.get("asset") if meta else None
+        if not asset:
+            r.warn(f"{mid}: not fetched — run `erm fetch {args.profile}` first")
+            continue
+        vpath = Path("vendor") / asset
+        if not vpath.exists():
+            r.warn(f"{mid}: archive missing from vendor/ ({asset})")
+            continue
+        subdir = "mods" if kind == "mods" else ""
+        if mid == "seamless-coop":
+            files = install.apply_ersc(vpath, game, password)   # keeps legacy-clean + password inject
+        else:
+            files = install.extract_archive(vpath, game, subdir)
+        state_mod.record_install(state, mid, meta.get("version", "?"), asset, files)
+        r.ok(f"{mid} {meta.get('version', '')} → {subdir or 'Game/'}")
+    state_mod.write_state(Path("installed.json"), state)
+    if not password and any(m["id"] == "seamless-coop" for m in profile["mods"]):
+        r.warn("no COOP_PASSWORD in secrets.env — password left blank")
     print(r.render(as_json=args.json))
-    return r.exit_code
+    print("\nSafety check (erm doctor):")
+    dr = run_doctor(game, Report())
+    print(dr.render(as_json=args.json))
+    return dr.exit_code
 
 
 def cmd_update(args):
@@ -235,10 +276,12 @@ def cmd_update(args):
     return doctor_report.exit_code if doctor_report is not None else 0
 
 
-def cmd_uninstall(args):
-    game = paths.find_game_dir(paths.find_steam_root())
-    mod_id = args.mod
-    state = state_mod.load_state()
+def _uninstall_one(game, mod_id, state, r):
+    """Remove a single mod's files from game, appending progress to r and
+    forgetting it in state. Shared by single-mod uninstall, profile uninstall,
+    and switch, so every caller gets the same guards. Raises PathError if
+    there's nothing safe to derive the file list from (never touches disk
+    in that case)."""
     entry = state.get(mod_id)
     if entry and entry.get("files"):
         files = entry["files"]
@@ -261,17 +304,17 @@ def cmd_uninstall(args):
         except (OSError, zipfile.BadZipFile) as exc:
             raise PathError(f"cannot read vendor archive {asset}: {exc}") from exc
         source = f"vendor archive {asset}"
-    r = Report()
-    # Zip-slip guard, second layer: apply_ersc already refuses unsafe archives
-    # at install, but this list can also come from the fallback archive or a
-    # hand-edited installed.json — so re-validate before deleting anything.
-    # Reject absolute/`..` paths, and confirm the resolved path stays under
-    # the game dir. Resolve only for that containment check — then act on the
-    # LITERAL game/rel, never the resolved target. A recorded symlink pointing
-    # at a stock file (e.g. -> eldenring.exe) would otherwise resolve inside
-    # Game/, pass containment, and get its TARGET deleted; unlinking the
-    # literal removes the symlink itself and leaves eldenring.exe intact.
-    # A refused entry warns but doesn't abort the rest.
+    # Zip-slip guard, second layer: apply_ersc/extract_archive already refuse
+    # unsafe archives at install, but this list can also come from the
+    # fallback archive or a hand-edited installed.json — so re-validate
+    # before deleting anything. Reject absolute/`..` paths, and confirm the
+    # resolved path stays under the game dir. Resolve only for that
+    # containment check — then act on the LITERAL game/rel, never the
+    # resolved target. A recorded symlink pointing at a stock file (e.g. ->
+    # eldenring.exe) would otherwise resolve inside Game/, pass containment,
+    # and get its TARGET deleted; unlinking the literal removes the symlink
+    # itself and leaves eldenring.exe intact. A refused entry warns but
+    # doesn't abort the rest.
     game_resolved = game.resolve()
     safe = []
     for rel in files:
@@ -304,13 +347,54 @@ def cmd_uninstall(args):
         except OSError:
             pass
     state_mod.forget(state, mod_id)
-    state_mod.write_state(Path("installed.json"), state)
     r.ok(f"removed {removed} file(s) for {mod_id} (from {source})")
+    return removed
+
+
+def cmd_uninstall(args):
+    """Remove a single mod's files, or every mod in a profile if args.mod
+    names one (profiles/<args.mod>.toml exists). Manual-install mods in a
+    profile are skipped — erm never extracted them, so there's nothing of
+    its own to clean up."""
+    game = paths.find_game_dir(paths.find_steam_root())
+    target = args.mod
+    state = state_mod.load_state()
+    r = Report()
+    profile_path = Path("profiles") / f"{target}.toml"
+    if profile_path.exists():
+        profile = manifest.load_profile(target)
+        for mod in profile["mods"]:
+            mid = mod["id"]
+            if mod.get("install", "game") == "manual":
+                r.info(f"{mid}: manual install — nothing for erm to remove")
+                continue
+            try:
+                _uninstall_one(game, mid, state, r)
+            except PathError as exc:
+                r.warn(f"{mid}: {exc}")
+    else:
+        _uninstall_one(game, target, state, r)
+    state_mod.write_state(Path("installed.json"), state)
     print(r.render(as_json=args.json))
     print("\nSafety check (erm doctor):")
     dr = run_doctor(game, Report())
     print(dr.render(as_json=args.json))
     return 0
+
+
+def cmd_switch(args):
+    """Uninstall every mod currently recorded as installed, then apply a new
+    profile — the clean way to move between mod stacks without leftovers
+    from the old one lingering in Game/."""
+    game = paths.find_game_dir(paths.find_steam_root())
+    state = state_mod.load_state()
+    r = Report()
+    for mid in list(state.keys()):
+        _uninstall_one(game, mid, state, r)
+    state_mod.write_state(Path("installed.json"), state)
+    r.info(f"switching to {args.profile}")
+    print(r.render(as_json=args.json))
+    return cmd_apply(type("A", (), {"profile": args.profile, "json": args.json})())
 
 
 def cmd_verify(args):
@@ -428,9 +512,12 @@ def register(subparsers):
     up = subparsers.add_parser("update", help="fetch the latest Seamless Co-op, re-pin, and install it")
     up.add_argument("profile", nargs="?", default="seamless-only")
     up.set_defaults(func=cmd_update)
-    un = subparsers.add_parser("uninstall", help="remove an installed mod's files from Game/")
+    un = subparsers.add_parser("uninstall", help="remove an installed mod's (or whole profile's) files from Game/")
     un.add_argument("mod", nargs="?", default="seamless-coop")
     un.set_defaults(func=cmd_uninstall)
+    sw = subparsers.add_parser("switch", help="uninstall whatever's installed, then apply a different profile")
+    sw.add_argument("profile")
+    sw.set_defaults(func=cmd_switch)
     subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
     b = subparsers.add_parser("backup", help="snapshot the co-op save")
     b.add_argument("--label", default="")

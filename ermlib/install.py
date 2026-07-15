@@ -31,6 +31,32 @@ def inject_password(settings_ini, password):
     ini.write_text(text)
 
 
+def extract_archive(zip_path, game_dir, subdir=""):
+    """Extract an archive into game_dir/subdir, rejecting unsafe members.
+
+    Returns the list of extracted files as paths RELATIVE TO game_dir (so
+    subdir is prefixed onto every entry) — that's what installed.json
+    records and what `erm uninstall` later removes.
+    """
+    game_dir = Path(game_dir)
+    dest = game_dir / subdir if subdir else game_dir
+    with zipfile.ZipFile(zip_path) as z:
+        names = z.namelist()
+        # Zip-slip guard: a trojaned archive could name a member
+        # ../../../etc/x and have extractall write outside game_dir. The
+        # sha256 pin proves the archive is the chosen one, not that it's
+        # benign. Reject any absolute path or one with a `..` component
+        # BEFORE extracting anything, so a bad archive is never partially
+        # written. The returned list is then guaranteed safe relative paths.
+        for name in names:
+            if not is_safe_relpath(name):
+                raise ErmError(f"unsafe path in mod archive (refusing to install): {name}")
+        dest.mkdir(parents=True, exist_ok=True)
+        z.extractall(dest)
+        files = [(f"{subdir}/{n}" if subdir else n) for n in names if not n.endswith("/")]
+    return files
+
+
 def apply_ersc(zip_path, game_dir, password):
     """Extract the ERSC archive into game_dir and re-inject the password.
 
@@ -45,17 +71,6 @@ def apply_ersc(zip_path, game_dir, password):
     sc = game_dir / "SeamlessCoop"
     if sc.exists():
         shutil.rmtree(sc)
-    with zipfile.ZipFile(zip_path) as z:
-        # Zip-slip guard: a trojaned archive could name a member
-        # ../../../etc/x and have extractall write outside game_dir. The
-        # sha256 pin proves the archive is the chosen one, not that it's
-        # benign. Reject any absolute path or one with a `..` component
-        # BEFORE extracting anything, so a bad archive is never partially
-        # written. The returned list is then guaranteed safe relative paths.
-        for name in z.namelist():
-            if not is_safe_relpath(name):
-                raise ErmError(f"unsafe path in mod archive (refusing to install): {name}")
-        z.extractall(game_dir)
-        files = [n for n in z.namelist() if not n.endswith("/")]
+    files = extract_archive(zip_path, game_dir, "")
     inject_password(game_dir / "SeamlessCoop" / "ersc_settings.ini", password)
     return files

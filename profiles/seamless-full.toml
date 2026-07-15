@@ -12,12 +12,14 @@ id = "seamless-coop"
 source = "nexus"
 nexus_id = 510
 kind = "coop-framework"
+install = "game"
 
 [[mods]]
 id = "elden-mod-loader"           # dinput8 loader for the DLL mods
 source = "nexus"
 nexus_id = 117
 kind = "loader"
+install = "game"
 
 [[mods]]
 id = "me3"                        # modern loader (replaces the old ModEngine2)
@@ -25,12 +27,14 @@ source = "github"
 repo_id = 540883721
 asset_match = "me3-windows-amd64"
 kind = "loader"
+install = "manual"
 
 [[mods]]
 id = "eac-toggler"                # winhttp fail-loud EAC tripwire (safety piece)
 source = "nexus"
 nexus_id = 90
 kind = "loader"
+install = "manual"
 
 # --- randomizer (ALL players need the identical generated regulation.bin + seed) ---
 [[mods]]
@@ -39,6 +43,7 @@ source = "nexus"
 nexus_id = 428
 kind = "randomizer"
 requires_all_players = true
+install = "manual"
 
 # --- item spawners: BAN-RELEVANT. Client-side under seamless, but can put
 #     illegitimate items in your save. This is what erm quarantine/doctor guard. ---
@@ -47,6 +52,7 @@ id = "glorious-merchant"
 source = "nexus"
 nexus_id = 5192
 kind = "item-cheat"
+install = "mods"
 
 [[mods]]
 id = "erd-tools"                  # GitHub only (author forbids Nexus reuploads)
@@ -54,6 +60,7 @@ source = "github"
 repo_id = 514620889
 asset_match = "For.Dummies"       # the only .zip asset; .7z main can't be auto-extracted
 kind = "item-cheat"
+install = "mods"
 
 # --- cosmetic (client-side, per-player, no lockstep) ---
 [[mods]]
@@ -61,21 +68,25 @@ id = "erdyes"
 source = "nexus"
 nexus_id = 6927
 kind = "cosmetic"
+install = "mods"
 [[mods]]
 id = "ertransmogrify"
 source = "nexus"
 nexus_id = 3596
 kind = "cosmetic"
+install = "mods"
 [[mods]]
 id = "remove-chromatic-aberration"
 source = "nexus"
 nexus_id = 179
 kind = "cosmetic"
+install = "game"
 [[mods]]
 id = "remove-vignette"
 source = "nexus"
 nexus_id = 177
 kind = "cosmetic"
+install = "game"
 
 # --- QoL (client-side) ---
 [[mods]]
@@ -83,41 +94,49 @@ id = "skip-the-intro"
 source = "nexus"
 nexus_id = 421
 kind = "qol"
+install = "game"
 [[mods]]
 id = "unlock-the-fps"             # cap at monitor refresh; >60fps can desync coop physics
 source = "nexus"
 nexus_id = 216
 kind = "qol"
+install = "game"
 [[mods]]
 id = "adjust-the-fov"
 source = "nexus"
 nexus_id = 325
 kind = "qol"
+install = "game"
 [[mods]]
 id = "camera-fix"
 source = "nexus"
 nexus_id = 118
 kind = "qol"
+install = "game"
 [[mods]]
 id = "increase-animation-distance"
 source = "nexus"
 nexus_id = 349
 kind = "qol"
+install = "game"
 [[mods]]
 id = "disable-rune-loss"
 source = "nexus"
 nexus_id = 376
 kind = "qol"
+install = "game"
 [[mods]]
 id = "no-weight"
 source = "nexus"
 nexus_id = 481
 kind = "qol"
+install = "mods"
 [[mods]]
 id = "faster-respawn"
 source = "nexus"
 nexus_id = 501
 kind = "qol"
+install = "mods"
 
 # NOTE: ReShade (reshade.me) + the Tarnished preset and RandomizerHelper (bundled inside
 # the randomizer #428 download) are NOT listed as fetchable mods — ReShade is a general

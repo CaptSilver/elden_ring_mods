@@ -7,3 +7,4 @@ id = "seamless-coop"
 source = "nexus"
 nexus_id = 510
 kind = "coop-framework"
+install = "game"
