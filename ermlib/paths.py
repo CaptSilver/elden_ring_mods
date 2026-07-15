@@ -75,6 +75,8 @@ def find_save_dir(steam_root):
                 # looking; end by raising PathError, never leaking OSError.
                 continue
             for child in children:
-                if child.is_dir() and (child / "ER0000.sl2").exists():
+                if child.is_dir() and (
+                    (child / "ER0000.sl2").exists() or (child / "ER0000.co2").exists()
+                ):
                     return child
-    raise PathError("no EldenRing save dir with ER0000.sl2 found in prefix")
+    raise PathError("no EldenRing save dir with ER0000.sl2 or ER0000.co2 found in prefix")

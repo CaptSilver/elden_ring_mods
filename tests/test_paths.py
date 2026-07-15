@@ -63,6 +63,24 @@ def test_find_save_dir_finds_steamid_subfolder(tmp_path):
     assert find_save_dir(tmp_path).samefile(save_dir)
 
 
+def test_find_save_dir_finds_co2_only_save(tmp_path):
+    # After `erm quarantine` moves ER0000.sl2 out, Seamless Co-op writes
+    # ER0000.co2 in its place — find_save_dir must still locate the folder.
+    steamid = "76561198000000000"
+    save_dir = (
+        tmp_path
+        / "steamapps"
+        / "compatdata"
+        / APPID
+        / "pfx"
+        / "drive_c/users/steamuser/AppData/Roaming/EldenRing"
+        / steamid
+    )
+    save_dir.mkdir(parents=True)
+    (save_dir / "ER0000.co2").write_bytes(b"save")
+    assert find_save_dir(tmp_path).samefile(save_dir)
+
+
 def test_find_save_dir_raises_without_save(tmp_path):
     # Prefix exists but no ER0000.sl2 anywhere -> PathError, not empty return.
     (tmp_path / "steamapps" / "compatdata" / APPID / "pfx").mkdir(parents=True)
