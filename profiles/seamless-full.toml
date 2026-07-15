@@ -89,12 +89,6 @@ nexus_id = 421
 kind = "qol"
 install = "game"
 [[mods]]
-id = "unlock-the-fps"             # cap at monitor refresh; >60fps can desync coop physics
-source = "nexus"
-nexus_id = 216
-kind = "qol"
-install = "game"
-[[mods]]
 id = "adjust-the-fov"
 source = "nexus"
 nexus_id = 325

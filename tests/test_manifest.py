@@ -16,7 +16,7 @@ def test_seamless_only_profile_has_ersc():
 def test_seamless_full_profile_loads_all_mods():
     prof = load_profile("seamless-full", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    assert len(prof["mods"]) == 18   # eac-toggler dropped (redundant with erm harden)
+    assert len(prof["mods"]) == 17   # eac-toggler + unlock-the-fps dropped
 
     ersc = next(m for m in prof["mods"] if m["id"] == "seamless-coop")
     assert ersc["source"] == "nexus"
@@ -39,6 +39,8 @@ def test_seamless_full_profile_loads_all_mods():
     # eac-toggler is redundant with the launch-option method + `erm harden`,
     # and its own winhttp.dll is itself an artifact `erm doctor` flags
     assert "eac-toggler" not in ids
+    # unlock-the-fps desyncs co-op physics above 60fps — not usable with Seamless
+    assert "unlock-the-fps" not in ids
 
     assert len(ids) == len(set(ids))   # no duplicate mod ids
 
