@@ -7,7 +7,9 @@ group silently loses connection until someone notices.
 import re
 import shutil
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+from .errors import ErmError
 
 
 def read_secret(env_path, key="COOP_PASSWORD"):
@@ -43,6 +45,16 @@ def apply_ersc(zip_path, game_dir, password):
     if sc.exists():
         shutil.rmtree(sc)
     with zipfile.ZipFile(zip_path) as z:
+        # Zip-slip guard: a trojaned archive could name a member
+        # ../../../etc/x and have extractall write outside game_dir. The
+        # sha256 pin proves the archive is the chosen one, not that it's
+        # benign. Reject any absolute path or one with a `..` component
+        # BEFORE extracting anything, so a bad archive is never partially
+        # written. The returned list is then guaranteed safe relative paths.
+        for name in z.namelist():
+            pp = PurePosixPath(name)
+            if pp.is_absolute() or ".." in pp.parts:
+                raise ErmError(f"unsafe path in mod archive (refusing to install): {name}")
         z.extractall(game_dir)
         files = [n for n in z.namelist() if not n.endswith("/")]
     inject_password(game_dir / "SeamlessCoop" / "ersc_settings.ini", password)

@@ -112,6 +112,40 @@ def test_uninstall_nothing_recorded_and_no_vendor_archive_raises_patherror(
         cli.cmd_uninstall(_args())
 
 
+def test_uninstall_refuses_paths_outside_game(tmp_path, monkeypatch, capsys, tmp_game):
+    # A hand-edited (or trojaned-fallback-derived) installed.json whose files
+    # list contains a traversal path must not delete anything outside Game/.
+    game_dir = tmp_game
+    _seed_lock(tmp_path)
+
+    victim = tmp_path / "victim.txt"        # lives OUTSIDE the game dir
+    victim.write_text("precious")
+
+    import json
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "seamless-coop": {
+            "version": "v1.9.8",
+            "archive": "x.zip",
+            "files": ["../victim.txt", "ersc_launcher.exe"],
+        }
+    }))
+    # a real ersc file inside the game dir, so the safe entry still gets removed
+    (game_dir / "ersc_launcher.exe").write_bytes(b"\x00")
+
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    rc = cli.cmd_uninstall(_args())
+    out = capsys.readouterr().out
+
+    assert rc == 0                                  # clean exit, no crash
+    assert victim.exists()                          # outside file untouched
+    assert victim.read_text() == "precious"
+    assert not (game_dir / "ersc_launcher.exe").exists()   # safe entry removed
+    assert "refus" in out.lower()                   # warned about the unsafe path
+
+
 def test_uninstall_never_removes_stock_files(tmp_path, monkeypatch, capsys, tmp_game):
     # Belt-and-suspenders on top of the manifest test: seed Game/ explicitly
     # with stock files + ersc files, uninstall, and check the stock files by
