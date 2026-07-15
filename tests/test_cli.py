@@ -1,7 +1,30 @@
+import zipfile
+
 import pytest
 
-from ermlib import cli
+from ermlib import cli, paths
 from ermlib.errors import ErmError, PathError
+
+
+def _make_ersc_zip(path):
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("ersc_launcher.exe", b"\x00")
+        z.writestr("SeamlessCoop/ersc.dll", b"\x00")
+        z.writestr("SeamlessCoop/ersc_settings.ini",
+                   "[PASSWORD]\ncooppassword = \n[SAVE]\nsave_file_extension = co2\n")
+
+
+def _seed_apply_fixture(tmp_path, game_dir):
+    (tmp_path / "mods.lock.toml").write_text(
+        '[seamless-coop]\n'
+        'version = "v1.9.8"\n'
+        'asset = "seamless-coop-v1.9.8.zip"\n'
+        'sha256 = "a"\n'
+        'source = "github"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _make_ersc_zip(vendor / "seamless-coop-v1.9.8.zip")
 
 
 def test_launch_option_string(capsys):
@@ -76,6 +99,50 @@ def test_apply_missing_vendor_archive_raises_clean_error(tmp_path, monkeypatch):
     args = type("A", (), {})()
     with pytest.raises(ErmError):
         cli.cmd_apply(args)
+
+
+def test_apply_prints_doctor_section_and_returns_ok_when_clean(tmp_path, monkeypatch, capsys):
+    # `erm apply` must run the doctor safety check right after installing, so
+    # a dangerous post-apply state is loud at the moment of apply rather than
+    # silent until someone remembers to run `erm doctor` separately.
+    game_dir = tmp_path / "Game"
+    game_dir.mkdir()
+    (game_dir / "start_protected_game.exe").write_bytes(b"\x00")
+    _seed_apply_fixture(tmp_path, game_dir)
+
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    args = type("A", (), {"profile": "seamless-only", "json": False})()
+    rc = cli.cmd_apply(args)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "doctor" in out.lower()
+    assert "no proxy dll" in out.lower()
+
+
+def test_apply_returns_doctor_fail_code_when_forbidden_artifact_present(tmp_path, monkeypatch, capsys):
+    # A leftover proxy DLL alongside start_protected_game.exe is the exact
+    # dangerous mixed state doctor fails on — apply must surface that failure
+    # in its own exit code, not just print it and return 0 regardless.
+    game_dir = tmp_path / "Game"
+    game_dir.mkdir()
+    (game_dir / "start_protected_game.exe").write_bytes(b"\x00")
+    (game_dir / "dinput8.dll").write_bytes(b"\x00")
+    _seed_apply_fixture(tmp_path, game_dir)
+
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    args = type("A", (), {"profile": "seamless-only", "json": False})()
+    rc = cli.cmd_apply(args)
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "✗" in out or "fail" in out.lower()
 
 
 def test_verify_missing_asset_key_warns_instead_of_crashing(tmp_path, monkeypatch, capsys):

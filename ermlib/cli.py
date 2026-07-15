@@ -137,7 +137,10 @@ def cmd_apply(args):
     if not had_password:
         print("warning: no COOP_PASSWORD in secrets.env — password will be blank")
     print(f"applied seamless-coop {version} to {game}")
-    return 0
+    print("\nSafety check (erm doctor):")
+    r = run_doctor(game, Report())
+    print(r.render(as_json=args.json))
+    return r.exit_code
 
 
 def cmd_update(args):
@@ -157,11 +160,13 @@ def cmd_update(args):
             r.info(f"{mod_id} already latest ({new})")
 
     installed_version = None
+    doctor_report = None
     if "seamless-coop" in changed:
         game = paths.find_game_dir(paths.find_steam_root())
         installed_version, had_password = _install_ersc(game, after)
         if not had_password:
             r.warn("no COOP_PASSWORD in secrets.env — password left blank")
+        doctor_report = run_doctor(game, Report())
 
     print(r.render(as_json=args.json))
     if changed:
@@ -169,9 +174,12 @@ def cmd_update(args):
             print(f"\nInstalled seamless-coop {installed_version} into the game.")
         print("LOCKSTEP: every player must update to the same version and use the shared "
               "mods.lock.toml, or co-op won't connect. Commit and share the updated lockfile.")
+        if doctor_report is not None:
+            print("\nSafety check (erm doctor):")
+            print(doctor_report.render(as_json=args.json))
     else:
         print("\nAlready up to date — nothing to install.")
-    return 0
+    return doctor_report.exit_code if doctor_report is not None else 0
 
 
 def cmd_verify(args):

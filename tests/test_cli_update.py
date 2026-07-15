@@ -73,6 +73,10 @@ def test_update_repins_and_installs_when_newer(tmp_path, monkeypatch, capsys):
     assert (game_dir / "SeamlessCoop").is_dir()
     assert "LOCKSTEP" in out
     assert "v1.9.8 -> v2.0.0" in out
+    # `erm update` installs via the same path as `erm apply` — the doctor
+    # safety check must run right after that install too, not just on apply.
+    assert "doctor" in out.lower()
+    assert "no proxy dll" in out.lower()
 
 
 def test_update_noop_when_already_latest(tmp_path, monkeypatch, capsys):
