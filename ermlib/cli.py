@@ -152,7 +152,9 @@ def cmd_quarantine(args):
 
 
 def cmd_restore(args):
-    src = Path(args.backup)
+    src = Path("backups") / args.backup
+    if not src.exists():
+        src = Path(args.backup)
     root = paths.find_steam_root()
     save_dir = paths.find_save_dir(root)
     dest = save_dir / ("ER0000.co2" if src.name.endswith(".co2") or ".co2" in src.name else "ER0000.sl2")
