@@ -1,0 +1,20 @@
+[GAMEPLAY]
+allow_invaders = 1
+death_debuffs = 1
+allow_summons = 1
+overhead_player_display = 0
+skip_splash_screens = 1
+default_boot_master_volume = 5
+[SCALING]
+enemy_health_scaling = 35
+enemy_damage_scaling = 0
+enemy_posture_scaling = 15
+boss_health_scaling = 100
+boss_damage_scaling = 0
+boss_posture_scaling = 20
+[PASSWORD]
+cooppassword = @COOP_PASSWORD@
+[SAVE]
+save_file_extension = co2
+[LANGUAGE]
+mod_language_override =
