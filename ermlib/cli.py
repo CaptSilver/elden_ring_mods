@@ -96,11 +96,13 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                     # newest. Verify against the sha we already trust — if
                     # upstream mutated the tagged asset, fail closed.
                     rel = github.release_by_tag(mod["repo_id"], locked["version"])
-                    asset = github.pick_asset(rel, suffix=".zip")
+                    asset = github.pick_asset(rel, suffix=".zip",
+                                               name_hint=mod.get("asset_match"))
                     digest = locked.get("sha256") or ""
                 else:
                     rel = github.latest_release(mod["repo_id"])
-                    asset = github.pick_asset(rel, suffix=".zip")
+                    asset = github.pick_asset(rel, suffix=".zip",
+                                               name_hint=mod.get("asset_match"))
                     digest = (asset.get("digest") or "").removeprefix("sha256:")
                 dest = vendor / f'{mod["id"]}-{rel["tag"]}.zip'
                 github.download_verified(asset["url"], dest, digest)

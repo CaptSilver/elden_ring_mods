@@ -36,11 +36,21 @@ def release_by_tag(repo_id, tag):
     return _release_from_json(data)
 
 
-def pick_asset(release, suffix=".zip"):
-    for a in release["assets"]:
-        if a["name"].endswith(suffix):
-            return a
-    raise IntegrityError(f"no asset ending in {suffix} in release {release.get('tag')}")
+def pick_asset(release, suffix=".zip", name_hint=None):
+    candidates = [a for a in release["assets"] if a["name"].endswith(suffix)]
+    if name_hint:
+        # Some releases (me3) ship multiple .zip assets — a debug build and
+        # the real one. "First .zip" would silently grab the wrong asset, so
+        # prefer one whose name matches the hint; fall back to first .zip if
+        # nothing matches rather than failing a fetch over a stale hint.
+        hinted = [a for a in candidates if name_hint.lower() in a["name"].lower()]
+        if hinted:
+            return hinted[0]
+    if candidates:
+        return candidates[0]
+    raise IntegrityError(f"no asset ending in {suffix}"
+                          + (f" matching {name_hint!r}" if name_hint else "")
+                          + f" in release {release.get('tag')}")
 
 
 def sha256_file(path):

@@ -13,6 +13,42 @@ def test_seamless_only_profile_has_ersc():
     assert ersc["nexus_id"] == 510
 
 
+def test_seamless_full_profile_loads_all_mods():
+    prof = load_profile("seamless-full", base=Path("profiles"))
+    ids = [m["id"] for m in prof["mods"]]
+    assert len(prof["mods"]) >= 18   # ~20 mod stack
+
+    ersc = next(m for m in prof["mods"] if m["id"] == "seamless-coop")
+    assert ersc["source"] == "nexus"
+    assert ersc["nexus_id"] == 510
+
+    me3 = next(m for m in prof["mods"] if m["id"] == "me3")
+    assert me3["source"] == "github"
+    assert me3["repo_id"] == 540883721
+    assert me3["asset_match"] == "me3-windows-amd64"
+
+    randomizer = next(m for m in prof["mods"] if m["id"] == "item-enemy-randomizer")
+    assert randomizer["source"] == "nexus"
+    assert randomizer["nexus_id"] == 428
+    assert randomizer["requires_all_players"] is True
+
+    pause = next(m for m in prof["mods"] if m["id"] == "pause-the-game")
+    assert pause["coop_incompatible"] is True
+
+    assert len(ids) == len(set(ids))   # no duplicate mod ids
+
+
+def test_seamless_randomizer_me3_uses_numeric_id():
+    # me3's repo_id used to be a slug ("garyttierney/me3"), which the
+    # numeric-id-only GitHub fetch (api.github.com/repositories/<id>/...)
+    # can't resolve — it 404s. Must be the numeric repository id.
+    prof = load_profile("seamless-randomizer", base=Path("profiles"))
+    me3 = next(m for m in prof["mods"] if m["id"] == "me3")
+    assert me3["repo_id"] == 540883721
+    assert isinstance(me3["repo_id"], int)
+    assert me3["asset_match"] == "me3-windows-amd64"
+
+
 def test_lock_roundtrip(tmp_path):
     lock = {}
     set_mod(lock, "seamless-coop", version="v1.9.8", asset="Seamless.zip",

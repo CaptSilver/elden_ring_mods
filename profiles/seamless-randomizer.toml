@@ -11,7 +11,8 @@ kind = "coop-framework"
 [[mods]]
 id = "me3"
 source = "github"
-repo_id = "garyttierney/me3"
+repo_id = 540883721
+asset_match = "me3-windows-amd64"
 kind = "loader"
 
 [[mods]]

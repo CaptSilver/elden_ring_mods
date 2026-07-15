@@ -13,6 +13,27 @@ def test_pick_asset_selects_zip():
     assert a["name"] == "Seamless.zip"
 
 
+def test_pick_asset_uses_name_hint():
+    # me3's release ships two .zip assets; "first .zip" grabs the debug build.
+    rel = {"tag": "v0.8.0", "assets": [
+        {"name": "me3-debug-info.zip", "url": "u1", "digest": None},
+        {"name": "me3-windows-amd64.zip", "url": "u2", "digest": None},
+    ]}
+    a = pick_asset(rel, name_hint="me3-windows-amd64")
+    assert a["name"] == "me3-windows-amd64.zip"
+    # No hint -> unchanged behavior, first .zip wins (backward compat).
+    a_no_hint = pick_asset(rel)
+    assert a_no_hint["name"] == "me3-debug-info.zip"
+
+
+def test_pick_asset_hint_missing_falls_back():
+    rel = {"tag": "v1.9.8", "assets": [
+        {"name": "Seamless.zip", "url": "u2", "digest": "sha256:abc"},
+    ]}
+    a = pick_asset(rel, name_hint="no-such-asset")
+    assert a["name"] == "Seamless.zip"
+
+
 def test_download_verified_fails_closed(tmp_path, monkeypatch):
     import ermlib.github as gh
     monkeypatch.setattr(gh, "_fetch_bytes", lambda url: b"payload")
