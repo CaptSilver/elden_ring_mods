@@ -1,0 +1,26 @@
+name = "seamless-extras"
+description = "Seamless Co-op plus per-player client-side cosmetic/QoL mods. No regulation.bin, no item spawners."
+
+[[mods]]
+id = "seamless-coop"
+source = "github"
+repo_id = 497113840
+kind = "coop-framework"
+
+[[mods]]
+id = "elden-mod-loader"
+source = "nexus"
+nexus_id = 117
+kind = "loader"
+
+[[mods]]
+id = "skip-the-intro"
+source = "nexus"
+nexus_id = 421
+kind = "qol-clientside"
+
+[[mods]]
+id = "remove-vignette"
+source = "nexus"
+nexus_id = 177
+kind = "cosmetic-clientside"

@@ -1,0 +1,8 @@
+name = "seamless-only"
+description = "Seamless Co-op alone — the safe default."
+
+[[mods]]
+id = "seamless-coop"
+source = "github"
+repo_id = 497113840
+kind = "coop-framework"

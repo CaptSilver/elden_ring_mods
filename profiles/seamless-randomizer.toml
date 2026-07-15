@@ -1,0 +1,21 @@
+name = "seamless-randomizer"
+description = "Full rebuild of the 2025 co-op randomizer run. EVERY player needs the identical generated regulation.bin + seed + mod versions."
+
+[[mods]]
+id = "seamless-coop"
+source = "github"
+repo_id = 497113840
+kind = "coop-framework"
+
+[[mods]]
+id = "me3"
+source = "github"
+repo_id = "garyttierney/me3"
+kind = "loader"
+
+[[mods]]
+id = "item-enemy-randomizer"
+source = "nexus"
+nexus_id = 428
+kind = "randomizer"
+requires_all_players = true
