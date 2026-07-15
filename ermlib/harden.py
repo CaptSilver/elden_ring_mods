@@ -24,14 +24,17 @@ def harden_swap(game):
     # the real EAC-launcher backup with the eldenring copy, destroying the
     # only copy of the real launcher. This is the exact bug that made
     # community exe-swap scripts unsafe.
-    if not backup.exists():
-        if not spg.exists():
-            raise PathError(f"start_protected_game.exe not found in {game} — nothing to swap")
-        shutil.copy2(spg, backup)
-    # (re)create the swapped exe from eldenring.exe
-    if spg.exists():
-        spg.unlink()
-    shutil.copy2(eldenring, spg)
+    try:
+        if not backup.exists():
+            if not spg.exists():
+                raise PathError(f"start_protected_game.exe not found in {game} — nothing to swap")
+            shutil.copy2(spg, backup)
+        # (re)create the swapped exe from eldenring.exe
+        if spg.exists():
+            spg.unlink()
+        shutil.copy2(eldenring, spg)
+    except OSError as exc:
+        raise PathError(f"failed to swap start_protected_game.exe: {exc}") from exc
     return spg
 
 
@@ -42,9 +45,12 @@ def unharden_restore(game):
     backup = game / "start_protected_game.exe.erm-backup"
     if not backup.exists():
         raise PathError(f"not hardened (no backup at {backup}) — nothing to restore")
-    if spg.exists():
-        spg.unlink()
-    shutil.move(str(backup), str(spg))
+    try:
+        if spg.exists():
+            spg.unlink()
+        shutil.move(str(backup), str(spg))
+    except OSError as exc:
+        raise PathError(f"failed to restore start_protected_game.exe: {exc}") from exc
 
 
 def set_immutable(path, on):

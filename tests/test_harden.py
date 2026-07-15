@@ -157,3 +157,57 @@ def test_set_immutable_raises_ermerror_on_nonzero_rc(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeResult())
     with pytest.raises(ErmError):
         harden.set_immutable(tmp_path / "x", True)
+
+
+def test_unharden_unlocks_before_restoring(game, monkeypatch, capsys):
+    # The unlock (set_immutable spg False) MUST run before unharden_restore:
+    # you can't unlink an immutable file, and restore unlinks spg. Because
+    # set_immutable is a no-op in tests, a reorder to restore-first would ship
+    # undetected. Pin the order filesystem-grounded: restore is the only thing
+    # that consumes the backup, so at the moment set_immutable(False) fires the
+    # backup file must still exist. If someone swaps the two calls, restore
+    # runs first, the backup is already moved, and this assertion fires.
+    backup = game / "start_protected_game.exe.erm-backup"
+
+    def _fake_set_immutable(path, on):
+        if on is False:
+            assert backup.exists(), (
+                "unharden_restore ran before set_immutable(-i) — backup already "
+                "consumed; unlock must precede restore"
+            )
+
+    monkeypatch.setattr(harden, "set_immutable", _fake_set_immutable)
+    monkeypatch.setattr(paths, "find_steam_root", lambda: game.parent)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game)
+
+    harden.harden_swap(game)
+    rc = cli.cmd_unharden(_args())
+    capsys.readouterr()
+
+    assert rc == 0
+    assert (game / "start_protected_game.exe").read_bytes() == EAC_BYTES
+    assert not backup.exists()
+
+
+def test_harden_swap_wraps_oserror_as_patherror(game, monkeypatch):
+    import shutil
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copy2", _boom)
+    with pytest.raises(PathError):
+        harden.harden_swap(game)
+
+
+def test_unharden_restore_wraps_oserror_as_patherror(game, monkeypatch):
+    import shutil
+
+    harden.harden_swap(game)
+
+    def _boom(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(shutil, "move", _boom)
+    with pytest.raises(PathError):
+        harden.unharden_restore(game)
