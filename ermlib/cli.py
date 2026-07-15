@@ -3,7 +3,7 @@ import time
 import urllib.error
 from pathlib import Path
 
-from . import paths, steam, manifest, github, install, saves
+from . import paths, steam, manifest, github, install, saves, nexus
 from .errors import NetworkError, PathError
 from .report import Report
 from .savefile import SaveFile
@@ -66,7 +66,15 @@ def cmd_doctor(args):
     return r.exit_code
 
 
-def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"), update=False):
+def _default_nexus_api_key():
+    secrets_path = Path("secrets.env")
+    if not secrets_path.exists():
+        return ""
+    return install.read_secret(secrets_path, "NEXUS_API_KEY")
+
+
+def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"),
+                   update=False, nexus_api_key=None):
     try:
         prof = manifest.load_profile(profile_name, base=profiles_base)
     except OSError as exc:
@@ -74,6 +82,8 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
     lock = manifest.load_lock(lock_path)
     vendor = Path(vendor)
     vendor.mkdir(exist_ok=True)
+    if nexus_api_key is None:
+        nexus_api_key = _default_nexus_api_key()
     for mod in prof["mods"]:
         if mod["source"] == "github":
             locked = lock.get(mod["id"])
@@ -99,11 +109,47 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                              asset=dest.name, sha256=digest, source="github")
             note = " (pinned)" if pinned else ""
             print(f"✓ {mod['id']} {rel['tag']}{note} verified → {dest.name}")
-        else:
+        elif mod["source"] == "nexus":
             nid = mod.get("nexus_id")
-            print(f"! {mod['id']} is a manual Nexus download: "
-                  f"https://www.nexusmods.com/eldenring/mods/{nid} "
-                  f"— download the archive into {vendor}/ , then re-run apply.")
+            if not nexus_api_key:
+                # Free accounts can't hit the download_link.json endpoint —
+                # same manual-download instruction as always.
+                print(f"! {mod['id']} is a manual Nexus download: "
+                      f"https://www.nexusmods.com/eldenring/mods/{nid} "
+                      f"— download the archive into {vendor}/ , then re-run apply.")
+                continue
+            locked = lock.get(mod["id"])
+            pinned = not update and locked and locked.get("version")
+            try:
+                if pinned:
+                    # Same reproducibility promise as the GitHub pin: verify
+                    # against the LOCKED sha256, not anything Nexus reports —
+                    # Nexus's files.json carries no hash to trust anyway.
+                    files = nexus.list_files(nid, nexus_api_key)
+                    f = nexus.find_file_by_version(files, locked["version"])
+                    url = nexus.download_url(nid, f["file_id"], nexus_api_key)
+                    dest = vendor / f["file_name"]
+                    github.download_verified(url, dest, locked["sha256"])
+                    digest = locked["sha256"]
+                else:
+                    # No pin and no upstream hash to check against: trust on
+                    # first use — download, then hash what actually landed on
+                    # disk and pin THAT. Every later fetch (yours or a
+                    # friend's, via the shared lockfile) verifies against it.
+                    files = nexus.list_files(nid, nexus_api_key)
+                    f = nexus.pick_main_file(files)
+                    url = nexus.download_url(nid, f["file_id"], nexus_api_key)
+                    dest = vendor / f["file_name"]
+                    dest.write_bytes(github._fetch_bytes(url))
+                    digest = github.sha256_file(dest)
+            except (OSError, urllib.error.URLError, ValueError, KeyError) as exc:
+                raise NetworkError(f"failed to fetch {mod['id']} from Nexus: {exc}") from exc
+            manifest.set_mod(lock, mod["id"], version=f["version"],
+                             asset=f["file_name"], sha256=digest, source="nexus")
+            verb = "(pinned) verified" if pinned else "fetched"
+            print(f"✓ {mod['id']} v{f['version']} {verb} → {f['file_name']}")
+        else:
+            raise PathError(f"unknown source '{mod['source']}' for mod '{mod['id']}'")
     manifest.write_lock(lock_path, lock)
     return lock
 

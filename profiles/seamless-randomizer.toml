@@ -3,8 +3,9 @@ description = "Full rebuild of the 2025 co-op randomizer run. EVERY player needs
 
 [[mods]]
 id = "seamless-coop"
-source = "github"
-repo_id = 497113840
+# GitHub mirror 497113840 lags Nexus; source from Nexus (#510) for the real latest
+source = "nexus"
+nexus_id = 510
 kind = "coop-framework"
 
 [[mods]]

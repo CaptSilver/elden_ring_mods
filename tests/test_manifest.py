@@ -7,8 +7,10 @@ def test_seamless_only_profile_has_ersc():
     ids = [m["id"] for m in prof["mods"]]
     assert "seamless-coop" in ids
     ersc = next(m for m in prof["mods"] if m["id"] == "seamless-coop")
-    assert ersc["source"] == "github"
-    assert str(ersc["repo_id"]) == "497113840"
+    # Sourced from Nexus (#510), not the GitHub mirror (497113840) — the
+    # mirror lags Nexus, see the comment in profiles/seamless-only.toml.
+    assert ersc["source"] == "nexus"
+    assert ersc["nexus_id"] == 510
 
 
 def test_lock_roundtrip(tmp_path):
