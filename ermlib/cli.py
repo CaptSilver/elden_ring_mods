@@ -1,6 +1,7 @@
 import shutil
 import time
 import urllib.error
+import zipfile
 from pathlib import Path
 
 from . import paths, steam, manifest, github, install, saves, nexus, harden
@@ -200,11 +201,15 @@ def cmd_apply(args):
     installs seamless-coop — same as before this generalized to profiles.
     """
     game = paths.find_game_dir(paths.find_steam_root())
-    profile = manifest.load_profile(args.profile)
+    try:
+        profile = manifest.load_profile(args.profile)
+    except OSError as exc:
+        raise PathError(f"unknown profile '{args.profile}': {exc}") from exc
     lock = manifest.load_lock("mods.lock.toml")
     state = state_mod.load_state()
     password = install.read_secret(Path("secrets.env")) if Path("secrets.env").exists() else ""
     r = Report()
+    installed_seamless = False
     for mod in profile["mods"]:
         mid = mod["id"]
         kind = mod.get("install", "game")
@@ -221,14 +226,25 @@ def cmd_apply(args):
             r.warn(f"{mid}: archive missing from vendor/ ({asset})")
             continue
         subdir = "mods" if kind == "mods" else ""
+        # A corrupt/truncated archive (BadZipFile) or an I/O error on one mod
+        # must not sink the whole run — warn, skip it, and keep going so the
+        # mods already installed this pass still get recorded by write_state
+        # below. ErmError (the zip-slip refusal) is intentionally NOT caught:
+        # a hostile-path archive should still abort loudly.
+        try:
+            if mid == "seamless-coop":
+                files = install.apply_ersc(vpath, game, password)   # legacy-clean + password inject
+            else:
+                files = install.extract_archive(vpath, game, subdir)
+        except (OSError, zipfile.BadZipFile) as exc:
+            r.warn(f"{mid}: install failed ({exc})")
+            continue
         if mid == "seamless-coop":
-            files = install.apply_ersc(vpath, game, password)   # keeps legacy-clean + password inject
-        else:
-            files = install.extract_archive(vpath, game, subdir)
+            installed_seamless = True
         state_mod.record_install(state, mid, meta.get("version", "?"), asset, files)
         r.ok(f"{mid} {meta.get('version', '')} → {subdir or 'Game/'}")
     state_mod.write_state(Path("installed.json"), state)
-    if not password and any(m["id"] == "seamless-coop" for m in profile["mods"]):
+    if installed_seamless and not password:
         r.warn("no COOP_PASSWORD in secrets.env — password left blank")
     print(r.render(as_json=args.json))
     print("\nSafety check (erm doctor):")
@@ -297,7 +313,6 @@ def _uninstall_one(game, mod_id, state, r):
         if not (vpath and vpath.exists()):
             raise PathError(
                 f"nothing recorded for {mod_id} and no vendor archive to derive from — nothing to uninstall")
-        import zipfile
         try:
             with zipfile.ZipFile(vpath) as z:
                 files = [n for n in z.namelist() if not n.endswith("/")]
@@ -362,7 +377,10 @@ def cmd_uninstall(args):
     r = Report()
     profile_path = Path("profiles") / f"{target}.toml"
     if profile_path.exists():
-        profile = manifest.load_profile(target)
+        try:
+            profile = manifest.load_profile(target)
+        except OSError as exc:
+            raise PathError(f"unknown profile '{target}': {exc}") from exc
         for mod in profile["mods"]:
             mid = mod["id"]
             if mod.get("install", "game") == "manual":
@@ -390,7 +408,16 @@ def cmd_switch(args):
     state = state_mod.load_state()
     r = Report()
     for mid in list(state.keys()):
-        _uninstall_one(game, mid, state, r)
+        # One broken installed.json entry (empty file list, no vendor archive
+        # to derive from) must not abort the whole switch. Warn, drop it from
+        # state anyway — a PathError here means there was nothing on disk to
+        # remove, so forgetting it just clears the stale record — and keep
+        # uninstalling the rest so we start the new profile from a clean slate.
+        try:
+            _uninstall_one(game, mid, state, r)
+        except PathError as exc:
+            r.warn(f"{mid}: {exc}")
+            state_mod.forget(state, mid)
     state_mod.write_state(Path("installed.json"), state)
     r.info(f"switching to {args.profile}")
     print(r.render(as_json=args.json))

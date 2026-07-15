@@ -3,7 +3,10 @@ import shutil
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from ermlib import cli, paths
+from ermlib.errors import PathError
 from tests.conftest import REPO
 
 
@@ -217,3 +220,108 @@ def test_switch_uninstalls_current_profile_and_applies_the_new_one(
 
     after = json.loads((tmp_path / "installed.json").read_text())
     assert list(after.keys()) == ["mod-c"]
+
+
+_TWO_MOD_ONE_CORRUPT = (
+    '[[mods]]\n'
+    'id = "mod-a"\n'
+    'source = "github"\n'
+    'repo_id = 1\n'
+    'kind = "test"\n'
+    'install = "mods"\n'
+    '\n'
+    '[[mods]]\n'
+    'id = "mod-b"\n'
+    'source = "github"\n'
+    'repo_id = 2\n'
+    'kind = "test"\n'
+    'install = "mods"\n'
+)
+
+
+def test_apply_corrupt_archive_warns_and_earlier_mod_stays_recorded(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # mod-a is a valid zip, mod-b is garbage bytes. A BadZipFile on mod-b must
+    # NOT abort the whole apply: mod-a (installed earlier in the same run) must
+    # still land on disk AND be recorded in installed.json — so write_state has
+    # to run even though a later mod blew up.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "corrupt", _TWO_MOD_ONE_CORRUPT)
+    _seed_lock(tmp_path / "mods.lock.toml", {
+        "mod-a": ("1.0", "mod-a.zip"),
+        "mod-b": ("1.0", "mod-b.zip"),
+    })
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "mod-a.zip", "a.dll")
+    (vendor / "mod-b.zip").write_bytes(b"this is not a zip file")
+
+    rc = cli.cmd_apply(_apply_args("corrupt"))
+    out = capsys.readouterr().out
+
+    assert rc == 0                                   # clean exit, no raw traceback
+    assert "mod-b" in out and "failed" in out.lower()
+    assert (game_dir / "mods" / "a.dll").exists()     # earlier mod really installed
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "mod-a" in state                          # earlier mod stays recorded
+    assert "mod-b" not in state                      # the one that failed is not
+
+
+def test_apply_unknown_profile_raises_patherror_not_filenotfound(
+        tmp_path, monkeypatch, tmp_game):
+    # A typo'd profile name must surface as a clean ErmError-derived PathError,
+    # not a raw FileNotFoundError leaking from manifest.load_profile — same
+    # contract fetch_profile already honors.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profiles").mkdir()
+
+    with pytest.raises(PathError):
+        cli.cmd_apply(_apply_args("no-such-profile-xyz"))
+
+
+def test_switch_survives_bad_state_entry_and_ends_consistent(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # installed.json carries a normal entry plus a broken one (empty files, no
+    # vendor archive to derive from). The broken entry makes _uninstall_one
+    # raise PathError; switch must warn, keep going, apply the target, and leave
+    # installed.json holding ONLY the target's mods — no stale entry, no crash.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    (game_dir / "g.dll").write_bytes(b"\x00")
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "good-mod": {"version": "1.0", "archive": "g.zip", "files": ["g.dll"]},
+        "bad-mod": {"version": "1.0", "archive": "b.zip", "files": []},
+    }))
+
+    _write_profile(tmp_path / "profiles", "profile-b",
+        '[[mods]]\n'
+        'id = "mod-c"\n'
+        'source = "github"\n'
+        'repo_id = 3\n'
+        'kind = "test"\n'
+        'install = "game"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"mod-c": ("1.0", "mod-c.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "mod-c.zip", "c.dll")
+
+    rc = cli.cmd_switch(type("A", (), {"profile": "profile-b", "json": False})())
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert not (game_dir / "g.dll").exists()          # good-mod uninstalled
+    assert (game_dir / "c.dll").exists()               # target profile applied
+    assert "bad-mod" in out                            # warned about the broken entry
+    after = json.loads((tmp_path / "installed.json").read_text())
+    assert list(after.keys()) == ["mod-c"]             # no stale entry lingers
