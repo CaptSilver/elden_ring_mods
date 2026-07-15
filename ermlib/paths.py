@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from .errors import PathError
@@ -34,7 +33,13 @@ def _library_dirs(steam_root):
     vdf = steam_root / "steamapps" / "libraryfolders.vdf"
     if vdf.exists():
         import re
-        for m in re.finditer(r'"path"\s*"([^"]+)"', vdf.read_text(errors="ignore")):
+        try:
+            text = vdf.read_text(errors="ignore")
+        except OSError:
+            # Unreadable libraryfolders.vdf (perms, TOCTOU race) — fall back to
+            # the primary library rather than leaking OSError to the CLI.
+            return dirs
+        for m in re.finditer(r'"path"\s*"([^"]+)"', text):
             dirs.append(Path(m.group(1)) / "steamapps")
     return dirs
 
@@ -63,7 +68,13 @@ def find_save_dir(steam_root):
     ]
     for root in roots:
         if root.is_dir():
-            for child in sorted(root.iterdir()):
+            try:
+                children = sorted(root.iterdir())
+            except OSError:
+                # Unreadable save root (perms, TOCTOU race) — skip it and keep
+                # looking; end by raising PathError, never leaking OSError.
+                continue
+            for child in children:
                 if child.is_dir() and (child / "ER0000.sl2").exists():
                     return child
     raise PathError("no EldenRing save dir with ER0000.sl2 found in prefix")
