@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from . import paths, steam
+from . import paths, steam, manifest, github, install
 from .errors import PathError
 from .report import Report
 from .savefile import SaveFile
@@ -63,6 +63,66 @@ def cmd_doctor(args):
     return r.exit_code
 
 
+def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles")):
+    prof = manifest.load_profile(profile_name, base=profiles_base)
+    lock = manifest.load_lock(lock_path)
+    vendor = Path(vendor)
+    vendor.mkdir(exist_ok=True)
+    for mod in prof["mods"]:
+        if mod["source"] == "github":
+            rel = github.latest_release(mod["repo_id"])
+            asset = github.pick_asset(rel, suffix=".zip")
+            digest = (asset.get("digest") or "").removeprefix("sha256:")
+            dest = vendor / f'{mod["id"]}-{rel["tag"]}.zip'
+            github.download_verified(asset["url"], dest, digest)
+            manifest.set_mod(lock, mod["id"], version=rel["tag"],
+                             asset=dest.name, sha256=digest, source="github")
+            print(f"✓ {mod['id']} {rel['tag']} verified → {dest.name}")
+        else:
+            nid = mod.get("nexus_id")
+            print(f"! {mod['id']} is a manual Nexus download: "
+                  f"https://www.nexusmods.com/eldenring/mods/{nid} "
+                  f"— download the archive into {vendor}/ , then re-run apply.")
+    manifest.write_lock(lock_path, lock)
+    return lock
+
+
+def cmd_fetch(args):
+    fetch_profile(args.profile, Path("vendor"), Path("mods.lock.toml"))
+    return 0
+
+
+def cmd_apply(args):
+    root = paths.find_steam_root()
+    game = paths.find_game_dir(root)
+    lock = manifest.load_lock("mods.lock.toml")
+    ersc = lock.get("seamless-coop")
+    if not ersc:
+        print("no seamless-coop in lockfile — run `erm fetch` first")
+        return 1
+    password = install.read_secret(Path("secrets.env")) if Path("secrets.env").exists() else ""
+    if not password:
+        print("warning: no COOP_PASSWORD in secrets.env — password will be blank")
+    install.apply_ersc(Path("vendor") / ersc["asset"], game, password)
+    print(f"applied seamless-coop {ersc['version']} to {game}")
+    return 0
+
+
+def cmd_verify(args):
+    lock = manifest.load_lock("mods.lock.toml")
+    r = Report()
+    for mod_id, meta in lock.items():
+        p = Path("vendor") / meta.get("asset", "")
+        if not p.exists():
+            r.warn(f"{mod_id}: archive missing from vendor/")
+            continue
+        got = github.sha256_file(p)
+        (r.ok if got == meta.get("sha256") else r.fail)(
+            f"{mod_id}: {'sha256 ok' if got == meta.get('sha256') else 'HASH MISMATCH'}")
+    print(r.render(as_json=args.json))
+    return r.exit_code
+
+
 def register(subparsers):
     subparsers.add_parser("doctor", help="safety report").set_defaults(func=cmd_doctor)
     a = subparsers.add_parser("audit", help="forensic audit of a save")
@@ -70,3 +130,10 @@ def register(subparsers):
     a.set_defaults(func=cmd_audit)
     subparsers.add_parser("status", help="install + version summary").set_defaults(func=cmd_status)
     subparsers.add_parser("launch-option", help="print the Steam launch option").set_defaults(func=cmd_launch_option)
+    f = subparsers.add_parser("fetch", help="download + verify a profile's mods")
+    f.add_argument("profile", nargs="?", default="seamless-only")
+    f.set_defaults(func=cmd_fetch)
+    ap = subparsers.add_parser("apply", help="install the fetched mods into Game/")
+    ap.add_argument("profile", nargs="?", default="seamless-only")
+    ap.set_defaults(func=cmd_apply)
+    subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
