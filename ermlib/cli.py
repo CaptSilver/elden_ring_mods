@@ -262,14 +262,21 @@ def cmd_apply(args):
                 continue
             me3dir = Path("tools") / mid
             prof = me3dir / "erm-coop.me3"
-            if not prof.exists():
-                prof.write_text(
-                    'profileVersion = "v1"\n\n[[supports]]\ngame = "eldenring"\n\n'
-                    '# Chainload Seamless Co-op — point at your installed ersc.dll:\n'
-                    '# [[native]]\n# path = "/abs/path/to/Game/SeamlessCoop/ersc.dll"\n\n'
-                    '# Load the randomizer output — point at the generated mod folder:\n'
-                    '# [[package]]\n# id = "randomizer"\n# path = "/abs/path/to/generated/mod"\n'
-                )
+            # Extraction already succeeded; a failed scaffold write (read-only
+            # tools/, disk full, TOCTOU) must not propagate out of cmd_apply —
+            # that would skip the trailing write_state and drop installed.json
+            # for every mod installed earlier this run. Warn and keep going.
+            try:
+                if not prof.exists():
+                    prof.write_text(
+                        'profileVersion = "v1"\n\n[[supports]]\ngame = "eldenring"\n\n'
+                        '# Chainload Seamless Co-op — point at your installed ersc.dll:\n'
+                        '# [[native]]\n# path = "/abs/path/to/Game/SeamlessCoop/ersc.dll"\n\n'
+                        '# Load the randomizer output — point at the generated mod folder:\n'
+                        '# [[package]]\n# id = "randomizer"\n# path = "/abs/path/to/generated/mod"\n'
+                    )
+            except OSError as exc:
+                r.warn(f"{mid}: could not scaffold profile ({exc})")
             r.ok(f"{mid}: extracted to tools/{mid}/ (loader — replaces the Steam launch-option method)")
             r.info(f"edit the starter profile {prof} to point at your ersc.dll + randomizer output, "
                     "then launch via me3 (Linux setup differs — see https://me3.help)")
@@ -432,8 +439,18 @@ def cmd_uninstall(args):
             raise PathError(f"unknown profile '{target}': {exc}") from exc
         for mod in profile["mods"]:
             mid = mod["id"]
-            if mod.get("install", "game") == "manual":
-                r.info(f"{mid}: manual install — nothing for erm to remove")
+            if mid not in state:
+                # Only mods recorded in installed.json were extracted into
+                # Game/. me3/randomizer install to tools/ (never recorded),
+                # manual mods are never extracted at all, and a not-yet-applied
+                # mod has nothing on disk — none appear in state, so there's
+                # nothing here to remove. Don't fall into _uninstall_one's
+                # vendor-archive fallback: for a tools mod it would open the
+                # wrong zip and report a bogus "removed 0 file(s)". The
+                # single-mod `erm uninstall <mod>` path keeps that recovery for
+                # a lost manifest; profile uninstall deliberately doesn't guess.
+                if mod.get("install", "game") == "manual":
+                    r.info(f"{mid}: manual install — nothing for erm to remove")
                 continue
             try:
                 _uninstall_one(game, mid, state, r)

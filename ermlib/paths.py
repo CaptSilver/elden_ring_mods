@@ -86,6 +86,7 @@ _PROTON_ROOTS = [
     "~/.steam/root/compatibilitytools.d",
     "~/.steam/steam/steamapps/common",
     "~/.local/share/Steam/steamapps/common",
+    "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common",
 ]
 
 

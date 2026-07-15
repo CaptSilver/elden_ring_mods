@@ -398,6 +398,133 @@ def test_apply_me3_extracts_scaffolds_profile_and_not_recorded(
     assert "me3" not in state           # a loader/tool, not a Game/ mod
 
 
+def test_apply_me3_scaffold_write_failure_warns_and_preserves_earlier_state(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # The .me3 scaffold write runs AFTER extraction succeeded. If it fails
+    # (read-only tools/, disk full, TOCTOU) it must not propagate out of
+    # cmd_apply — that would skip the trailing write_state and drop the
+    # installed.json record of every mod installed earlier in the same run.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "game-then-me3",
+        '[[mods]]\n'
+        'id = "mod-a"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "test"\n'
+        'install = "game"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "me3"\n'
+        'source = "github"\n'
+        'repo_id = 2\n'
+        'kind = "loader"\n'
+        'install = "me3"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {
+        "mod-a": ("1.0", "mod-a.zip"),
+        "me3": ("1.0", "me3.zip"),
+    })
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "mod-a.zip", "a.dll")
+    _zip_with(vendor / "me3.zip", "bin/me3.exe")
+
+    # Fail only the scaffold write, so write_state (installed.json) still works
+    # — that's what lets us prove mod-a's record survived.
+    real_write_text = Path.write_text
+
+    def boom(self, *a, **k):
+        if self.name == "erm-coop.me3":
+            raise OSError("read-only file system")
+        return real_write_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "write_text", boom)
+
+    rc = cli.cmd_apply(_apply_args("game-then-me3"))   # must NOT raise
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert (game_dir / "a.dll").exists()                # mod-a really installed
+    assert (tmp_path / "tools" / "me3" / "bin" / "me3.exe").exists()  # me3 extracted
+    assert "me3" in out and "scaffold" in out.lower()   # warned, not crashed
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "mod-a" in state          # earlier mod's state survived the failure
+    assert "me3" not in state        # me3 is a tool, never recorded
+
+
+def test_uninstall_profile_skips_tools_kind_mods(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # me3/randomizer install to tools/, never into Game/, so they're never in
+    # installed.json. Profile-uninstall must skip them — not fall into the
+    # single-mod vendor-archive fallback, which would open their tool zip and
+    # report a bogus "removed 0 file(s)" against the wrong directory.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.setattr(paths, "find_proton", lambda: None)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "steamapps" / "compatdata" / paths.APPID).mkdir(parents=True)
+
+    _write_profile(tmp_path / "profiles", "tools-mix",
+        '[[mods]]\n'
+        'id = "mod-a"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "test"\n'
+        'install = "game"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "me3"\n'
+        'source = "github"\n'
+        'repo_id = 2\n'
+        'kind = "loader"\n'
+        'install = "me3"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "item-enemy-randomizer"\n'
+        'source = "nexus"\n'
+        'nexus_id = 428\n'
+        'kind = "randomizer"\n'
+        'install = "randomizer"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {
+        "mod-a": ("1.0", "mod-a.zip"),
+        "me3": ("1.0", "me3.zip"),
+        "item-enemy-randomizer": ("1.0", "randomizer.zip"),
+    })
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "mod-a.zip", "a.dll")
+    _zip_with(vendor / "me3.zip", "bin/me3.exe")
+    _zip_with(vendor / "randomizer.zip", "randomizer/EldenRingRandomizer.exe")
+
+    cli.cmd_apply(_apply_args("tools-mix"))
+    capsys.readouterr()
+
+    # only mod-a landed in Game/ and got recorded; the tools went to tools/
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert list(state.keys()) == ["mod-a"]
+
+    rc = cli.cmd_uninstall(_uninstall_args("tools-mix"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert not (game_dir / "a.dll").exists()            # mod-a really removed
+    # No bogus removal claim and no vendor-archive fallback read for the tools.
+    assert "for me3" not in out
+    assert "for item-enemy-randomizer" not in out
+    assert "vendor archive" not in out
+    assert "removed 0 file" not in out
+
+    after = json.loads((tmp_path / "installed.json").read_text())
+    assert after == {}
+
+
 def test_apply_me3_does_not_clobber_existing_profile(
         tmp_path, monkeypatch, capsys, tmp_game):
     # A player edits tools/me3/erm-coop.me3 by hand (pointing it at their
