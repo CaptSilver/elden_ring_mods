@@ -32,8 +32,8 @@ def test_seamless_full_profile_loads_all_mods():
     assert randomizer["nexus_id"] == 428
     assert randomizer["requires_all_players"] is True
 
-    pause = next(m for m in prof["mods"] if m["id"] == "pause-the-game")
-    assert pause["coop_incompatible"] is True
+    # pause-the-game is excluded — it can't work in a networked co-op session
+    assert "pause-the-game" not in ids
 
     assert len(ids) == len(set(ids))   # no duplicate mod ids
 

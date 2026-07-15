@@ -119,15 +119,6 @@ source = "nexus"
 nexus_id = 501
 kind = "qol"
 
-# --- coop-INCOMPATIBLE: pause can't work in a networked session (desync). Kept for
-#     completeness (it was in the 2025 set) but do NOT enable it in a coop session. ---
-[[mods]]
-id = "pause-the-game"
-source = "nexus"
-nexus_id = 43
-kind = "qol-gameplay"
-coop_incompatible = true
-
 # NOTE: ReShade (reshade.me) + the Tarnished preset and RandomizerHelper (bundled inside
 # the randomizer #428 download) are NOT listed as fetchable mods — ReShade is a general
 # injector installed from reshade.me; RandomizerHelper ships with #428.
