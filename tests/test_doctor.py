@@ -10,9 +10,38 @@ def test_scan_flags_proxy_and_modengine(tmp_game):
     assert "modengine.toml" in found
 
 
-def test_doctor_fails_on_armed_eac_with_proxy(tmp_game):
-    # start_protected_game.exe present (armed) AND a proxy dll -> dangerous mixed state
+def test_doctor_fails_on_disarmed_eac_with_proxy(tmp_game):
+    # The proxy DLL flips eac_state to "disarmed" (a proxy alongside
+    # start_protected_game.exe makes EAC not cleanly load). start_protected_game.exe
+    # still exists, so a vanilla online launch is still possible, and the proxy is
+    # exactly how the mod loads unnoticed. disarmed + a forbidden artifact is the
+    # dangerous mixed state -> fail. Do NOT read "armed" here: with a proxy present
+    # eac_state is "disarmed", and gating fail on state == "armed" reintroduces the
+    # original bug.
     (tmp_game / "dinput8.dll").write_bytes(b"\x00")
+    r = run_doctor(tmp_game, Report())
+    assert r.worst_level == "fail"
+
+
+def test_doctor_warns_not_fails_when_vanilla_unlaunchable(tmp_game):
+    # exe-swap scenario: forbidden artifacts present but no start_protected_game.exe,
+    # so eac_state is "absent". A vanilla online launch is impossible, so there is no
+    # ban path -> warn, never fail. Pins the absent + forbidden -> warn boundary.
+    (tmp_game / "start_protected_game.exe").unlink()
+    (tmp_game / "dinput8.dll").write_bytes(b"\x00")
+    (tmp_game / "modengine.toml").write_text("x")
+    r = run_doctor(tmp_game, Report())
+    assert r.worst_level != "fail"
+
+
+def test_doctor_fails_on_armed_plus_nonproxy_forbidden(tmp_game):
+    # start_protected_game.exe present with NO proxy DLL -> eac_state "armed".
+    # A forbidden non-proxy artifact (mod/regulation.bin) is still the dangerous
+    # mixed state -> fail. Pins the pure-armed + forbidden -> fail path (the
+    # disarmed sibling is covered above).
+    mod = tmp_game / "mod"
+    mod.mkdir()
+    (mod / "regulation.bin").write_bytes(b"\x00")
     r = run_doctor(tmp_game, Report())
     assert r.worst_level == "fail"
 
