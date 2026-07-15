@@ -28,7 +28,13 @@ def cloud_saves(steam_root):
     ud = steam_root / "userdata"
     if not ud.is_dir():
         return out
-    for acct in ud.iterdir():
+    try:
+        accts = sorted(ud.iterdir())
+    except OSError:
+        # Unreadable userdata dir (perms, TOCTOU race) — return what we have
+        # rather than leaking OSError to the CLI.
+        return out
+    for acct in accts:
         rc = acct / APPID / "remotecache.vdf"
         if not rc.exists():
             continue
