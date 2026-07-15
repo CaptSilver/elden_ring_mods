@@ -1,7 +1,7 @@
 import shutil
 import time
 import urllib.error
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from . import paths, steam, manifest, github, install, saves, nexus, harden
 from . import state as state_mod
@@ -253,44 +253,51 @@ def cmd_uninstall(args):
             raise PathError(
                 f"nothing recorded for {mod_id} and no vendor archive to derive from — nothing to uninstall")
         import zipfile
-        with zipfile.ZipFile(vpath) as z:
-            files = [n for n in z.namelist() if not n.endswith("/")]
+        try:
+            with zipfile.ZipFile(vpath) as z:
+                files = [n for n in z.namelist() if not n.endswith("/")]
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise PathError(f"cannot read vendor archive {asset}: {exc}") from exc
         source = f"vendor archive {asset}"
     r = Report()
     # Zip-slip guard, second layer: apply_ersc already refuses unsafe archives
     # at install, but this list can also come from the fallback archive or a
     # hand-edited installed.json — so re-validate before deleting anything.
-    # Reject absolute/`..` paths, and confirm each resolved path really stays
-    # under the game dir. A refused entry warns but doesn't abort the rest.
+    # Reject absolute/`..` paths, and confirm the resolved path stays under
+    # the game dir. Resolve only for that containment check — then act on the
+    # LITERAL game/rel, never the resolved target. A recorded symlink pointing
+    # at a stock file (e.g. -> eldenring.exe) would otherwise resolve inside
+    # Game/, pass containment, and get its TARGET deleted; unlinking the
+    # literal removes the symlink itself and leaves eldenring.exe intact.
+    # A refused entry warns but doesn't abort the rest.
     game_resolved = game.resolve()
     safe = []
     for rel in files:
-        pp = PurePosixPath(rel)
-        if pp.is_absolute() or ".." in pp.parts:
+        if not paths.is_safe_relpath(rel):
             r.warn(f"refusing unsafe path: {rel}")
             continue
-        p = (game / rel).resolve()
+        literal = game / rel
         try:
-            p.relative_to(game_resolved)
+            literal.resolve().relative_to(game_resolved)
         except ValueError:
             r.warn(f"refusing path outside game dir: {rel}")
             continue
-        safe.append((rel, p))
+        safe.append(literal)
     removed = 0
-    for rel, p in safe:
+    for literal in safe:
         try:
-            if p.is_file() or p.is_symlink():
-                p.unlink()
+            if literal.is_symlink() or literal.is_file():
+                literal.unlink()
                 removed += 1
         except OSError as exc:
-            r.warn(f"could not remove {rel}: {exc}")
+            r.warn(f"could not remove {literal.name}: {exc}")
     # Prune now-empty dirs these files lived in, deepest first, so a parent
     # dir left empty by its last child doesn't linger — but never the game
     # root itself, and never a dir that still has something in it. Drive this
-    # off the validated paths only, never the raw list.
-    for d in sorted({p.parent for _, p in safe}, key=lambda x: len(str(x)), reverse=True):
+    # off the validated literals only, never the raw list.
+    for d in sorted({literal.parent for literal in safe}, key=lambda x: len(str(x)), reverse=True):
         try:
-            if d != game_resolved and d.is_dir() and not any(d.iterdir()):
+            if d != game and d.is_dir() and not any(d.iterdir()):
                 d.rmdir()
         except OSError:
             pass

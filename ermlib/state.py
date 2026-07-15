@@ -8,6 +8,8 @@ gitignored.
 import json
 from pathlib import Path
 
+from .errors import ErmError
+
 DEFAULT_PATH = Path("installed.json")
 
 
@@ -15,7 +17,10 @@ def load_state(path=DEFAULT_PATH):
     p = Path(path)
     if not p.exists():
         return {}
-    return json.loads(p.read_text())
+    try:
+        return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ErmError(f"installed.json is corrupted ({exc}) — delete it and re-apply") from exc
 
 
 def record_install(state, mod_id, version, archive, files):

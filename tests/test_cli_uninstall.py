@@ -146,6 +146,53 @@ def test_uninstall_refuses_paths_outside_game(tmp_path, monkeypatch, capsys, tmp
     assert "refus" in out.lower()                   # warned about the unsafe path
 
 
+def test_uninstall_symlink_to_ingame_file_removes_only_the_symlink(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # A recorded path that's a symlink to a stock in-game file must delete the
+    # symlink itself, never follow it to eldenring.exe. Containment passes
+    # (target is inside Game/), so only unlinking the LITERAL path keeps the
+    # "stock files survive" guarantee.
+    game_dir = tmp_game            # already has eldenring.exe (stock)
+    link = game_dir / "ersc_launcher.exe"
+    link.symlink_to("eldenring.exe")   # relative target, resolves inside Game/
+
+    import json
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "seamless-coop": {
+            "version": "v1.9.8",
+            "archive": "x.zip",
+            "files": ["ersc_launcher.exe"],
+        }
+    }))
+
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    rc = cli.cmd_uninstall(_args())
+    assert rc == 0
+    assert (game_dir / "eldenring.exe").exists()     # symlink target untouched
+    assert not link.exists() and not link.is_symlink()   # the symlink is gone
+
+
+def test_uninstall_corrupt_vendor_archive_raises_patherror(
+        tmp_path, monkeypatch, tmp_game):
+    # Fallback path with a garbage (non-zip) vendor file must raise a clean
+    # PathError, not a raw zipfile.BadZipFile.
+    game_dir = tmp_game
+    asset = _seed_lock(tmp_path)
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / asset).write_bytes(b"this is not a zip file")   # corrupted
+
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(PathError):
+        cli.cmd_uninstall(_args())
+
+
 def test_uninstall_never_removes_stock_files(tmp_path, monkeypatch, capsys, tmp_game):
     # Belt-and-suspenders on top of the manifest test: seed Game/ explicitly
     # with stock files + ersc files, uninstall, and check the stock files by

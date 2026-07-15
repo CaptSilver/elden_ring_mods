@@ -1,8 +1,20 @@
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .errors import PathError
 
 APPID = "1245620"
+
+
+def is_safe_relpath(name):
+    """True if `name` is a plain relative path with no `..` escape.
+
+    The zip-slip guard for both install (archive members) and uninstall
+    (recorded/derived file lists). Shared so the security check can't drift
+    between the two call sites. Absolute paths and any `..` component are
+    rejected.
+    """
+    pp = PurePosixPath(name)
+    return not (pp.is_absolute() or ".." in pp.parts)
 
 _STEAM_ROOTS = [
     "~/.steam/steam",

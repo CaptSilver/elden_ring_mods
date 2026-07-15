@@ -1,4 +1,7 @@
+import pytest
+
 from ermlib.state import load_state, record_install, write_state, forget
+from ermlib.errors import ErmError
 
 
 def test_record_load_write_round_trip(tmp_path):
@@ -18,6 +21,15 @@ def test_record_load_write_round_trip(tmp_path):
             "files": ["ersc_launcher.exe", "SeamlessCoop/ersc_settings.ini"],
         }
     }
+
+
+def test_load_state_corrupt_json_raises_ermerror(tmp_path):
+    # A truncated/garbage installed.json must surface as a clean ErmError the
+    # CLI can print, not a raw JSONDecodeError traceback.
+    path = tmp_path / "installed.json"
+    path.write_text("{not valid json")
+    with pytest.raises(ErmError):
+        load_state(path)
 
 
 def test_forget_removes_entry(tmp_path):

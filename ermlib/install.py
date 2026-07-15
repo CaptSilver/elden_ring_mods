@@ -7,9 +7,10 @@ group silently loses connection until someone notices.
 import re
 import shutil
 import zipfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from .errors import ErmError
+from .paths import is_safe_relpath
 
 
 def read_secret(env_path, key="COOP_PASSWORD"):
@@ -52,8 +53,7 @@ def apply_ersc(zip_path, game_dir, password):
         # BEFORE extracting anything, so a bad archive is never partially
         # written. The returned list is then guaranteed safe relative paths.
         for name in z.namelist():
-            pp = PurePosixPath(name)
-            if pp.is_absolute() or ".." in pp.parts:
+            if not is_safe_relpath(name):
                 raise ErmError(f"unsafe path in mod archive (refusing to install): {name}")
         z.extractall(game_dir)
         files = [n for n in z.namelist() if not n.endswith("/")]

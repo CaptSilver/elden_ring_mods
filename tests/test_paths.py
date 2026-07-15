@@ -5,6 +5,7 @@ from ermlib.paths import (
     find_game_dir,
     find_prefix,
     find_save_dir,
+    is_safe_relpath,
     APPID,
 )
 from ermlib.errors import PathError
@@ -12,6 +13,14 @@ from ermlib.errors import PathError
 
 def test_appid_constant():
     assert APPID == "1245620"
+
+
+def test_is_safe_relpath():
+    assert is_safe_relpath("SeamlessCoop/ersc.dll") is True
+    assert is_safe_relpath("ersc_launcher.exe") is True
+    assert is_safe_relpath("/etc/x") is False        # absolute
+    assert is_safe_relpath("../x") is False           # leading traversal
+    assert is_safe_relpath("a/../../x") is False       # embedded traversal
 
 
 def test_same_location_uses_inode(tmp_path):
