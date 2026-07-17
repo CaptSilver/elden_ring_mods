@@ -46,7 +46,7 @@ def me3_packages(state):
     """Sorted (mod_id, package_path) for every recorded me3 package. Sorted so the
     regenerated me3 profile is byte-deterministic regardless of install order."""
     return sorted((mid, e["package"]) for mid, e in state.items()
-                  if e.get("kind") == "me3-package")
+                  if e.get("kind") == "me3-package" and e.get("package"))
 
 
 def has_me3_packages(state):

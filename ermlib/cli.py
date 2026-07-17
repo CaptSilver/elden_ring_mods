@@ -389,6 +389,17 @@ def cmd_update(args):
     if "seamless-coop" in changed:
         game = paths.find_game_dir(paths.find_steam_root())
         installed_version, had_password = _install_ersc(game, after)
+        # _install_ersc writes installed.json itself (load/record/write is
+        # self-contained), so reload right after to reconcile against the
+        # state it JUST wrote — not whatever this function's stale `before`
+        # snapshot would imply. Without this, a me3-mode profile's
+        # erm-coop.me3 keeps its pre-update natives-less form and me3 never
+        # chainloads ersc.dll even though installed.json now says it's there.
+        state = state_mod.load_state()
+        try:
+            me3profile.reconcile(state, ME3_DIR, game)
+        except OSError as exc:
+            r.warn(f"could not regenerate the me3 profile ({exc}) — run `erm apply` again")
         if not had_password:
             r.warn("no COOP_PASSWORD in secrets.env — password left blank")
         doctor_report = run_doctor(game, Report())
@@ -416,6 +427,19 @@ def _uninstall_one(game, mod_id, state, r):
     entry = state.get(mod_id)
     if entry and entry.get("kind") == "me3-package":
         pkg = Path(entry["package"])
+        # installed.json can be hand-edited (or corrupted), so re-validate
+        # before rmtree — same reasoning as the files-list containment check
+        # below, just against the me3 packages dir instead of Game/.
+        mods_root = (ME3_DIR / "mods").resolve()
+        try:
+            pkg.resolve().relative_to(mods_root)
+            contained = True
+        except (ValueError, OSError):
+            contained = False
+        if not contained:
+            r.warn(f"{mod_id}: recorded package {pkg} is outside {mods_root} — refusing to remove")
+            state_mod.forget(state, mod_id)
+            return
         if pkg.is_dir():
             try:
                 shutil.rmtree(pkg)

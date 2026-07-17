@@ -1,7 +1,8 @@
 import zipfile
 from pathlib import Path
 
-from ermlib import cli, manifest, github, paths
+from ermlib import cli, manifest, github, paths, me3profile
+from ermlib import state as state_mod
 
 
 def _seed_lock(lock_path, version="v1.9.8", sha="a" * 64):
@@ -77,6 +78,55 @@ def test_update_repins_and_installs_when_newer(tmp_path, monkeypatch, capsys):
     # safety check must run right after that install too, not just on apply.
     assert "doctor" in out.lower()
     assert "no proxy dll" in out.lower()
+
+
+def test_update_reconciles_me3_profile_after_installing_seamless(tmp_path, monkeypatch, capsys):
+    # Starting state: a me3-package mod is installed (cosmetic-extras-style
+    # profile) but seamless-coop is NOT in state yet, so erm-coop.me3 has no
+    # [[natives]] entry. `erm update` installs seamless-coop via
+    # _install_ersc, which writes state directly — but cmd_update never
+    # called me3profile.reconcile, so the profile file kept its stale
+    # no-natives form and me3 would never chainload ersc.dll.
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path, version="v1.9.8", sha="a" * 64)
+
+    game_dir = tmp_path / "Game"
+    game_dir.mkdir()
+
+    def fake_latest_release(repo_id):
+        return {"tag": "v2.0.0", "assets": [{"name": "Seamless.zip",
+                                              "url": "http://x/Seamless.zip",
+                                              "digest": "sha256:" + "b" * 64}]}
+
+    def fake_download_verified(url, dest, sha256):
+        _make_ersc_zip(Path(dest))
+
+    monkeypatch.setattr(github, "latest_release", fake_latest_release)
+    monkeypatch.setattr(github, "download_verified", fake_download_verified)
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    _seed_profile(tmp_path)
+
+    # Seed installed.json + erm-coop.me3 as they'd look after applying a
+    # me3-package-only profile: a package recorded, no seamless-coop.
+    me3_dir = tmp_path / "tools" / "me3"
+    pkg_dir = me3_dir / "mods" / "unit-mod"
+    pkg_dir.mkdir(parents=True)
+    state = {}
+    state_mod.record_me3_package(state, "unit-mod", "1.0", "unit-mod.zip",
+                                  str(Path("tools") / "me3" / "mods" / "unit-mod"))
+    state_mod.write_state(tmp_path / "installed.json", state)
+    me3profile.reconcile(state, me3_dir, game_dir)
+    prof = me3_dir / "erm-coop.me3"
+    assert "[[natives]]" not in prof.read_text()   # sanity: no chainload yet
+
+    rc = cli.cmd_update(_args())
+    capsys.readouterr()
+
+    assert rc == 0
+    assert "[[natives]]" in prof.read_text()   # reconcile ran with the post-install state
 
 
 def test_update_noop_when_already_latest(tmp_path, monkeypatch, capsys):

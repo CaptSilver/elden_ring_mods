@@ -69,3 +69,12 @@ def test_me3_packages_returns_sorted_id_path_pairs():
 
 def test_has_me3_packages_false_without_any():
     assert state_mod.has_me3_packages({"seamless-coop": {"files": []}}) is False
+
+
+def test_me3_packages_skips_entries_missing_package_key():
+    # kind="me3-package" with no "package" key (a hand-edited or corrupted
+    # installed.json) must not raise KeyError out of me3_packages — reconcile
+    # calls this, and callers of reconcile only guard for OSError, so an
+    # uncaught KeyError crashes the command.
+    s = {"broken-mod": {"kind": "me3-package", "version": "1.0"}}
+    assert state_mod.me3_packages(s) == []

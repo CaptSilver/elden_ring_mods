@@ -349,6 +349,46 @@ def test_uninstall_profile_me3_rmtree_failure_does_not_abort_other_removals(
     assert "seamless-coop" not in state  # normal removal unaffected
 
 
+def test_uninstall_me3_package_outside_mods_dir_is_refused(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # A hand-edited (or corrupted) installed.json entry can record ANY string
+    # as "package" — e.g. "/etc" or a "../../x" traversal. The me3-package
+    # removal branch used to rmtree it unchecked, unlike the Game/-file path
+    # in this same function which re-validates every path. Require the
+    # recorded package to resolve under ME3_DIR/"mods" before touching it;
+    # anything outside gets refused (warned + the stale record dropped), not
+    # deleted.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    sentinel = tmp_path / "sentinel-outside"
+    sentinel.mkdir()
+    (sentinel / "precious.txt").write_text("do not delete me")
+
+    import json
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "evil-mod": {
+            "version": "1.0",
+            "archive": "evil.zip",
+            "kind": "me3-package",
+            "package": str(sentinel),
+        }
+    }))
+
+    rc = cli.cmd_uninstall(type("A", (), {"mod": "evil-mod", "json": False})())
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert sentinel.exists()                       # not deleted
+    assert (sentinel / "precious.txt").exists()
+    assert "refus" in out.lower()                   # warned about the unsafe path
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "evil-mod" not in state                  # stale record still dropped
+
+
 def test_uninstall_never_removes_stock_files(tmp_path, monkeypatch, capsys, tmp_game):
     # Belt-and-suspenders on top of the manifest test: seed Game/ explicitly
     # with stock files + ersc files, uninstall, and check the stock files by
