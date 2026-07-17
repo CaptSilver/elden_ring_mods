@@ -32,3 +32,30 @@ def find_package_root(staging):
             cur = dirs[0]
             continue
         return None
+
+
+def install_me3_package(archive_path, mod_id, me3_dir):
+    """Extract `archive_path`, find its DVDBND root, and move it to
+    <me3_dir>/mods/<mod_id>/. Returns (package_path_str, has_regulation).
+    Raises PathError if no asset root can be located."""
+    me3_dir = Path(me3_dir)
+    staging = me3_dir / ".staging" / mod_id
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    # extract_archive enforces the zip-slip guard; game_dir=staging, no subdir.
+    install.extract_archive(Path(archive_path), staging, "")
+    root = find_package_root(staging)
+    if root is None:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise PathError(
+            f"{mod_id}: couldn't locate the game asset tree (parts/menu/msg/...) in "
+            f"{Path(archive_path).name} — install it into a me3 package by hand")
+    dest = me3_dir / "mods" / mod_id
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(root), str(dest))
+    shutil.rmtree(staging, ignore_errors=True)
+    has_regulation = (dest / "regulation.bin").exists()
+    return str(dest), has_regulation
