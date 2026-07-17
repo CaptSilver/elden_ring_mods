@@ -32,6 +32,11 @@ def test_tree_beside_a_readme(tmp_path):
     assert find_package_root(tmp_path) == tmp_path
 
 
+def test_modengine2_launcher_files_dont_block_descent(tmp_path):
+    _tree(tmp_path, "modengine2_launcher.exe", "config_eldenring.toml", "mod/parts/wp.dcx")
+    assert find_package_root(tmp_path) == tmp_path / "mod"
+
+
 def test_no_asset_dirs_returns_none(tmp_path):
     _tree(tmp_path, "random/thing.bin", "notes.docx")
     assert find_package_root(tmp_path) is None

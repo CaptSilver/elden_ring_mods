@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 from ermlib import state as state_mod
 from ermlib.me3profile import reconcile, USER_MARKER
@@ -45,6 +46,25 @@ def test_reconcile_is_deterministic(tmp_path):
     first = reconcile(s, me3, _game(tmp_path)).read_text()
     second = reconcile(s, me3, _game(tmp_path)).read_text()
     assert first == second
+
+
+def test_reconcile_escapes_apostrophe_in_game_path(tmp_path):
+    game = _game(tmp_path / "O'Brien")
+    me3 = tmp_path / "tools" / "me3"
+    text = reconcile({"seamless-coop": {"files": []}}, me3, game).read_text()
+    parsed = tomllib.loads(text)
+    expected_ersc = str((game / "SeamlessCoop" / "ersc.dll").resolve())
+    assert parsed["natives"][0]["path"] == expected_ersc
+
+
+def test_reconcile_uses_clean_literal_quoting_without_apostrophe(tmp_path):
+    game = _game(tmp_path)
+    me3 = tmp_path / "tools" / "me3"
+    text = reconcile({"seamless-coop": {"files": []}}, me3, game).read_text()
+    expected_ersc = str((game / "SeamlessCoop" / "ersc.dll").resolve())
+    assert f"path = '{expected_ersc}'" in text
+    parsed = tomllib.loads(text)
+    assert parsed["natives"][0]["path"] == expected_ersc
 
 
 def test_reconcile_preserves_user_region(tmp_path):

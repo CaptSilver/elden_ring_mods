@@ -19,6 +19,16 @@ def _esc(s):
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _toml_path(p):
+    """Emit a filesystem path as a TOML string. Prefer a single-quoted literal
+    (no escaping needed); if the path itself contains a single quote, fall back
+    to a double-quoted basic string with escaping, since a literal can't hold one."""
+    s = str(p)
+    if "'" not in s:
+        return f"'{s}'"
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _user_region(profile):
     """The preserved tail of an existing profile (from USER_MARKER on), or the default."""
     if profile.exists():
@@ -35,9 +45,9 @@ def reconcile(state, me3_dir, game_dir):
     lines = ['profileVersion = "v1"', "", "[[supports]]", 'game = "eldenring"', ""]
     if "seamless-coop" in state:
         ersc = (Path(game_dir) / "SeamlessCoop" / "ersc.dll").resolve()
-        lines += ["[[natives]]", f"path = '{ersc}'", ""]
+        lines += ["[[natives]]", f"path = {_toml_path(ersc)}", ""]
     for mid, _package in state_mod.me3_packages(state):
-        lines += ["[[packages]]", f'id = "{_esc(mid)}"', f"path = 'mods/{mid}/'", ""]
+        lines += ["[[packages]]", f'id = "{_esc(mid)}"', f"path = {_toml_path(f'mods/{mid}/')}", ""]
     me3_dir.mkdir(parents=True, exist_ok=True)
     user = _user_region(profile)
     profile.write_text("\n".join(lines) + user)

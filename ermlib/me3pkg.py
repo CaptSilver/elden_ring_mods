@@ -15,7 +15,12 @@ ASSET_DIRS = {
     "mtd", "remo", "shader", "other", "expression", "facegen",
 }
 # Sibling files that don't disqualify a folder from being a single wrapper.
-DOC_EXTS = {".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".html", ".url", ".ini"}
+# Includes ModEngine2 launcher companions (modengine2_launcher.exe,
+# config_eldenring.toml, a launch .bat) that ship beside the mod/ folder in a
+# full ME2-packaged archive — they sit at the staging root and are discarded,
+# not part of the package, but shouldn't block descent into mod/.
+DOC_EXTS = {".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".html", ".url", ".ini",
+            ".exe", ".toml", ".bat"}
 
 
 def find_package_root(staging):
