@@ -80,11 +80,9 @@ def test_cosmetic_extras_is_a_separate_client_side_overlay():
         assert m["kind"] == "cosmetic"
         assert m["source"] == "nexus"
         assert isinstance(m["nexus_id"], int)
-        # These are me3-VFS asset overrides (loose texture/menu/sfx files). erm
-        # has no me3-content-package install handler yet, so they're marked
-        # manual — apply prints guidance instead of silently mis-extracting them
-        # into Game/mods/ (a DLL folder) where they'd do nothing.
-        assert m["install"] == "manual"
+        # These are me3-VFS asset overrides (loose texture/menu/sfx files), auto-installed
+        # by erm's me3-package handler.
+        assert m["install"] == "me3-package"
 
     by_id = {m["id"]: m for m in prof["mods"]}
     assert by_id["texture-improvement"]["nexus_id"] == 2431

@@ -220,17 +220,11 @@ def _install_ersc(game, lock):
     return version, bool(password)
 
 
-_ME3_PACKAGE_NOTE = ("client-side me3 package (loose asset override) — extract into a me3 mod "
-                     "folder and add a [[package]] entry to your .me3 profile; automated install "
-                     "pending. Client-side only: co-op partners don't need it")
 _MANUAL_NOTES = {
     "item-enemy-randomizer": "run the randomizer generator (in the vendor archive) to create a "
                               "regulation.bin, then place it per its README; the whole group needs "
                               "the identical output",
     "me3": "me3 is a loader — install per me3.help; it chainloads ersc.dll and the randomizer",
-    "texture-improvement": _ME3_PACKAGE_NOTE,
-    "minimal-hud": _ME3_PACKAGE_NOTE,
-    "weapons-animated-glow": _ME3_PACKAGE_NOTE,
 }
 
 
