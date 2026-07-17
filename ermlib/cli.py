@@ -50,17 +50,36 @@ def cmd_launch_option(args):
             reshade = paths.reshade_active(game)
         except (PathError, OSError):
             reshade = False
-    print("Steam → ELDEN RING → Properties → Launch Options:\n")
-    print(f"  {build_launch_option(reshade, me3)}\n")
     if me3:
-        print("me3-mode: me3 does the asset overrides and chainloads Seamless. Launch via this me3\n"
-              "command (not the ersc_launcher option). `--ersc` prints the non-me3 wrapper.\n")
-    if reshade:
-        print("ReShade is installed on this machine, so the dxgi override is prepended. This variant\n"
-              "is per-machine — don't give it to a box without ReShade (e.g. a Steam Deck); there it'd\n"
-              "point at a dxgi.dll that isn't there. `--no-reshade` prints the plain one.\n")
-    print("Validate once (last argv token must be .../Game/start_protected_game.exe):\n")
-    print(f"  {LAUNCH_VALIDATOR}\n")
+        # me3 is a standalone launcher (it finds ELDEN RING via --steam-id/--auto-detect
+        # and runs it under Proton itself) — not a %command% wrapper. Pasting this into
+        # Steam's Launch Options is the wrong move: Steam appends %command% (the game's
+        # own launch line) to anything you put there, so me3 receives the game exe as
+        # trailing args it doesn't understand and the game autocloses after the title
+        # screen. Run it directly instead.
+        print("Launch me3 from a TERMINAL (or a .desktop shortcut) — do NOT put this in Steam's\n"
+              "Launch Options:\n")
+        print(f"  {build_launch_option(reshade, me3)}\n")
+        print("me3 does the asset overrides and chainloads Seamless, then starts the game itself.\n"
+              "If you paste this into Steam's Launch Options, Steam appends %command% (the game's\n"
+              "own launch line) to it, so me3 receives the game's exe as trailing arguments it\n"
+              "doesn't expect — the game starts, shows the title screen, then autocloses.\n"
+              "`--ersc` prints the non-me3 Steam Launch Option wrapper instead.\n")
+        print("The profile path above is relative, so run this from the erm project directory —\n"
+              "or use the absolute path to tools/me3/erm-coop.me3.\n")
+        if reshade:
+            print("ReShade is installed on this machine, so the dxgi override is prepended. This variant\n"
+                  "is per-machine — don't give it to a box without ReShade (e.g. a Steam Deck); there it'd\n"
+                  "point at a dxgi.dll that isn't there. `--no-reshade` prints the plain one.\n")
+    else:
+        print("Steam → ELDEN RING → Properties → Launch Options:\n")
+        print(f"  {build_launch_option(reshade, me3)}\n")
+        if reshade:
+            print("ReShade is installed on this machine, so the dxgi override is prepended. This variant\n"
+                  "is per-machine — don't give it to a box without ReShade (e.g. a Steam Deck); there it'd\n"
+                  "point at a dxgi.dll that isn't there. `--no-reshade` prints the plain one.\n")
+        print("Validate once (last argv token must be .../Game/start_protected_game.exe):\n")
+        print(f"  {LAUNCH_VALIDATOR}\n")
     print("Dual GPU: prepend MESA_VK_DEVICE_SELECT=<vendor>:<device> "
           "(discover with MESA_VK_DEVICE_SELECT=list %command%).")
     return 0

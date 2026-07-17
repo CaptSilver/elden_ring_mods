@@ -96,6 +96,34 @@ def test_launch_option_ersc_flag_forces_wrapper(capsys):
     assert cli.ME3_LAUNCH not in out
 
 
+def test_launch_option_ersc_mode_keeps_steam_launch_options_framing(capsys):
+    # ersc mode is a %command% wrapper, so it belongs in Steam's Launch Options field —
+    # this framing (and the validator) must survive the me3-mode split untouched.
+    cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": False})())
+    out = capsys.readouterr().out
+    assert "Steam → ELDEN RING → Properties → Launch Options" in out
+    assert cli.LAUNCH_VALIDATOR in out
+    assert "Dual GPU" in out
+
+
+def test_launch_option_me3_mode_frames_as_terminal_command_not_steam_option(capsys):
+    # me3 is a standalone launcher, not a %command% wrapper: pasting its command into
+    # Steam's Launch Options makes Steam append %command% (the game's own launch line)
+    # to it, so me3 gets the game exe as trailing args it doesn't expect and the game
+    # autocloses after the title screen. The me3 command must be framed as something
+    # you run from a terminal / desktop shortcut, never as a Steam Launch Option.
+    cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": True})())
+    out = capsys.readouterr().out
+    assert cli.ME3_LAUNCH in out
+    assert "terminal" in out.lower()
+    assert "steam → elden ring → properties → launch options" not in out.lower()
+    assert "%command%" in out
+    assert "autoclos" in out.lower()  # autocloses / autoclosing
+    assert cli.LAUNCH_VALIDATOR not in out
+    assert "--ersc" in out
+    assert "Dual GPU" in out
+
+
 def test_me3_launch_constant_is_nonempty_and_names_the_profile():
     # Verified live: me3 launches ELDEN RING + Seamless on Proton with this command.
     assert cli.ME3_LAUNCH.strip()
