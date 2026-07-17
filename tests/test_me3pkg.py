@@ -84,3 +84,51 @@ def test_install_raises_when_no_asset_root(tmp_path):
     me3_dir = tmp_path / "tools" / "me3"
     with pytest.raises(PathError):
         install_me3_package(arc, "weird", me3_dir)
+
+
+# Some Nexus mods (e.g. Minimal HUD #148) ship multiple complete variant
+# folders at the archive root — find_package_root correctly refuses to guess
+# between them, so a profile entry can name the one to use via `subdir`.
+def _option_folders_zip(path):
+    _zip(path, {
+        "OPTION 1 - Normal Backgrounds/menu/x.gfx": "a",
+        "OPTION 2 - Translucent Backgrounds/menu/y.gfx": "b",
+    })
+
+
+def test_install_uses_named_subdir_option_folder(tmp_path):
+    arc = tmp_path / "MinimalHud.zip"
+    _option_folders_zip(arc)
+    me3_dir = tmp_path / "tools" / "me3"
+    pkg, has_reg = install_me3_package(arc, "minimal-hud", me3_dir,
+                                        subdir="OPTION 1 - Normal Backgrounds")
+    dest = me3_dir / "mods" / "minimal-hud"
+    assert pkg == str(dest)
+    assert (dest / "menu" / "x.gfx").is_file()
+    # the other option's file must not leak into the placed package
+    assert not (dest / "menu" / "y.gfx").exists()
+    assert has_reg is False
+
+
+def test_install_without_subdir_raises_on_multiple_option_folders(tmp_path):
+    arc = tmp_path / "MinimalHud.zip"
+    _option_folders_zip(arc)
+    me3_dir = tmp_path / "tools" / "me3"
+    with pytest.raises(PathError):
+        install_me3_package(arc, "minimal-hud", me3_dir)
+
+
+def test_install_subdir_missing_raises(tmp_path):
+    arc = tmp_path / "MinimalHud.zip"
+    _option_folders_zip(arc)
+    me3_dir = tmp_path / "tools" / "me3"
+    with pytest.raises(PathError):
+        install_me3_package(arc, "minimal-hud", me3_dir, subdir="does-not-exist")
+
+
+def test_install_subdir_rejects_path_escape(tmp_path):
+    arc = tmp_path / "MinimalHud.zip"
+    _option_folders_zip(arc)
+    me3_dir = tmp_path / "tools" / "me3"
+    with pytest.raises(PathError):
+        install_me3_package(arc, "minimal-hud", me3_dir, subdir="../escape")

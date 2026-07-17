@@ -89,6 +89,13 @@ def test_cosmetic_extras_is_a_separate_client_side_overlay():
     assert by_id["minimal-hud"]["nexus_id"] == 148
     assert by_id["weapons-animated-glow"]["nexus_id"] == 4433
 
+    # Minimal HUD ships two complete variant folders at the archive root
+    # (OPTION 1/OPTION 2) — subdir pins the one erm installs, reproducibly.
+    # The other two mods don't need one (single package root each).
+    assert by_id["minimal-hud"]["subdir"] == "OPTION 1 - Normal Backgrounds"
+    assert by_id["texture-improvement"].get("subdir") is None
+    assert by_id["weapons-animated-glow"].get("subdir") is None
+
     # De-conflicted: the alternative HUD (#6265) and weapon mod (#4307) override
     # the same files as the chosen ones, so they're not both present.
     assert "clean-hud" not in ids

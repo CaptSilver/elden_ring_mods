@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import install
 from .errors import PathError
+from .paths import is_safe_relpath
 
 # ELDEN RING DVDBND top-level directories, lowercased. A folder that directly
 # contains one of these (or regulation.bin) is a package root.
@@ -39,10 +40,17 @@ def find_package_root(staging):
         return None
 
 
-def install_me3_package(archive_path, mod_id, me3_dir):
+def install_me3_package(archive_path, mod_id, me3_dir, subdir=None):
     """Extract `archive_path`, find its DVDBND root, and move it to
     <me3_dir>/mods/<mod_id>/. Returns (package_path_str, has_regulation).
-    Raises PathError if no asset root can be located."""
+    Raises PathError if no asset root can be located.
+
+    Some Nexus archives ship several complete variant folders at the root
+    (e.g. Minimal HUD's "OPTION 1 - Normal Backgrounds" / "OPTION 2 -
+    Translucent Backgrounds") — find_package_root correctly refuses to guess
+    between them. `subdir`, if given, names the one folder to search under,
+    so the choice is explicit and reproducible instead of auto-guessed.
+    """
     me3_dir = Path(me3_dir)
     staging = me3_dir / ".staging" / mod_id
     if staging.exists():
@@ -50,7 +58,18 @@ def install_me3_package(archive_path, mod_id, me3_dir):
     staging.mkdir(parents=True)
     # extract_archive enforces the zip-slip guard; game_dir=staging, no subdir.
     install.extract_archive(Path(archive_path), staging, "")
-    root = find_package_root(staging)
+    base = staging
+    if subdir is not None:
+        if not is_safe_relpath(subdir):
+            shutil.rmtree(staging, ignore_errors=True)
+            raise PathError(f"{mod_id}: unsafe subdir {subdir!r}")
+        base = staging / subdir
+        if not base.is_dir():
+            shutil.rmtree(staging, ignore_errors=True)
+            raise PathError(
+                f"{mod_id}: subdir {subdir!r} not found in {Path(archive_path).name} "
+                f"— check the profile's `subdir` against the archive's actual folder names")
+    root = find_package_root(base)
     if root is None:
         shutil.rmtree(staging, ignore_errors=True)
         raise PathError(

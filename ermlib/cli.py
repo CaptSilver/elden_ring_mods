@@ -302,7 +302,7 @@ def cmd_apply(args):
             continue
         if kind == "me3-package":
             try:
-                package, has_reg = me3pkg.install_me3_package(vpath, mid, ME3_DIR)
+                package, has_reg = me3pkg.install_me3_package(vpath, mid, ME3_DIR, subdir=mod.get("subdir"))
             except PathError as exc:
                 r.warn(str(exc))
                 continue
