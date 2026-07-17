@@ -50,6 +50,32 @@ def test_find_file_by_version_raises_when_absent():
         nexus.find_file_by_version(_files_fixture(), "9.9.9")
 
 
+def test_main_files_returns_only_main_category():
+    mains = nexus.main_files(_files_fixture())
+    assert [f["file_id"] for f in mains] == [45761]
+
+
+def test_main_files_returns_all_when_several():
+    # Minimal HUD #148-style case: several variant files all tagged MAIN.
+    files = _files_fixture() + [
+        {"file_id": 46000, "version": "1.9.9", "category_name": "MAIN",
+         "is_primary": False, "name": "main-variant",
+         "file_name": "Seamless Co-op variant.zip", "uploaded_timestamp": 4000},
+    ]
+    mains = nexus.main_files(files)
+    assert {f["file_id"] for f in mains} == {45761, 46000}
+
+
+def test_find_file_by_id_returns_the_matching_file():
+    f = nexus.find_file_by_id(_files_fixture(), 45761)
+    assert f["file_name"] == "Seamless Co-op v1.9.9-510-1-9-9-1776812412.zip"
+
+
+def test_find_file_by_id_raises_when_absent():
+    with pytest.raises(ErmError, match="99999"):
+        nexus.find_file_by_id(_files_fixture(), 99999)
+
+
 def test_download_url_percent_encodes_spaces_and_preserves_query(monkeypatch):
     mirrors = [{"short_name": "Nexus CDN",
                 "URI": "https://cdn/4333/510/Seamless Co-op v1.9.9.zip"

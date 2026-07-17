@@ -193,11 +193,15 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                 continue
             locked = lock.get(mod["id"])
             pinned = not update and locked and locked.get("version")
+            file_id = mod.get("file_id")
+            skip = False
             try:
                 if pinned:
                     # Same reproducibility promise as the GitHub pin: verify
                     # against the LOCKED sha256, not anything Nexus reports —
-                    # Nexus's files.json carries no hash to trust anyway.
+                    # Nexus's files.json carries no hash to trust anyway. The
+                    # lock already names the exact asset, so file_id (an
+                    # unpinned-path selector) plays no role here.
                     files = nexus.list_files(nid, nexus_api_key)
                     f = nexus.find_file_by_version(files, locked["version"])
                     url = nexus.download_url(nid, f["file_id"], nexus_api_key)
@@ -205,18 +209,40 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                     github.download_verified(url, dest, locked["sha256"])
                     digest = locked["sha256"]
                 else:
-                    # No pin and no upstream hash to check against: trust on
-                    # first use — download, then hash what actually landed on
-                    # disk and pin THAT. Every later fetch (yours or a
-                    # friend's, via the shared lockfile) verifies against it.
                     files = nexus.list_files(nid, nexus_api_key)
-                    f = nexus.pick_main_file(files)
-                    url = nexus.download_url(nid, f["file_id"], nexus_api_key)
-                    dest = vendor / f["file_name"]
-                    dest.write_bytes(github._fetch_bytes(url))
-                    digest = github.sha256_file(dest)
+                    if file_id is not None:
+                        # Profile names the exact variant — no guessing needed.
+                        f = nexus.find_file_by_id(files, file_id)
+                    else:
+                        candidates = nexus.main_files(files)
+                        if len(candidates) > 1:
+                            # e.g. Minimal HUD #148's 32 numbered MAIN
+                            # variants — picking one (even by "highest
+                            # version") would silently install the wrong
+                            # file. List them and make the user choose via
+                            # `file_id` instead of guessing.
+                            options = "\n".join(
+                                f"    id={c['file_id']}  {c['file_name']}"
+                                for c in candidates)
+                            print(f"! {mod['id']} has multiple MAIN files on Nexus — "
+                                  f"set `file_id` in the profile to one of:\n{options}")
+                            skip = True
+                        else:
+                            # No pin and no upstream hash to check against:
+                            # trust on first use — download, then hash what
+                            # actually landed on disk and pin THAT. Every
+                            # later fetch (yours or a friend's, via the
+                            # shared lockfile) verifies against it.
+                            f = nexus.pick_main_file(files)
+                    if not skip:
+                        url = nexus.download_url(nid, f["file_id"], nexus_api_key)
+                        dest = vendor / f["file_name"]
+                        dest.write_bytes(github._fetch_bytes(url))
+                        digest = github.sha256_file(dest)
             except (OSError, urllib.error.URLError, ValueError, KeyError) as exc:
                 raise NetworkError(f"failed to fetch {mod['id']} from Nexus: {exc}") from exc
+            if skip:
+                continue
             manifest.set_mod(lock, mod["id"], version=f["version"],
                              asset=f["file_name"], sha256=digest, source="nexus")
             verb = "(pinned) verified" if pinned else "fetched"

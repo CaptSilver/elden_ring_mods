@@ -65,11 +65,19 @@ def _version_key(file):
     return (tuple(parts), file.get("uploaded_timestamp") or 0)
 
 
-def pick_main_file(files):
+def main_files(files):
     # category_name == "MAIN" already excludes OLD_VERSION/ARCHIVED by
-    # construction — Nexus only ever tags one category per file. Don't trust
-    # is_primary: it's False on the current ERSC #510 main file.
-    candidates = [f for f in files if f.get("category_name") == "MAIN"]
+    # construction — Nexus only ever tags one category per file. Some mods
+    # (e.g. Minimal HUD #148) ship several MAIN files at once — numbered
+    # variants, not versions — so this can legitimately return more than one.
+    return [f for f in files if f.get("category_name") == "MAIN"]
+
+
+def pick_main_file(files):
+    # Don't trust is_primary: it's False on the current ERSC #510 main file.
+    # Only safe to auto-pick when there's exactly one MAIN file — callers with
+    # several must disambiguate via file_id instead of guessing (see cli.py).
+    candidates = main_files(files)
     if not candidates:
         raise ErmError("no MAIN file found in Nexus file list")
     return max(candidates, key=_version_key)
@@ -80,6 +88,13 @@ def find_file_by_version(files, version):
         if f.get("category_name") == "MAIN" and f.get("version") == version:
             return f
     raise ErmError(f"version {version} not found on Nexus (removed?) — try --update")
+
+
+def find_file_by_id(files, file_id):
+    for f in files:
+        if f.get("file_id") == file_id:
+            return f
+    raise ErmError(f"file id {file_id} not found on Nexus for this mod")
 
 
 def download_url(mod_id, file_id, api_key):

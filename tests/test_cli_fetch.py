@@ -227,6 +227,39 @@ def _nexus_files_fixture():
              "uploaded_timestamp": 3000}]
 
 
+def _nexus_multi_main_files_fixture():
+    # Mirrors the live Minimal HUD #148 case: several numbered variant files
+    # all tagged MAIN, no is_primary to disambiguate — picking one by guessing
+    # (highest version/newest upload) would silently install the wrong variant.
+    return [
+        {"file_id": 100, "version": "1.0.0", "category_name": "MAIN",
+         "is_primary": False, "name": "variant-a",
+         "file_name": "Minimal HUD - Variant A.zip", "uploaded_timestamp": 1000},
+        {"file_id": 200, "version": "1.0.0", "category_name": "MAIN",
+         "is_primary": False, "name": "variant-b",
+         "file_name": "Minimal HUD - Variant B.zip", "uploaded_timestamp": 2000},
+    ]
+
+
+def _write_nexus_profile(base_dir, name="nexus-only", mod_id="minimal-hud",
+                          nexus_id=148, file_id=None):
+    profiles_dir = Path(base_dir)
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    file_id_line = f"file_id = {file_id}\n" if file_id is not None else ""
+    (profiles_dir / f"{name}.toml").write_text(
+        f'name = "{name}"\n'
+        'description = "test fixture: single nexus mod with variant files"\n'
+        '\n'
+        '[[mods]]\n'
+        f'id = "{mod_id}"\n'
+        'source = "nexus"\n'
+        f'nexus_id = {nexus_id}\n'
+        f'{file_id_line}'
+        'kind = "cosmetic"\n'
+    )
+    return profiles_dir
+
+
 def test_fetch_profile_nexus_with_key_first_fetch_pins_sha256(tmp_path, monkeypatch, capsys):
     # No prior lock entry: trust-on-first-use. The main file gets downloaded
     # and the sha256 we compute from what actually landed on disk is what
@@ -303,3 +336,63 @@ def test_pinned_nexus_fetch_fails_closed_on_hash_mismatch(tmp_path, monkeypatch)
                           profiles_base=Path("profiles"), nexus_api_key="TESTKEY")
 
     assert list(vendor.iterdir()) == []
+
+
+def test_fetch_profile_nexus_file_id_selects_exact_file(tmp_path, monkeypatch, capsys):
+    # Minimal HUD #148 has 32 numbered MAIN files — `file_id` in the profile
+    # must pick the exact one the user chose, not whatever pick_main_file
+    # would guess. Pick file_id=100 (Variant A, the OLDER upload) deliberately:
+    # pick_main_file's tie-break (highest uploaded_timestamp) would guess
+    # Variant B instead, so this only goes green if file_id actually drives
+    # selection rather than being ignored.
+    monkeypatch.setattr(nexus, "list_files", lambda mod_id, key: _nexus_multi_main_files_fixture())
+    monkeypatch.setattr(nexus, "download_url",
+                        lambda mod_id, file_id, key: f"https://cdn/x/{file_id}.zip")
+
+    def must_not_verify(url, dest, sha256):
+        raise AssertionError(
+            "download_verified must not run on a first fetch — there's no locked "
+            "hash yet to verify against")
+    monkeypatch.setattr(github, "download_verified", must_not_verify)
+
+    payload = b"variant-a-bytes"
+    monkeypatch.setattr(github, "_fetch_bytes", lambda url: payload)
+
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    lock = tmp_path / "mods.lock.toml"
+    profiles_dir = _write_nexus_profile(tmp_path / "profiles", file_id=100)
+    updated = cli.fetch_profile("nexus-only", vendor, lock,
+                                profiles_base=profiles_dir, nexus_api_key="TESTKEY")
+
+    entry = updated["minimal-hud"]
+    assert entry["version"] == "1.0.0"
+    assert entry["source"] == "nexus"
+    assert entry["asset"] == "Minimal HUD - Variant A.zip"
+    assert entry["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert (vendor / entry["asset"]).read_bytes() == payload
+    out = capsys.readouterr().out
+    assert "fetched" in out.lower()
+
+
+def test_fetch_profile_nexus_multiple_main_no_file_id_warns_and_skips(tmp_path, monkeypatch, capsys):
+    # No file_id set and more than one MAIN file: erm must not guess — it
+    # should list the options and skip this mod, leaving the rest of the
+    # profile (and the lockfile) untouched for it.
+    monkeypatch.setattr(nexus, "list_files", lambda mod_id, key: _nexus_multi_main_files_fixture())
+
+    def boom(*a, **k):
+        raise AssertionError("download_url must not be called when the mod is ambiguous")
+    monkeypatch.setattr(nexus, "download_url", boom)
+
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    lock = tmp_path / "mods.lock.toml"
+    profiles_dir = _write_nexus_profile(tmp_path / "profiles")  # no file_id
+    updated = cli.fetch_profile("nexus-only", vendor, lock,
+                                profiles_base=profiles_dir, nexus_api_key="TESTKEY")
+
+    assert "minimal-hud" not in updated
+    assert list(vendor.iterdir()) == []
+    out = capsys.readouterr().out
+    assert "id=100" in out and "Minimal HUD - Variant A.zip" in out
+    assert "id=200" in out and "Minimal HUD - Variant B.zip" in out
+    assert "file_id" in out
