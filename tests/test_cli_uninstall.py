@@ -212,6 +212,69 @@ def test_uninstall_corrupt_vendor_archive_raises_patherror(
         cli.cmd_uninstall(_args())
 
 
+def _write_profile(profiles_dir, name, mods_toml):
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    (profiles_dir / f"{name}.toml").write_text(
+        f'name = "{name}"\n'
+        'description = "test fixture profile"\n'
+        '\n' + mods_toml
+    )
+
+
+def test_uninstall_profile_removes_me3_package_and_regenerates_profile(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # A me3-package mod has no Game/ file list (it lives in tools/me3/mods/),
+    # so uninstalling the profile it belongs to must remove that package dir
+    # (not fall into the vendor-archive/files fallback), drop the state
+    # entry, and the regenerated profile must no longer list it.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "unit-cosmetic",
+        '[[mods]]\n'
+        'id = "unit-mod"\n'
+        'source = "nexus"\n'
+        'nexus_id = 999\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+    )
+    (tmp_path / "mods.lock.toml").write_text(
+        '[unit-mod]\n'
+        'version = "1.0"\n'
+        'asset = "unit-mod.zip"\n'
+        'sha256 = "a"\n'
+        'source = "nexus"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "unit-mod.zip", "w") as z:
+        z.writestr("parts/wp_a.dcx", b"x")
+
+    apply_args = type("A", (), {"profile": "unit-cosmetic", "json": False})()
+    rc = cli.cmd_apply(apply_args)
+    capsys.readouterr()
+    assert rc == 0
+
+    pkg_dir = tmp_path / "tools" / "me3" / "mods" / "unit-mod"
+    prof = tmp_path / "tools" / "me3" / "erm-coop.me3"
+    assert pkg_dir.exists()
+    assert "unit-mod" in prof.read_text()
+
+    rc = cli.cmd_uninstall(type("A", (), {"mod": "unit-cosmetic", "json": False})())
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert not pkg_dir.exists()
+
+    import json
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "unit-mod" not in state
+    assert "unit-mod" not in prof.read_text()
+    assert "removed me3 package" in out.lower()
+
+
 def test_uninstall_never_removes_stock_files(tmp_path, monkeypatch, capsys, tmp_game):
     # Belt-and-suspenders on top of the manifest test: seed Game/ explicitly
     # with stock files + ersc files, uninstall, and check the stock files by

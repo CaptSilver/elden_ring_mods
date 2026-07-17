@@ -4,13 +4,15 @@ import urllib.error
 import zipfile
 from pathlib import Path
 
-from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy
+from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy, me3pkg, me3profile
 from . import state as state_mod
 from .errors import ErmError, NetworkError, PathError
 from .report import Report
 from .savefile import SaveFile
 from .audit import audit_save
 from .doctor import run_doctor
+
+ME3_DIR = Path("tools") / "me3"
 
 LAUNCH_OPTION = (
     "bash -c 'exec \"${@/start_protected_game.exe/ersc_launcher.exe}\"' -- %command%"
@@ -290,26 +292,24 @@ def cmd_apply(args):
             except (OSError, zipfile.BadZipFile) as exc:
                 r.warn(f"{mid}: extract failed ({exc})")
                 continue
-            me3dir = Path("tools") / mid
-            prof = me3dir / "erm-coop.me3"
-            # Extraction already succeeded; a failed scaffold write (read-only
-            # tools/, disk full, TOCTOU) must not propagate out of cmd_apply —
-            # that would skip the trailing write_state and drop installed.json
-            # for every mod installed earlier this run. Warn and keep going.
-            try:
-                if not prof.exists():
-                    prof.write_text(
-                        'profileVersion = "v1"\n\n[[supports]]\ngame = "eldenring"\n\n'
-                        '# Chainload Seamless Co-op — point at your installed ersc.dll:\n'
-                        '# [[native]]\n# path = "/abs/path/to/Game/SeamlessCoop/ersc.dll"\n\n'
-                        '# Load the randomizer output — point at the generated mod folder:\n'
-                        '# [[package]]\n# id = "randomizer"\n# path = "/abs/path/to/generated/mod"\n'
-                    )
-            except OSError as exc:
-                r.warn(f"{mid}: could not scaffold profile ({exc})")
             r.ok(f"{mid}: extracted to tools/{mid}/ (loader — replaces the Steam launch-option method)")
-            r.info(f"edit the starter profile {prof} to point at your ersc.dll + randomizer output, "
-                    "then launch via me3 (Linux setup differs — see https://me3.help)")
+            r.info("me3 profile is generated as tools/me3/erm-coop.me3 by erm — launch via me3 "
+                    "(see me3.help for the Linux setup)")
+            continue
+        if kind == "me3-package":
+            try:
+                package, has_reg = me3pkg.install_me3_package(vpath, mid, ME3_DIR)
+            except PathError as exc:
+                r.warn(str(exc))
+                continue
+            except (OSError, zipfile.BadZipFile) as exc:
+                r.warn(f"{mid}: install failed ({exc})")
+                continue
+            state_mod.record_me3_package(state, mid, meta.get("version", "?"), asset, package)
+            if has_reg:
+                r.warn(f"{mid}: contains regulation.bin — that's a SHARED mod (every co-op "
+                       f"player needs the identical file), not a client-side cosmetic")
+            r.ok(f"{mid} {meta.get('version', '')} → me3 package")
             continue
         subdir = "mods" if kind == "mods" else ""
         # A corrupt/truncated archive (BadZipFile) or an I/O error on one mod
@@ -330,6 +330,10 @@ def cmd_apply(args):
         state_mod.record_install(state, mid, meta.get("version", "?"), asset, files)
         r.ok(f"{mid} {meta.get('version', '')} → {subdir or 'Game/'}")
     state_mod.write_state(Path("installed.json"), state)
+    try:
+        me3profile.reconcile(state, ME3_DIR, game)
+    except OSError as exc:
+        r.warn(f"could not regenerate the me3 profile ({exc}) — run `erm apply` again")
     if installed_seamless and not password:
         r.warn("no COOP_PASSWORD in secrets.env — password left blank")
     # A loader mod (Elden Mod Loader's dinput8.dll, or me3) can be picked up by
@@ -406,6 +410,13 @@ def _uninstall_one(game, mod_id, state, r):
     there's nothing safe to derive the file list from (never touches disk
     in that case)."""
     entry = state.get(mod_id)
+    if entry and entry.get("kind") == "me3-package":
+        pkg = Path(entry["package"])
+        if pkg.is_dir():
+            shutil.rmtree(pkg)
+        state_mod.forget(state, mod_id)
+        r.ok(f"{mod_id}: removed me3 package")
+        return
     if entry and entry.get("files"):
         files = entry["files"]
         source = "install manifest"
@@ -510,6 +521,10 @@ def cmd_uninstall(args):
     else:
         _uninstall_one(game, target, state, r)
     state_mod.write_state(Path("installed.json"), state)
+    try:
+        me3profile.reconcile(state, ME3_DIR, game)
+    except OSError as exc:
+        r.warn(f"could not regenerate the me3 profile ({exc}) — run `erm apply` again")
     print(r.render(as_json=args.json))
     print("\nSafety check (erm doctor):")
     dr = run_doctor(game, Report())
@@ -536,6 +551,10 @@ def cmd_switch(args):
             r.warn(f"{mid}: {exc}")
             state_mod.forget(state, mid)
     state_mod.write_state(Path("installed.json"), state)
+    try:
+        me3profile.reconcile(state, ME3_DIR, game)
+    except OSError as exc:
+        r.warn(f"could not regenerate the me3 profile ({exc}) — run `erm apply` again")
     r.info(f"switching to {args.profile}")
     print(r.render(as_json=args.json))
     return cmd_apply(type("A", (), {

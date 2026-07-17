@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ermlib import cli, harden, paths
+from ermlib import cli, harden, me3profile, paths
 from ermlib.errors import ErmError, PathError
 from tests.conftest import REPO
 
@@ -407,12 +407,13 @@ def test_apply_me3_extracts_scaffolds_profile_and_not_recorded(
     assert "me3" not in state           # a loader/tool, not a Game/ mod
 
 
-def test_apply_me3_scaffold_write_failure_warns_and_preserves_earlier_state(
+def test_apply_me3_reconcile_write_failure_warns_and_preserves_earlier_state(
         tmp_path, monkeypatch, capsys, tmp_game):
-    # The .me3 scaffold write runs AFTER extraction succeeded. If it fails
-    # (read-only tools/, disk full, TOCTOU) it must not propagate out of
-    # cmd_apply — that would skip the trailing write_state and drop the
-    # installed.json record of every mod installed earlier in the same run.
+    # me3profile.reconcile() runs AFTER write_state, regenerating
+    # tools/me3/erm-coop.me3 on every apply. If that write fails (read-only
+    # tools/, disk full, TOCTOU) it must not propagate out of cmd_apply — that
+    # would be surprising given installed.json was already written safely;
+    # warn and keep going instead.
     game_dir = tmp_game
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
@@ -462,7 +463,7 @@ def test_apply_me3_scaffold_write_failure_warns_and_preserves_earlier_state(
     assert rc == 0
     assert (game_dir / "a.dll").exists()                # mod-a really installed
     assert (tmp_path / "tools" / "me3" / "bin" / "me3.exe").exists()  # me3 extracted
-    assert "me3" in out and "scaffold" in out.lower()   # warned, not crashed
+    assert "could not regenerate the me3 profile" in out.lower()   # warned, not crashed
 
     state = json.loads((tmp_path / "installed.json").read_text())
     assert "mod-a" in state          # earlier mod's state survived the failure
@@ -540,10 +541,12 @@ def test_uninstall_profile_skips_tools_kind_mods(
     assert after == {}
 
 
-def test_apply_me3_does_not_clobber_existing_profile(
+def test_apply_me3_reconcile_preserves_user_additions_in_profile(
         tmp_path, monkeypatch, capsys, tmp_game):
-    # A player edits tools/me3/erm-coop.me3 by hand (pointing it at their
-    # ersc.dll + randomizer output); re-running apply must leave it alone.
+    # reconcile() regenerates everything ABOVE the USER_MARKER on every apply
+    # (it's derived from install state, not hand-mutated), but a player's own
+    # additions BELOW the marker (their ersc.dll native, a randomizer output
+    # package) must survive a re-apply.
     game_dir = tmp_game
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
@@ -565,14 +568,144 @@ def test_apply_me3_does_not_clobber_existing_profile(
     vendor.mkdir()
     _zip_with(vendor / "me3.zip", "bin/me3.exe")
 
+    # Seed a deliberately WRONG header above the marker: if apply merely left
+    # an existing profile alone (the old scaffold's `if not prof.exists()`
+    # behavior), this garbage header would still be sitting there afterward.
+    # Only an actual reconcile() call regenerates it to the real header.
     prof_dir = tmp_path / "tools" / "me3"
     prof_dir.mkdir(parents=True)
     prof = prof_dir / "erm-coop.me3"
-    prof.write_text("# hand-edited by the player\n")
+    prof.write_text(
+        "STALE-GARBAGE-HEADER\n\n"
+        + me3profile.USER_MARKER + "\n"
+        '[[packages]]\nid = "my-hand-add"\npath = \'mods/mine/\'\n'
+    )
 
     cli.cmd_apply(_apply_args("me3-only"))
+    text = prof.read_text()
 
-    assert prof.read_text() == "# hand-edited by the player\n"
+    assert "STALE-GARBAGE-HEADER" not in text     # header actually regenerated
+    assert 'profileVersion = "v1"' in text         # ... to the real reconciled header
+    assert "my-hand-add" in text                   # user region below the marker survives
+
+
+def test_apply_me3_package_installs_and_reconciles(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # A me3 content package (a loose asset-override archive) must land in
+    # tools/me3/mods/<id>/, get recorded as kind="me3-package" (not a Game/
+    # file list), and the regenerated erm-coop.me3 must list it.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "unit-cosmetic",
+        '[[mods]]\n'
+        'id = "unit-mod"\n'
+        'source = "nexus"\n'
+        'nexus_id = 999\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"unit-mod": ("1.0", "unit-mod.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "unit-mod.zip", "w") as z:
+        z.writestr("parts/wp_a.dcx", b"x")
+
+    rc = cli.cmd_apply(_apply_args("unit-cosmetic"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert (tmp_path / "tools" / "me3" / "mods" / "unit-mod" / "parts").exists()
+    assert "unit-mod" in out and "me3 package" in out
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert state["unit-mod"]["kind"] == "me3-package"
+    assert state["unit-mod"]["package"] == str(Path("tools") / "me3" / "mods" / "unit-mod")
+
+    prof_text = (tmp_path / "tools" / "me3" / "erm-coop.me3").read_text()
+    assert "unit-mod" in prof_text
+
+
+def test_apply_me3_package_with_regulation_warns_shared_mod(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # regulation.bin is a SHARED file (every co-op player needs the identical
+    # one) — a me3 package that carries one is not a safe client-side install,
+    # so apply must warn loudly instead of silently treating it as cosmetic.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "shared-cosmetic",
+        '[[mods]]\n'
+        'id = "shared-mod"\n'
+        'source = "nexus"\n'
+        'nexus_id = 998\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"shared-mod": ("1.0", "shared-mod.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "shared-mod.zip", "w") as z:
+        z.writestr("regulation.bin", b"r")
+
+    rc = cli.cmd_apply(_apply_args("shared-cosmetic"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "shared-mod" in out and "regulation.bin" in out and "SHARED" in out
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert state["shared-mod"]["kind"] == "me3-package"
+
+
+def test_apply_me3_package_no_asset_root_warns_and_continues(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # A me3-package archive that has no recognizable DVDBND asset tree can't
+    # be installed automatically; it must warn and NOT sink mods installed
+    # earlier in the same run (matches the existing per-mod isolation pattern).
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "mixed",
+        '[[mods]]\n'
+        'id = "mod-a"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "test"\n'
+        'install = "game"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "weird-mod"\n'
+        'source = "nexus"\n'
+        'nexus_id = 997\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {
+        "mod-a": ("1.0", "mod-a.zip"),
+        "weird-mod": ("1.0", "weird-mod.zip"),
+    })
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "mod-a.zip", "a.dll")
+    with zipfile.ZipFile(vendor / "weird-mod.zip", "w") as z:
+        z.writestr("docs/notes.txt", b"n")
+
+    rc = cli.cmd_apply(_apply_args("mixed"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert (game_dir / "a.dll").exists()
+    assert "weird-mod" in out
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "mod-a" in state
+    assert "weird-mod" not in state
 
 
 def test_switch_survives_bad_state_entry_and_ends_consistent(
