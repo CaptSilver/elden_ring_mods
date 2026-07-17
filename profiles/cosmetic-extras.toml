@@ -20,6 +20,10 @@ install = "me3-package"
 id = "minimal-hud"                # strips/relocates HUD clutter, very configurable
 source = "nexus"
 nexus_id = 148
+file_id = 6319                    # variant "01 - Base": core minimal HUD, no extra removals.
+                                  # #148 ships 32 numbered MAIN variants (Base + toggles like
+                                  # Compact HUD / No Compass / No NPC Health); erm lists them all
+                                  # if file_id is unset. Others: 02 Compact=6321, 06 No-Compass=6325.
 kind = "cosmetic"
 install = "me3-package"
 # The archive ships two complete variant folders at its root — subdir picks
