@@ -275,6 +275,80 @@ def test_uninstall_profile_removes_me3_package_and_regenerates_profile(
     assert "removed me3 package" in out.lower()
 
 
+def test_uninstall_profile_me3_rmtree_failure_does_not_abort_other_removals(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # If shutil.rmtree on a me3-package dir blows up (permission denied, a
+    # file still open, whatever), that must not sink the rest of a
+    # profile-uninstall — it should warn, still forget the mod, and let the
+    # OTHER mod in the same run (a plain Game/ file removal) still happen and
+    # installed.json still get written. Put the failing mod FIRST in the
+    # profile so the old unguarded code — which lets the OSError propagate
+    # straight out of cmd_uninstall — would abort before ever touching the
+    # second mod or calling write_state.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "mixed",
+        '[[mods]]\n'
+        'id = "unit-mod"\n'
+        'source = "nexus"\n'
+        'nexus_id = 999\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "seamless-coop"\n'
+        'source = "github"\n'
+        'repo_id = 497113840\n'
+        'kind = "coop-framework"\n'
+        'install = "game"\n'
+    )
+    asset = _seed_lock(tmp_path)
+    (tmp_path / "mods.lock.toml").write_text(
+        (tmp_path / "mods.lock.toml").read_text() +
+        '\n[unit-mod]\n'
+        'version = "1.0"\n'
+        'asset = "unit-mod.zip"\n'
+        'sha256 = "a"\n'
+        'source = "nexus"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "unit-mod.zip", "w") as z:
+        z.writestr("parts/wp_a.dcx", b"x")
+    _make_ersc_zip(vendor / asset)
+
+    apply_args = type("A", (), {"profile": "mixed", "json": False})()
+    rc = cli.cmd_apply(apply_args)
+    capsys.readouterr()
+    assert rc == 0
+
+    pkg_dir = tmp_path / "tools" / "me3" / "mods" / "unit-mod"
+    assert pkg_dir.exists()
+    assert (game_dir / "ersc_launcher.exe").exists()
+
+    def _raise_rmtree(path, *a, **kw):
+        raise OSError("permission denied (simulated)")
+    monkeypatch.setattr(cli.shutil, "rmtree", _raise_rmtree)
+
+    rc = cli.cmd_uninstall(type("A", (), {"mod": "mixed", "json": False})())
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert pkg_dir.exists()                     # rmtree failed — left on disk
+    assert "could not remove" in out.lower()     # warned, not silent
+    # the OTHER mod in the same profile-uninstall run still got removed
+    assert not (game_dir / "ersc_launcher.exe").exists()
+    assert not (game_dir / "SeamlessCoop").exists()
+
+    import json
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "unit-mod" not in state       # forgotten despite the rmtree failure
+    assert "seamless-coop" not in state  # normal removal unaffected
+
+
 def test_uninstall_never_removes_stock_files(tmp_path, monkeypatch, capsys, tmp_game):
     # Belt-and-suspenders on top of the manifest test: seed Game/ explicitly
     # with stock files + ersc files, uninstall, and check the stock files by

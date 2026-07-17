@@ -413,9 +413,14 @@ def _uninstall_one(game, mod_id, state, r):
     if entry and entry.get("kind") == "me3-package":
         pkg = Path(entry["package"])
         if pkg.is_dir():
-            shutil.rmtree(pkg)
+            try:
+                shutil.rmtree(pkg)
+                r.ok(f"{mod_id}: removed me3 package")
+            except OSError as exc:
+                r.warn(f"{mod_id}: could not remove {pkg} ({exc}) — left on disk")
+        else:
+            r.ok(f"{mod_id}: me3 package already gone")
         state_mod.forget(state, mod_id)
-        r.ok(f"{mod_id}: removed me3 package")
         return
     if entry and entry.get("files"):
         files = entry["files"]
