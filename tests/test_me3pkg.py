@@ -37,3 +37,8 @@ def test_no_asset_dirs_returns_none(tmp_path):
 def test_regulation_only_is_a_valid_root(tmp_path):
     (tmp_path / "regulation.bin").write_bytes(b"x")
     assert find_package_root(tmp_path) == tmp_path
+
+
+def test_regulation_bin_is_matched_case_insensitively(tmp_path):
+    (tmp_path / "Regulation.BIN").write_bytes(b"x")
+    assert find_package_root(tmp_path) == tmp_path

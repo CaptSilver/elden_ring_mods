@@ -25,7 +25,7 @@ def find_package_root(staging):
     while True:
         children = list(cur.iterdir())
         dirs = [c for c in children if c.is_dir()]
-        if {d.name.lower() for d in dirs} & ASSET_DIRS or (cur / "regulation.bin").exists():
+        if {d.name.lower() for d in dirs} & ASSET_DIRS or any(c.name.lower() == "regulation.bin" for c in children if c.is_file()):
             return cur
         stray = [c for c in children if c.is_file() and c.suffix.lower() not in DOC_EXTS]
         if len(dirs) == 1 and not stray:
