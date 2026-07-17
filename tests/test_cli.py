@@ -45,9 +45,10 @@ def _seed_apply_fixture(tmp_path, game_dir):
 
 
 def test_launch_option_string(capsys):
-    # reshade=False is explicit so the assertion is deterministic regardless of
-    # whether the machine running the tests happens to have ReShade installed.
-    rc = cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False})())
+    # reshade=False and me3=False are explicit so the assertion is deterministic
+    # regardless of whether the machine running the tests happens to have ReShade
+    # installed, or the cwd's installed.json happens to have me3 packages recorded.
+    rc = cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": False})())
     out = capsys.readouterr().out
     assert 'start_protected_game.exe/ersc_launcher.exe' in out
     assert out.count('"') >= 2          # quoting preserved
@@ -56,7 +57,7 @@ def test_launch_option_string(capsys):
 
 
 def test_launch_option_prepends_reshade_override_when_present(capsys):
-    rc = cli.cmd_launch_option(type("A", (), {"json": False, "reshade": True})())
+    rc = cli.cmd_launch_option(type("A", (), {"json": False, "reshade": True, "me3": False})())
     out = capsys.readouterr().out
     # the ReShade dxgi override is prepended, and the ERSC wrapper is preserved
     assert 'WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b"' in out
@@ -67,10 +68,31 @@ def test_launch_option_prepends_reshade_override_when_present(capsys):
 
 
 def test_build_launch_option_helper():
-    assert cli.build_launch_option(False) == cli.LAUNCH_OPTION
-    reshaded = cli.build_launch_option(True)
+    assert cli.build_launch_option(False, False) == cli.LAUNCH_OPTION
+    reshaded = cli.build_launch_option(True, False)
     assert reshaded.startswith('WINEDLLOVERRIDES=')
     assert reshaded.endswith(cli.LAUNCH_OPTION)
+
+
+def test_build_launch_option_me3_mode_uses_me3_command():
+    assert cli.build_launch_option(False, True) == cli.ME3_LAUNCH
+    assert cli.build_launch_option(False, False) == cli.LAUNCH_OPTION
+    withrs = cli.build_launch_option(True, True)
+    assert withrs.startswith("WINEDLLOVERRIDES=")
+    assert cli.ME3_LAUNCH in withrs
+
+
+def test_launch_option_me3_flag_forces_me3(capsys):
+    cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": True})())
+    out = capsys.readouterr().out
+    assert cli.ME3_LAUNCH in out
+
+
+def test_launch_option_ersc_flag_forces_wrapper(capsys):
+    cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": False})())
+    out = capsys.readouterr().out
+    assert "ersc_launcher.exe" in out
+    assert cli.ME3_LAUNCH not in out
 
 
 def test_me3_launch_constant_is_nonempty_and_names_the_profile():

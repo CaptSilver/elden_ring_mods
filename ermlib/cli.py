@@ -31,11 +31,18 @@ ME3_LAUNCH = "me3 launch -p tools/me3/erm-coop.me3"
 RESHADE_ENV = 'WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b" '
 
 
-def build_launch_option(reshade):
-    return (RESHADE_ENV + LAUNCH_OPTION) if reshade else LAUNCH_OPTION
+def build_launch_option(reshade, me3):
+    base = ME3_LAUNCH if me3 else LAUNCH_OPTION
+    return (RESHADE_ENV + base) if reshade else base
 
 
 def cmd_launch_option(args):
+    me3 = getattr(args, "me3", None)
+    if me3 is None:                     # auto-detect from install state
+        try:
+            me3 = state_mod.has_me3_packages(state_mod.load_state())
+        except ErmError:
+            me3 = False
     reshade = getattr(args, "reshade", None)
     if reshade is None:                 # auto-detect from this machine's game dir
         try:
@@ -44,7 +51,10 @@ def cmd_launch_option(args):
         except (PathError, OSError):
             reshade = False
     print("Steam → ELDEN RING → Properties → Launch Options:\n")
-    print(f"  {build_launch_option(reshade)}\n")
+    print(f"  {build_launch_option(reshade, me3)}\n")
+    if me3:
+        print("me3-mode: me3 does the asset overrides and chainloads Seamless. Launch via this me3\n"
+              "command (not the ersc_launcher option). `--ersc` prints the non-me3 wrapper.\n")
     if reshade:
         print("ReShade is installed on this machine, so the dxgi override is prepended. This variant\n"
               "is per-machine — don't give it to a box without ReShade (e.g. a Steam Deck); there it'd\n"
@@ -716,6 +726,11 @@ def register(subparsers):
                        help="force the ReShade (dxgi override) variant")
     lo_re.add_argument("--no-reshade", dest="reshade", action="store_const", const=False,
                        help="force the plain variant even if ReShade is installed here")
+    lo_m = lo.add_mutually_exclusive_group()
+    lo_m.add_argument("--me3", dest="me3", action="store_const", const=True, default=None,
+                      help="force the me3-mode launch command")
+    lo_m.add_argument("--ersc", dest="me3", action="store_const", const=False,
+                      help="force the ersc_launcher wrapper even if me3 packages are installed")
     lo.set_defaults(func=cmd_launch_option)
     f = subparsers.add_parser("fetch", help="download + verify a profile's mods")
     f.add_argument("profile", nargs="?", default="seamless-only")
