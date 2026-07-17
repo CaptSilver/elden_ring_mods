@@ -40,6 +40,17 @@ def find_package_root(staging):
         return None
 
 
+def list_option_dirs(base):
+    """Immediate subdirectories of `base` that each look like a self-contained
+    option (find_package_root succeeds inside them). Used to tell the user which
+    `subdir` values are valid when an archive ships multiple variant folders."""
+    out = []
+    for d in sorted(p for p in Path(base).iterdir() if p.is_dir()):
+        if find_package_root(d) is not None:
+            out.append(d.name)
+    return out
+
+
 def install_me3_package(archive_path, mod_id, me3_dir, subdir=None):
     """Extract `archive_path`, find its DVDBND root, and move it to
     <me3_dir>/mods/<mod_id>/. Returns (package_path_str, has_regulation).
@@ -71,7 +82,12 @@ def install_me3_package(archive_path, mod_id, me3_dir, subdir=None):
                 f"— check the profile's `subdir` against the archive's actual folder names")
     root = find_package_root(base)
     if root is None:
+        options = list_option_dirs(base)
         shutil.rmtree(staging, ignore_errors=True)
+        if options:
+            raise PathError(
+                f"{mod_id}: this archive has multiple option folders — pick one and set "
+                f"`subdir` in the profile: " + ", ".join(repr(o) for o in options))
         raise PathError(
             f"{mod_id}: couldn't locate the game asset tree (parts/menu/msg/...) in "
             f"{Path(archive_path).name} — install it into a me3 package by hand")

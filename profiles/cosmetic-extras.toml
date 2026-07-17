@@ -24,8 +24,8 @@ kind = "cosmetic"
 install = "me3-package"
 # The archive ships two complete variant folders at its root — subdir picks
 # which one erm installs. Swap to taste; the alternative is:
-#   subdir = "OPTION 2 - Translucent Backgrounds"
-subdir = "OPTION 1 - Normal Backgrounds"
+#   subdir = "OPTION 1 - Normal Backgrounds"
+subdir = "OPTION 2 - Translucent Backgrounds"
 # Alternative look — swap the block above for this one, don't run both (same menu files):
 #   id = "clean-hud"  / nexus_id = 6265  (translucent menus + Network-Test-style HUD)
 

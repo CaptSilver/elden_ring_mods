@@ -1,7 +1,7 @@
 import zipfile
 import pytest
 from pathlib import Path
-from ermlib.me3pkg import find_package_root, install_me3_package
+from ermlib.me3pkg import find_package_root, install_me3_package, list_option_dirs
 from ermlib.errors import PathError
 
 
@@ -132,3 +132,36 @@ def test_install_subdir_rejects_path_escape(tmp_path):
     me3_dir = tmp_path / "tools" / "me3"
     with pytest.raises(PathError):
         install_me3_package(arc, "minimal-hud", me3_dir, subdir="../escape")
+
+
+def test_list_option_dirs_finds_each_self_contained_option(tmp_path):
+    _tree(tmp_path, "OPTION 1/menu/x.gfx", "OPTION 2/menu/y.gfx")
+    assert list_option_dirs(tmp_path) == ["OPTION 1", "OPTION 2"]
+
+
+def test_list_option_dirs_empty_for_a_normal_single_root_tree(tmp_path):
+    # A bare asset dir at the root is a single clear package root, not a set
+    # of options — list_option_dirs must not misreport it as one.
+    _tree(tmp_path, "parts/x.dcx")
+    assert list_option_dirs(tmp_path) == []
+
+
+def test_install_without_subdir_lists_option_names_in_error(tmp_path):
+    arc = tmp_path / "MinimalHud.zip"
+    _option_folders_zip(arc)
+    me3_dir = tmp_path / "tools" / "me3"
+    with pytest.raises(PathError) as exc:
+        install_me3_package(arc, "minimal-hud", me3_dir)
+    msg = str(exc.value)
+    assert "OPTION 1 - Normal Backgrounds" in msg
+    assert "OPTION 2 - Translucent Backgrounds" in msg
+
+
+def test_install_unrecognizable_archive_keeps_generic_message(tmp_path):
+    arc = tmp_path / "Weird.zip"
+    _zip(arc, {"docs/notes.docx": "n"})
+    me3_dir = tmp_path / "tools" / "me3"
+    with pytest.raises(PathError) as exc:
+        install_me3_package(arc, "weird", me3_dir)
+    msg = str(exc.value)
+    assert "option" not in msg.lower()
