@@ -92,6 +92,20 @@ def cmd_status(args):
     r.info(f"game installed: {m.get('installed')}  buildid={m.get('buildid')}")
     for cs in steam.cloud_saves(root):
         r.info(f"cloud save: account {cs['account_id']} {cs['relpath']} ({cs['size']} B)")
+    try:
+        state = state_mod.load_state()
+    except ErmError as exc:
+        r.warn(str(exc))
+        state = {}
+    if state:
+        r.info(f"{len(state)} mod(s) installed:")
+        for mid in sorted(state):
+            e = state[mid]
+            r.info(f"  {mid} {e.get('version', '?')} ({e.get('kind', 'game')})")
+        if state_mod.has_me3_packages(state):
+            r.info("launch: me3-mode (me3 packages installed) — see `erm launch-option`")
+    else:
+        r.info("no mods recorded in installed.json")
     print(r.render(as_json=args.json))
     return 0
 

@@ -3,6 +3,7 @@ import zipfile
 import pytest
 
 from ermlib import cli, paths
+from ermlib import state as state_mod
 from ermlib.errors import PathError
 
 
@@ -216,6 +217,65 @@ def test_apply_returns_doctor_fail_code_when_forbidden_artifact_present(tmp_path
 
     assert rc == 1
     assert "✗" in out or "fail" in out.lower()
+
+
+def test_status_lists_installed_mods(tmp_path, monkeypatch, capsys):
+    # `erm status` must surface what's actually recorded in installed.json —
+    # a game-installed mod and a me3 package look different (different kind
+    # tag), and having any me3 package present flips the launch mode note.
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    state = state_mod.load_state()
+    state_mod.record_install(state, "seamless-coop", "v1.9.8",
+                              "seamless-coop-v1.9.8.zip", ["ersc_launcher.exe"])
+    state_mod.record_me3_package(state, "minimal-hud", "1.0", "MinimalHUD.zip",
+                                  "tools/me3/mods/minimal-hud")
+    state_mod.write_state(tmp_path / "installed.json", state)
+
+    args = type("A", (), {"json": False})()
+    rc = cli.cmd_status(args)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "seamless-coop" in out
+    assert "v1.9.8" in out
+    assert "(game)" in out
+    assert "minimal-hud" in out
+    assert "1.0" in out
+    assert "(me3-package)" in out
+    assert "2 mod(s) installed" in out
+    assert "me3-mode" in out.lower()
+    assert "launch-option" in out
+
+
+def test_status_no_installed_json_says_none_recorded(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    args = type("A", (), {"json": False})()
+    rc = cli.cmd_status(args)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "no mods recorded in installed.json" in out.lower()
+
+
+def test_status_corrupt_installed_json_warns_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    # load_state raises ErmError on a corrupted installed.json; status must
+    # warn and keep going (still prints the game/cloud-save lines) rather
+    # than letting the exception blow up the whole command.
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "installed.json").write_text("{not valid json")
+
+    args = type("A", (), {"json": False})()
+    rc = cli.cmd_status(args)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "corrupt" in out.lower()
+    assert "game installed" in out.lower()
 
 
 def test_verify_missing_asset_key_warns_instead_of_crashing(tmp_path, monkeypatch, capsys):
