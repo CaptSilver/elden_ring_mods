@@ -134,6 +134,14 @@ def test_install_subdir_rejects_path_escape(tmp_path):
         install_me3_package(arc, "minimal-hud", me3_dir, subdir="../escape")
 
 
+def test_install_subdir_rejects_absolute_path(tmp_path):
+    arc = tmp_path / "MinimalHud.zip"
+    _option_folders_zip(arc)
+    me3_dir = tmp_path / "tools" / "me3"
+    with pytest.raises(PathError):
+        install_me3_package(arc, "minimal-hud", me3_dir, subdir="/etc")
+
+
 def test_list_option_dirs_finds_each_self_contained_option(tmp_path):
     _tree(tmp_path, "OPTION 1/menu/x.gfx", "OPTION 2/menu/y.gfx")
     assert list_option_dirs(tmp_path) == ["OPTION 1", "OPTION 2"]
@@ -155,6 +163,25 @@ def test_install_without_subdir_lists_option_names_in_error(tmp_path):
     msg = str(exc.value)
     assert "OPTION 1 - Normal Backgrounds" in msg
     assert "OPTION 2 - Translucent Backgrounds" in msg
+
+
+def test_install_without_subdir_wording_is_count_agnostic_for_a_single_option(tmp_path):
+    # A stray file at the staging root can disqualify the root itself as a
+    # package (find_package_root refuses to descend past it) even though
+    # exactly one subdir underneath qualifies on its own — list_option_dirs
+    # then reports a single option, not multiple. The error message must not
+    # claim "multiple option folders" in that case.
+    arc = tmp_path / "SingleOption.zip"
+    _zip(arc, {
+        "somefile.dat": "stray, not a doc ext — disqualifies the root",
+        "ModFolder/parts/wp.dcx": "a",
+    })
+    me3_dir = tmp_path / "tools" / "me3"
+    with pytest.raises(PathError) as exc:
+        install_me3_package(arc, "single-option", me3_dir)
+    msg = str(exc.value)
+    assert "multiple" not in msg.lower()
+    assert "ModFolder" in msg
 
 
 def test_install_unrecognizable_archive_keeps_generic_message(tmp_path):

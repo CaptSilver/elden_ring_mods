@@ -9,9 +9,10 @@ APPID = "1245620"
 def is_safe_relpath(name):
     """True if `name` is a plain relative path with no `..` escape.
 
-    The zip-slip guard for both install (archive members) and uninstall
-    (recorded/derived file lists). Shared so the security check can't drift
-    between the two call sites. Absolute paths and any `..` component are
+    The zip-slip guard for install (archive members), uninstall
+    (recorded/derived file lists), and me3-package subdir selection. Shared
+    across the install/uninstall/me3-package call sites so the security check
+    can't drift between them. Absolute paths and any `..` component are
     rejected.
     """
     pp = PurePosixPath(name)

@@ -86,8 +86,8 @@ def install_me3_package(archive_path, mod_id, me3_dir, subdir=None):
         shutil.rmtree(staging, ignore_errors=True)
         if options:
             raise PathError(
-                f"{mod_id}: this archive has multiple option folders — pick one and set "
-                f"`subdir` in the profile: " + ", ".join(repr(o) for o in options))
+                f"{mod_id}: couldn't auto-place this archive — set `subdir` in the "
+                f"profile to one of: " + ", ".join(repr(o) for o in options))
         raise PathError(
             f"{mod_id}: couldn't locate the game asset tree (parts/menu/msg/...) in "
             f"{Path(archive_path).name} — install it into a me3 package by hand")
