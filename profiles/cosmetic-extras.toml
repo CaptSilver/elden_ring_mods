@@ -16,22 +16,15 @@ nexus_id = 2431
 kind = "cosmetic"
 install = "me3-package"
 
-[[mods]]
-id = "minimal-hud"                # strips/relocates HUD clutter, very configurable
-source = "nexus"
-nexus_id = 148
-file_id = 6319                    # variant "01 - Base": core minimal HUD, no extra removals.
-                                  # #148 ships 32 numbered MAIN variants (Base + toggles like
-                                  # Compact HUD / No Compass / No NPC Health); erm lists them all
-                                  # if file_id is unset. Others: 02 Compact=6321, 06 No-Compass=6325.
-kind = "cosmetic"
-install = "me3-package"
-# The archive ships two complete variant folders at its root — subdir picks
-# which one erm installs. Swap to taste; the alternative is:
-#   subdir = "OPTION 1 - Normal Backgrounds"
-subdir = "OPTION 2 - Translucent Backgrounds"
-# Alternative look — swap the block above for this one, don't run both (same menu files):
-#   id = "clean-hud"  / nexus_id = 6265  (translucent menus + Network-Test-style HUD)
+# --- HUD mod DROPPED (game-version incompatibility, not an erm problem) ---
+# Minimal HUD #148 last updated mid-2022 (v1.2.3); it replaces the menu/caption
+# .gfx files, and on the current post-DLC build (buildid 22984413) the text in
+# those elements renders as missing-glyph boxes ("tofu"). Every one of its 32
+# variants shares the same outdated base menu files, so the break is the same
+# whichever you pick. It installed fine via me3-package — the mismatch is the
+# game version. To restore/replace once a current-version minimal HUD is found,
+# add a [[mods]] entry: nexus_id + install="me3-package" (+ file_id/subdir if it
+# ships variants). Was: nexus_id=148, file_id=6319 (01-Base), subdir="OPTION 2 - Translucent Backgrounds".
 
 [[mods]]
 id = "weapons-animated-glow"      # animated glow/effects on weapons incl. DLC

@@ -69,7 +69,7 @@ def test_cosmetic_extras_is_a_separate_client_side_overlay():
     # is unaffected — a lower-powered box (a Steam Deck, say) can skip it.
     prof = load_profile("cosmetic-extras", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    assert ids == ["texture-improvement", "minimal-hud", "weapons-animated-glow"]
+    assert ids == ["texture-improvement", "weapons-animated-glow"]
 
     # No coop framework and no loader: it rides the base profile's me3, and with
     # no loader mod it must never trip apply's auto-harden on its own.
@@ -86,13 +86,11 @@ def test_cosmetic_extras_is_a_separate_client_side_overlay():
 
     by_id = {m["id"]: m for m in prof["mods"]}
     assert by_id["texture-improvement"]["nexus_id"] == 2431
-    assert by_id["minimal-hud"]["nexus_id"] == 148
     assert by_id["weapons-animated-glow"]["nexus_id"] == 4433
 
-    # Minimal HUD ships two complete variant folders at the archive root
-    # (OPTION 1/OPTION 2) — subdir pins the one erm installs, reproducibly.
-    # The other two mods don't need one (single package root each).
-    assert by_id["minimal-hud"]["subdir"] == "OPTION 2 - Translucent Backgrounds"
+    # minimal-hud (#148) was dropped: its mid-2022 menu .gfx render as tofu on the
+    # current post-DLC build. Left out until a version-compatible minimal HUD exists.
+    assert "minimal-hud" not in ids
     assert by_id["texture-improvement"].get("subdir") is None
     assert by_id["weapons-animated-glow"].get("subdir") is None
 
