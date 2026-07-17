@@ -8,8 +8,40 @@ from ermlib.paths import (
     find_proton,
     find_compatdata,
     is_safe_relpath,
+    reshade_active,
     APPID,
 )
+
+
+def test_reshade_active_true_for_reshade_symlink(tmp_path):
+    # reshade-steam-proton installs ReShade as Game/dxgi.dll -> .../ReShade64.dll
+    game = tmp_path / "Game"
+    game.mkdir()
+    real = tmp_path / "reshade" / "ReShade64.dll"
+    real.parent.mkdir()
+    real.write_bytes(b"MZ")
+    (game / "dxgi.dll").symlink_to(real)
+    assert reshade_active(game) is True
+
+
+def test_reshade_active_false_without_the_symlink(tmp_path):
+    game = tmp_path / "Game"
+    game.mkdir()
+    # no dxgi.dll at all
+    assert reshade_active(game) is False
+    # a plain (non-symlink) dxgi.dll is not a ReShade install we placed
+    (game / "dxgi.dll").write_bytes(b"MZ")
+    assert reshade_active(game) is False
+
+
+def test_reshade_active_false_for_non_reshade_symlink(tmp_path):
+    game = tmp_path / "Game"
+    game.mkdir()
+    other = tmp_path / "dxvk" / "dxgi.dll"
+    other.parent.mkdir()
+    other.write_bytes(b"MZ")
+    (game / "dxgi.dll").symlink_to(other)   # points at DXVK, not ReShade
+    assert reshade_active(game) is False
 from ermlib.errors import PathError
 
 

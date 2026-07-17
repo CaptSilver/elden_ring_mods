@@ -62,6 +62,42 @@ def test_single_full_profile_is_non_coop_with_the_conflict_mods():
     assert len(ids) == len(set(ids))   # no duplicate mod ids
 
 
+def test_cosmetic_extras_is_a_separate_client_side_overlay():
+    # cosmetic-extras is a per-machine, toggleable overlay applied ON TOP of a
+    # base coop profile — not a standalone stack. Every mod is client-side
+    # (visual only, no regulation.bin), so a co-op partner who doesn't run it
+    # is unaffected — a lower-powered box (a Steam Deck, say) can skip it.
+    prof = load_profile("cosmetic-extras", base=Path("profiles"))
+    ids = [m["id"] for m in prof["mods"]]
+    assert ids == ["texture-improvement", "minimal-hud", "weapons-animated-glow"]
+
+    # No coop framework and no loader: it rides the base profile's me3, and with
+    # no loader mod it must never trip apply's auto-harden on its own.
+    assert "seamless-coop" not in ids
+    assert not any(m.get("kind") == "loader" for m in prof["mods"])
+
+    for m in prof["mods"]:
+        assert m["kind"] == "cosmetic"
+        assert m["source"] == "nexus"
+        assert isinstance(m["nexus_id"], int)
+        # These are me3-VFS asset overrides (loose texture/menu/sfx files). erm
+        # has no me3-content-package install handler yet, so they're marked
+        # manual — apply prints guidance instead of silently mis-extracting them
+        # into Game/mods/ (a DLL folder) where they'd do nothing.
+        assert m["install"] == "manual"
+
+    by_id = {m["id"]: m for m in prof["mods"]}
+    assert by_id["texture-improvement"]["nexus_id"] == 2431
+    assert by_id["minimal-hud"]["nexus_id"] == 148
+    assert by_id["weapons-animated-glow"]["nexus_id"] == 4433
+
+    # De-conflicted: the alternative HUD (#6265) and weapon mod (#4307) override
+    # the same files as the chosen ones, so they're not both present.
+    assert "clean-hud" not in ids
+    assert "golems-glow-arsenal" not in ids
+    assert len(ids) == len(set(ids))
+
+
 def test_seamless_randomizer_me3_uses_numeric_id():
     # me3's repo_id used to be a slug ("garyttierney/me3"), which the
     # numeric-id-only GitHub fetch (api.github.com/repositories/<id>/...)

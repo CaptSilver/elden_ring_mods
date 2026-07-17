@@ -1,0 +1,38 @@
+name = "cosmetic-extras"
+description = "Per-machine cosmetic overlay: purely client-side visual mods (textures, HUD, weapon effects) with no regulation.bin. Apply it ON TOP of a coop profile like seamless-full; a co-op partner who doesn't run it sees vanilla and connects fine. Toggle it per machine — `erm apply cosmetic-extras` to add, `erm uninstall cosmetic-extras` to remove — so a lower-powered box (a Steam Deck) can skip it entirely."
+
+# These are me3-VFS asset overrides (loose texture/menu/sfx files that ER only
+# reads through a mod loader's virtual filesystem). They ride the me3 loader
+# already installed by the base profile — do NOT add a loader here, or apply
+# would auto-harden on a profile that's meant to layer cleanly on top.
+#
+# install = "manual" because erm has no me3-content-package handler yet: the
+# existing "mods" kind drops DLLs into Game/mods/, which is wrong for loose
+# assets, and "game" extraction into Game/ won't load (ER reads packed
+# archives). Until that handler exists, apply prints setup guidance (see
+# _MANUAL_NOTES in cli.py) instead of silently mis-installing.
+
+[[mods]]
+id = "texture-improvement"        # 4K-ish environment texture overhaul; heavy — skip on a Deck
+source = "nexus"
+nexus_id = 2431
+kind = "cosmetic"
+install = "manual"
+
+[[mods]]
+id = "minimal-hud"                # strips/relocates HUD clutter, very configurable
+source = "nexus"
+nexus_id = 148
+kind = "cosmetic"
+install = "manual"
+# Alternative look — swap the block above for this one, don't run both (same menu files):
+#   id = "clean-hud"  / nexus_id = 6265  (translucent menus + Network-Test-style HUD)
+
+[[mods]]
+id = "weapons-animated-glow"      # animated glow/effects on weapons incl. DLC
+source = "nexus"
+nexus_id = 4433
+kind = "cosmetic"
+install = "manual"
+# Alternative — swap for this, don't run both (both touch weapon assets):
+#   id = "golems-glow-arsenal"  / nexus_id = 4307  (weapons replaced with glowing enemy variants)

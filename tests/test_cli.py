@@ -45,11 +45,38 @@ def _seed_apply_fixture(tmp_path, game_dir):
 
 
 def test_launch_option_string(capsys):
-    rc = cli.cmd_launch_option(type("A", (), {"json": False})())
+    # reshade=False is explicit so the assertion is deterministic regardless of
+    # whether the machine running the tests happens to have ReShade installed.
+    rc = cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False})())
     out = capsys.readouterr().out
     assert 'start_protected_game.exe/ersc_launcher.exe' in out
     assert out.count('"') >= 2          # quoting preserved
+    assert "WINEDLLOVERRIDES" not in out
     assert rc == 0
+
+
+def test_launch_option_prepends_reshade_override_when_present(capsys):
+    rc = cli.cmd_launch_option(type("A", (), {"json": False, "reshade": True})())
+    out = capsys.readouterr().out
+    # the ReShade dxgi override is prepended, and the ERSC wrapper is preserved
+    assert 'WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b"' in out
+    assert 'start_protected_game.exe/ersc_launcher.exe' in out
+    # and it warns that this variant is per-machine (don't hand it to the Deck)
+    assert "per-machine" in out.lower()
+    assert rc == 0
+
+
+def test_build_launch_option_helper():
+    assert cli.build_launch_option(False) == cli.LAUNCH_OPTION
+    reshaded = cli.build_launch_option(True)
+    assert reshaded.startswith('WINEDLLOVERRIDES=')
+    assert reshaded.endswith(cli.LAUNCH_OPTION)
+
+
+def test_me3_launch_constant_is_nonempty_and_names_the_profile():
+    # Verified live: me3 launches ELDEN RING + Seamless on Proton with this command.
+    assert cli.ME3_LAUNCH.strip()
+    assert "erm-coop.me3" in cli.ME3_LAUNCH
 
 
 def test_audit_on_fixture_save(capsys, tmp_path):

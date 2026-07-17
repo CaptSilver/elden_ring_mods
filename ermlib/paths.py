@@ -65,6 +65,25 @@ def find_game_dir(steam_root):
     raise PathError("ELDEN RING/Game not found in any Steam library")
 
 
+def reshade_active(game_dir):
+    """True if ReShade is installed in this game dir via reshade-steam-proton,
+    which links Game/dxgi.dll -> .../ReShade{32,64}.dll.
+
+    This is per-machine: a box that never ran the ReShade installer has no such
+    link, so `erm launch-option` there stays ReShade-free. We only recognise the
+    symlink we (well, the script) placed — a plain dxgi.dll or a DXVK link isn't
+    ReShade, so we don't prepend an override that would do nothing.
+    """
+    dxgi = Path(game_dir) / "dxgi.dll"
+    if not dxgi.is_symlink():
+        return False
+    try:
+        target = dxgi.readlink()
+    except OSError:
+        return False
+    return target.name.lower().startswith("reshade")
+
+
 def find_prefix(steam_root):
     for sa in _library_dirs(steam_root):
         pfx = sa / "compatdata" / APPID / "pfx"

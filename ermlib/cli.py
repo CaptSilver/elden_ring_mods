@@ -18,11 +18,35 @@ LAUNCH_OPTION = (
 LAUNCH_VALIDATOR = (
     "bash -c 'printf \"%q\\n\" \"$@\" > /tmp/ercmd.txt; exec \"$@\"' -- %command%"
 )
+# me3-mode launch (verified live on Proton/RADV, me3 v0.11.0): me3 does the VFS asset
+# overrides and chainloads Seamless's ersc.dll (a [[natives]] entry in erm-coop.me3),
+# then starts the game. Replaces the ersc_launcher wrapper once packages are installed.
+ME3_LAUNCH = "me3 launch -p tools/me3/erm-coop.me3"
+# ReShade (installed per-machine via reshade-steam-proton) chainloads as dxgi.dll
+# and needs this env prefix. It's NOT part of the shared launch option — a box
+# without ReShade must not carry it — so we prepend it only when it's installed
+# on this machine (or when the user forces it with --reshade).
+RESHADE_ENV = 'WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b" '
+
+
+def build_launch_option(reshade):
+    return (RESHADE_ENV + LAUNCH_OPTION) if reshade else LAUNCH_OPTION
 
 
 def cmd_launch_option(args):
+    reshade = getattr(args, "reshade", None)
+    if reshade is None:                 # auto-detect from this machine's game dir
+        try:
+            game = paths.find_game_dir(paths.find_steam_root())
+            reshade = paths.reshade_active(game)
+        except (PathError, OSError):
+            reshade = False
     print("Steam → ELDEN RING → Properties → Launch Options:\n")
-    print(f"  {LAUNCH_OPTION}\n")
+    print(f"  {build_launch_option(reshade)}\n")
+    if reshade:
+        print("ReShade is installed on this machine, so the dxgi override is prepended. This variant\n"
+              "is per-machine — don't give it to a box without ReShade (e.g. a Steam Deck); there it'd\n"
+              "point at a dxgi.dll that isn't there. `--no-reshade` prints the plain one.\n")
     print("Validate once (last argv token must be .../Game/start_protected_game.exe):\n")
     print(f"  {LAUNCH_VALIDATOR}\n")
     print("Dual GPU: prepend MESA_VK_DEVICE_SELECT=<vendor>:<device> "
@@ -184,11 +208,17 @@ def _install_ersc(game, lock):
     return version, bool(password)
 
 
+_ME3_PACKAGE_NOTE = ("client-side me3 package (loose asset override) — extract into a me3 mod "
+                     "folder and add a [[package]] entry to your .me3 profile; automated install "
+                     "pending. Client-side only: co-op partners don't need it")
 _MANUAL_NOTES = {
     "item-enemy-randomizer": "run the randomizer generator (in the vendor archive) to create a "
                               "regulation.bin, then place it per its README; the whole group needs "
                               "the identical output",
     "me3": "me3 is a loader — install per me3.help; it chainloads ersc.dll and the randomizer",
+    "texture-improvement": _ME3_PACKAGE_NOTE,
+    "minimal-hud": _ME3_PACKAGE_NOTE,
+    "weapons-animated-glow": _ME3_PACKAGE_NOTE,
 }
 
 
@@ -656,7 +686,13 @@ def register(subparsers):
     a.add_argument("save", nargs="?", help="path to ER0000.sl2 (default: live save)")
     a.set_defaults(func=cmd_audit)
     subparsers.add_parser("status", help="install + version summary").set_defaults(func=cmd_status)
-    subparsers.add_parser("launch-option", help="print the Steam launch option").set_defaults(func=cmd_launch_option)
+    lo = subparsers.add_parser("launch-option", help="print the Steam launch option")
+    lo_re = lo.add_mutually_exclusive_group()
+    lo_re.add_argument("--reshade", dest="reshade", action="store_const", const=True, default=None,
+                       help="force the ReShade (dxgi override) variant")
+    lo_re.add_argument("--no-reshade", dest="reshade", action="store_const", const=False,
+                       help="force the plain variant even if ReShade is installed here")
+    lo.set_defaults(func=cmd_launch_option)
     f = subparsers.add_parser("fetch", help="download + verify a profile's mods")
     f.add_argument("profile", nargs="?", default="seamless-only")
     f.add_argument("--update", action="store_true",
