@@ -16,7 +16,7 @@ def test_seamless_only_profile_has_ersc():
 def test_seamless_full_profile_loads_all_mods():
     prof = load_profile("seamless-full", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    assert len(prof["mods"]) == 16   # eac-toggler + unlock-the-fps dropped; randomizer disabled
+    assert len(prof["mods"]) == 15   # eac-toggler/unlock-the-fps dropped; randomizer + glorious-merchant disabled
 
     ersc = next(m for m in prof["mods"] if m["id"] == "seamless-coop")
     assert ersc["source"] == "nexus"

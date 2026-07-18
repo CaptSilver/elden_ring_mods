@@ -37,12 +37,10 @@ install = "me3"
 
 # --- item spawners: BAN-RELEVANT. Client-side under seamless, but can put
 #     illegitimate items in your save. This is what erm quarantine/doctor guard. ---
-[[mods]]
-id = "glorious-merchant"
-source = "nexus"
-nexus_id = 5192
-kind = "item-cheat"
-install = "mods"
+# glorious-merchant (ermerchant.dll) DISABLED for now — the item-spawner shop
+# overrode Merchant Kale, hiding Clever's Moveset weapons behind its own list.
+# Pulled so Kale's real shop shows. To re-enable: uncomment and `erm apply
+# seamless-full`. Was: nexus_id=5192, kind="item-cheat", install="mods".
 
 [[mods]]
 id = "erd-tools"                  # GitHub only (author forbids Nexus reuploads)
