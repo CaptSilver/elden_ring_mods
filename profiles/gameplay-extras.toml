@@ -16,15 +16,10 @@ kind = "gameplay"
 install = "me3-package"
 requires_all_players = true
 
-# Summon Ashes Anywhere — summon spirit ashes without a Rebirth Monument nearby.
-# A single Elden Mod Loader DLL (no regulation.bin), v1.12.1 (post-DLC). Installs
-# to Game/mods/ and loads via the dinput8 loader already in seamless-full — works
-# in me3-mode too (dinput8 auto-loads off eldenring.exe). Share with the party.
-[[mods]]
-id = "summon-anywhere"
-source = "nexus"
-nexus_id = 5434
-file_id = 23945                   # "SummonAnywhere" v1.12.1 (post-DLC)
-kind = "gameplay"
-install = "mods"
-requires_all_players = true
+# --- Summon Ashes Anywhere REMOVED (didn't work as installed) ---
+# SummonAnywhere.dll (nexus 5434, file 23945, v1.12.1) didn't work loaded from
+# Game/mods/ via Elden Mod Loader. Likely a loader mismatch — it may be a
+# ModEngine2/me3 external DLL rather than an Elden Mod Loader plugin. To revisit:
+# try it as a me3 [[native]] (add the DLL path under erm-coop.me3's user-region
+# marker), or check the mod page for its required loader. Was: nexus_id=5434,
+# file_id=23945, install="mods".
