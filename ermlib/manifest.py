@@ -13,6 +13,13 @@ def load_profile(name, base=Path("profiles"), _seen=None):
     one — so a profile can both compose others and override individual mods.
     A cycle in the include graph, or an unknown included profile, raises
     PathError. Callers already wrap a missing top-level profile.
+
+    Also resolves an optional `excludes = ["other-profile", ...]` list — names
+    of profiles this one is mutually exclusive with (e.g. two stacks that both
+    edit regulation.bin). The resolved `excludes` is the union of every
+    included profile's `excludes` plus this profile's own, de-duplicated,
+    order-stable — so a profile that includes another inherits its excludes
+    too, without having to repeat them.
     """
     base = Path(base)
     _seen = _seen or ()
@@ -20,6 +27,7 @@ def load_profile(name, base=Path("profiles"), _seen=None):
         raise PathError("profile include cycle: " + " -> ".join(_seen + (name,)))
     data = tomllib.loads((base / f"{name}.toml").read_text())
     merged, index = [], {}
+    excludes, excludes_seen = [], set()
 
     def add(mod):
         mid = mod["id"]
@@ -29,6 +37,11 @@ def load_profile(name, base=Path("profiles"), _seen=None):
             index[mid] = len(merged)
             merged.append(mod)
 
+    def add_exclude(exc_name):
+        if exc_name not in excludes_seen:
+            excludes_seen.add(exc_name)
+            excludes.append(exc_name)
+
     for inc in data.get("includes", []):
         try:
             included = load_profile(inc, base, _seen + (name,))
@@ -36,9 +49,14 @@ def load_profile(name, base=Path("profiles"), _seen=None):
             raise PathError(f"profile '{name}' includes unknown profile '{inc}': {exc}") from exc
         for m in included["mods"]:
             add(m)
+        for exc_name in included.get("excludes", []):
+            add_exclude(exc_name)
     for m in data.get("mods", []):
         add(m)
+    for exc_name in data.get("excludes", []):
+        add_exclude(exc_name)
     data["mods"] = merged
+    data["excludes"] = excludes
     return data
 
 

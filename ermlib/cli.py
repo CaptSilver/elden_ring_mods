@@ -307,6 +307,25 @@ def cmd_apply(args):
         raise PathError(f"unknown profile '{args.profile}': {exc}") from exc
     lock = manifest.load_lock("mods.lock.toml")
     state = state_mod.load_state()
+    # Two stacks that edit the same underlying file (regulation.bin, for the
+    # item/enemy randomizer vs. Clever's Moveset) can't coexist. A profile
+    # declares that via `excludes = ["other-profile"]`; refuse here, before any
+    # file is written, if the excluded profile's mods are already installed. A
+    # bad/missing exclude reference (typo, deleted profile) must not block an
+    # otherwise-legit apply — skip it rather than raising.
+    for exc_name in profile.get("excludes", []):
+        try:
+            excluded_profile = manifest.load_profile(exc_name)
+        except (OSError, ErmError):
+            continue
+        excluded_ids = {m["id"] for m in excluded_profile["mods"]}
+        clashing = sorted(excluded_ids & state.keys())
+        if clashing:
+            raise ErmError(
+                f"cannot apply '{args.profile}': it excludes '{exc_name}', which is "
+                f"installed ({', '.join(clashing)}). Uninstall that first — only one "
+                f"can be active at a time (both edit regulation.bin)."
+            )
     password = install.read_secret(Path("secrets.env")) if Path("secrets.env").exists() else ""
     r = Report()
     installed_seamless = False

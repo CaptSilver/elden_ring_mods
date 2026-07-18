@@ -173,10 +173,12 @@ def test_lock_deterministic_multi_mod_order(tmp_path):
     assert text.index("[alpha]") < text.index("[zebra]")
 
 
-def _mod(base, name, includes=None, mods=None):
+def _mod(base, name, includes=None, mods=None, excludes=None):
     lines = [f'name = "{name}"']
     if includes:
         lines.append("includes = [" + ", ".join(f'"{i}"' for i in includes) + "]")
+    if excludes:
+        lines.append("excludes = [" + ", ".join(f'"{e}"' for e in excludes) + "]")
     for m in mods or []:
         lines += ["", "[[mods]]"] + [f'{k} = {v!r}' if not isinstance(v, str) else f'{k} = "{v}"'
                                      for k, v in m.items()]
@@ -211,3 +213,32 @@ def test_profile_includes_unknown_raises(tmp_path):
     _mod(tmp_path, "p", includes=["nope-xyz"])
     with pytest.raises(PathError):
         load_profile("p", base=tmp_path)
+
+
+def test_profile_includes_merges_excludes_from_included_profile(tmp_path):
+    _mod(tmp_path, "child", mods=[{"id": "a", "source": "nexus", "nexus_id": 1}],
+         excludes=["z"])
+    _mod(tmp_path, "parent", includes=["child"],
+         mods=[{"id": "b", "source": "nexus", "nexus_id": 2}], excludes=["w"])
+    prof = load_profile("parent", base=tmp_path)
+    assert set(prof["excludes"]) == {"z", "w"}
+    assert len(prof["excludes"]) == len(set(prof["excludes"]))   # deduped
+
+
+def test_randomizer_profile_excludes_gameplay_extras():
+    prof = load_profile("randomizer", base=Path("profiles"))
+    assert prof["excludes"] == ["gameplay-extras"]
+    ids = [m["id"] for m in prof["mods"]]
+    assert ids == ["item-enemy-randomizer"]
+
+
+def test_gameplay_extras_excludes_randomizer():
+    prof = load_profile("gameplay-extras", base=Path("profiles"))
+    assert "randomizer" in prof["excludes"]
+
+
+def test_seamless_full_excludes_randomizer_via_gameplay_extras_include():
+    # seamless-full doesn't declare its own excludes — it inherits gameplay-extras'
+    # via the includes merge, since it composes gameplay-extras (Clever's Moveset).
+    prof = load_profile("seamless-full", base=Path("profiles"))
+    assert "randomizer" in prof["excludes"]

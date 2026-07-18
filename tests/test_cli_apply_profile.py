@@ -10,13 +10,12 @@ from ermlib.errors import ErmError, PathError
 from tests.conftest import REPO
 
 
-def _write_profile(profiles_dir, name, mods_toml):
+def _write_profile(profiles_dir, name, mods_toml, excludes=None):
     profiles_dir.mkdir(parents=True, exist_ok=True)
-    (profiles_dir / f"{name}.toml").write_text(
-        f'name = "{name}"\n'
-        'description = "test fixture profile"\n'
-        '\n' + mods_toml
-    )
+    lines = [f'name = "{name}"', 'description = "test fixture profile"']
+    if excludes:
+        lines.append("excludes = [" + ", ".join(f'"{e}"' for e in excludes) + "]")
+    (profiles_dir / f"{name}.toml").write_text("\n".join(lines) + "\n\n" + mods_toml)
 
 
 def _seed_lock(lock_path, entries):
@@ -275,6 +274,83 @@ def test_apply_corrupt_archive_warns_and_earlier_mod_stays_recorded(
     state = json.loads((tmp_path / "installed.json").read_text())
     assert "mod-a" in state                          # earlier mod stays recorded
     assert "mod-b" not in state                      # the one that failed is not
+
+
+def _seed_exclude_pair(tmp_path, installed_state=None):
+    """A gameplay-extras-like profile (one me3-package mod, clevers-moveset) and a
+    randomizer-like profile that excludes it — mirrors the real
+    gameplay-extras/randomizer pair without depending on the real profiles/ dir."""
+    _write_profile(tmp_path / "profiles", "gameplay-extras-like",
+        '[[mods]]\n'
+        'id = "clevers-moveset"\n'
+        'source = "nexus"\n'
+        'nexus_id = 1928\n'
+        'kind = "overhaul"\n'
+        'install = "me3-package"\n'
+    )
+    _write_profile(tmp_path / "profiles", "randomizer-like",
+        '[[mods]]\n'
+        'id = "item-enemy-randomizer"\n'
+        'source = "nexus"\n'
+        'nexus_id = 428\n'
+        'kind = "randomizer"\n'
+        'install = "randomizer"\n',
+        excludes=["gameplay-extras-like"])
+    _seed_lock(tmp_path / "mods.lock.toml",
+               {"item-enemy-randomizer": ("1.0", "randomizer.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "randomizer.zip", "randomizer/EldenRingRandomizer.exe")
+    if installed_state is not None:
+        (tmp_path / "installed.json").write_text(json.dumps(installed_state))
+
+
+def test_apply_refuses_when_excluded_profile_mod_is_installed(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # clevers-moveset (gameplay-extras-like) is already installed. Applying
+    # randomizer-like — which excludes gameplay-extras-like — must refuse
+    # BEFORE touching disk: no tools/ extraction, no installed.json change.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _seed_exclude_pair(tmp_path, installed_state={
+        "clevers-moveset": {"version": "25.0", "archive": "clevers.zip",
+                             "kind": "me3-package", "package": "tools/me3/mods/clevers-moveset"},
+    })
+
+    with pytest.raises(ErmError) as excinfo:
+        cli.cmd_apply(_apply_args("randomizer-like"))
+    capsys.readouterr()
+
+    msg = str(excinfo.value)
+    assert "randomizer-like" in msg
+    assert "gameplay-extras-like" in msg
+    assert "clevers-moveset" in msg
+
+    assert not (tmp_path / "tools" / "item-enemy-randomizer").exists()  # nothing extracted
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert list(state.keys()) == ["clevers-moveset"]                    # unchanged
+
+
+def test_apply_excludes_gate_passes_with_empty_state(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # With nothing installed, the excludes check must not trip even though the
+    # profile declares excludes=["gameplay-extras-like"] — apply proceeds normally.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.setattr(paths, "find_proton", lambda: None)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "steamapps" / "compatdata" / paths.APPID).mkdir(parents=True)
+    _seed_exclude_pair(tmp_path)   # no installed.json at all -> load_state() returns {}
+
+    rc = cli.cmd_apply(_apply_args("randomizer-like"))   # must NOT raise (proves the
+    capsys.readouterr()                                  # excludes gate alone passed)
+
+    assert rc == 0
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "clevers-moveset" not in state
 
 
 def test_apply_unknown_profile_raises_patherror_not_filenotfound(

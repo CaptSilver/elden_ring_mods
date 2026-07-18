@@ -1,0 +1,11 @@
+name = "randomizer"
+description = "Item + enemy randomizer overlay (SHARED — all players need the identical generated regulation.bin + seed). Mutually exclusive with gameplay-extras (Clever's Moveset): both edit regulation.bin and only one can be active. Run the generator (erm apply extracts it to tools/) then load its output via me3."
+excludes = ["gameplay-extras"]
+
+[[mods]]
+id = "item-enemy-randomizer"
+source = "nexus"
+nexus_id = 428
+kind = "randomizer"
+install = "randomizer"
+requires_all_players = true

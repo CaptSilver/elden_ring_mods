@@ -1,5 +1,6 @@
 name = "gameplay-extras"
 description = "SHARED gameplay mods for Seamless Co-op. Opposite of cosmetic-extras: every player in the party must run the IDENTICAL set, or you desync. Ban-safe under Seamless (no EAC, separate .co2 save) — but never take that .co2 to vanilla online. Layers on top of a coop base like seamless-full."
+excludes = ["randomizer"]
 
 # --- Boss Resurrection Lite REMOVED (text conflict with Clever's Moveset) ---
 # Both packages ship msg/engus/{item_dlc02,menu_dlc02}.msgbnd.dcx; me3 loads only
