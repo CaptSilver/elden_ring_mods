@@ -1,4 +1,4 @@
-# erm — Elden Ring Seamless Co-op mod manager
+# erm — Elden Ring mod manager
 
 `erm` is a local, git-tracked mod manager and CLI for running Elden Ring Seamless Co-op
 (ERSC) on Linux without risking a ban. Mod decisions (which mod, which version, which
