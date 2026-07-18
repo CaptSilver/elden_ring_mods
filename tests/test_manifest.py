@@ -101,6 +101,21 @@ def test_cosmetic_extras_is_a_separate_client_side_overlay():
     assert len(ids) == len(set(ids))
 
 
+def test_gameplay_extras_is_a_shared_coop_overlay():
+    # gameplay-extras is the OPPOSITE of cosmetic-extras: shared gameplay mods
+    # that every player must run identically (requires_all_players), not
+    # per-machine visuals. No loader → never trips auto-harden on its own.
+    prof = load_profile("gameplay-extras", base=Path("profiles"))
+    br = next(m for m in prof["mods"] if m["id"] == "boss-resurrection-lite")
+    assert br["source"] == "nexus"
+    assert br["nexus_id"] == 2790
+    assert br["file_id"] == 24925          # the Lite build (no regulation.bin)
+    assert br["install"] == "me3-package"
+    assert br["kind"] == "gameplay"
+    assert br["requires_all_players"] is True
+    assert not any(m.get("kind") == "loader" for m in prof["mods"])
+
+
 def test_seamless_randomizer_me3_uses_numeric_id():
     # me3's repo_id used to be a slug ("garyttierney/me3"), which the
     # numeric-id-only GitHub fetch (api.github.com/repositories/<id>/...)
