@@ -113,6 +113,14 @@ def test_gameplay_extras_is_a_shared_coop_overlay():
     assert br["install"] == "me3-package"
     assert br["kind"] == "gameplay"
     assert br["requires_all_players"] is True
+
+    sa = next(m for m in prof["mods"] if m["id"] == "summon-anywhere")
+    assert sa["nexus_id"] == 5434
+    assert sa["file_id"] == 23945
+    assert sa["install"] == "mods"         # Elden Mod Loader DLL, not a me3-package
+    assert sa["kind"] == "gameplay"
+    assert sa["requires_all_players"] is True
+
     assert not any(m.get("kind") == "loader" for m in prof["mods"])
 
 
