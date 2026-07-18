@@ -16,10 +16,22 @@ kind = "gameplay"
 install = "me3-package"
 requires_all_players = true
 
-# --- Summon Ashes Anywhere REMOVED (didn't work as installed) ---
-# SummonAnywhere.dll (nexus 5434, file 23945, v1.12.1) didn't work loaded from
-# Game/mods/ via Elden Mod Loader. Likely a loader mismatch — it may be a
-# ModEngine2/me3 external DLL rather than an Elden Mod Loader plugin. To revisit:
-# try it as a me3 [[native]] (add the DLL path under erm-coop.me3's user-region
-# marker), or check the mod page for its required loader. Was: nexus_id=5434,
-# file_id=23945, install="mods".
+# Clever's Moveset Modpack — new weapon movesets + animations. EDITS regulation.bin
+# + c0000.anibnd (the character animation bundle), so it claims the ONE regulation
+# slot (fine now the randomizer is disabled — don't add another regulation mod).
+# v25.0, ~621MB, for ER 1.16/1.16.1. SHARED: every player needs the identical pack.
+# Turn OFF ray tracing in-game for stability (per the mod page).
+[[mods]]
+id = "clevers-moveset"
+source = "nexus"
+nexus_id = 1928
+file_id = 34558                   # "moveset_modpack 25.0" (ER 1.16/1.16.1)
+kind = "overhaul"
+install = "me3-package"
+requires_all_players = true
+
+# --- Summon Ashes Anywhere REMOVED (co-op incompatible) ---
+# SummonAnywhere.dll (nexus 5434, file 23945, v1.12.1) loaded fine via Elden Mod
+# Loader (Game/mods/) but was useless in Seamless Co-op: summons couldn't be
+# dismissed and wouldn't follow past certain area transitions — a mod-behaviour
+# problem in co-op, not a loader/install issue. Was: install="mods".

@@ -16,7 +16,7 @@ def test_seamless_only_profile_has_ersc():
 def test_seamless_full_profile_loads_all_mods():
     prof = load_profile("seamless-full", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    assert len(prof["mods"]) == 17   # eac-toggler + unlock-the-fps dropped
+    assert len(prof["mods"]) == 16   # eac-toggler + unlock-the-fps dropped; randomizer disabled
 
     ersc = next(m for m in prof["mods"] if m["id"] == "seamless-coop")
     assert ersc["source"] == "nexus"
@@ -28,11 +28,9 @@ def test_seamless_full_profile_loads_all_mods():
     assert me3["asset_match"] == "me3-windows-amd64"
     assert me3["install"] == "me3"
 
-    randomizer = next(m for m in prof["mods"] if m["id"] == "item-enemy-randomizer")
-    assert randomizer["source"] == "nexus"
-    assert randomizer["nexus_id"] == 428
-    assert randomizer["requires_all_players"] is True
-    assert randomizer["install"] == "randomizer"
+    # item-enemy-randomizer is disabled — Clever's Moveset (gameplay-extras) owns
+    # the single regulation.bin slot now.
+    assert "item-enemy-randomizer" not in ids
 
     # pause-the-game is excluded — it can't work in a networked co-op session
     assert "pause-the-game" not in ids
@@ -114,7 +112,14 @@ def test_gameplay_extras_is_a_shared_coop_overlay():
     assert br["kind"] == "gameplay"
     assert br["requires_all_players"] is True
 
-    # summon-anywhere was removed (didn't work loaded via Elden Mod Loader).
+    cl = next(m for m in prof["mods"] if m["id"] == "clevers-moveset")
+    assert cl["nexus_id"] == 1928
+    assert cl["file_id"] == 34558
+    assert cl["install"] == "me3-package"
+    assert cl["kind"] == "overhaul"
+    assert cl["requires_all_players"] is True
+
+    # summon-anywhere was removed (loaded fine, but useless in co-op).
     assert "summon-anywhere" not in [m["id"] for m in prof["mods"]]
 
     assert not any(m.get("kind") == "loader" for m in prof["mods"])

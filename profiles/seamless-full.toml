@@ -30,13 +30,10 @@ kind = "loader"
 install = "me3"
 
 # --- randomizer (ALL players need the identical generated regulation.bin + seed) ---
-[[mods]]
-id = "item-enemy-randomizer"
-source = "nexus"
-nexus_id = 428
-kind = "randomizer"
-requires_all_players = true
-install = "randomizer"
+# item-enemy-randomizer DISABLED (not in use). It's the other regulation-slot mod,
+# and Clever's Moveset (in gameplay-extras) now claims that one slot. To re-enable,
+# add the entry back: nexus_id=428, kind="randomizer", install="randomizer",
+# requires_all_players=true — but only ONE regulation mod can be active at a time.
 
 # --- item spawners: BAN-RELEVANT. Client-side under seamless, but can put
 #     illegitimate items in your save. This is what erm quarantine/doctor guard. ---
