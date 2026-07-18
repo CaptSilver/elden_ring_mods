@@ -55,6 +55,20 @@ def test_record_me3_package_tags_kind_and_path():
     assert s["minimal-hud"]["archive"] == "MinimalHUD.zip"
 
 
+def test_record_randomizer_tags_kind_and_tools_path():
+    # The randomizer generator lives in tools/<id>, not Game/. Recording it (with
+    # its own kind) is what lets the excludes guard see it and `erm uninstall`
+    # remove it — without it counting as a me3 asset package.
+    s = {}
+    state_mod.record_randomizer(s, "item-enemy-randomizer", "1.0", "randomizer.zip",
+                                "tools/item-enemy-randomizer")
+    assert s["item-enemy-randomizer"]["kind"] == "randomizer"
+    assert s["item-enemy-randomizer"]["tools"] == "tools/item-enemy-randomizer"
+    assert s["item-enemy-randomizer"]["version"] == "1.0"
+    assert s["item-enemy-randomizer"]["archive"] == "randomizer.zip"
+    assert state_mod.has_me3_packages(s) is False   # a generator, not an asset override
+
+
 def test_me3_packages_returns_sorted_id_path_pairs():
     s = {}
     state_mod.record_me3_package(s, "zebra", "1", "z.zip", "tools/me3/mods/zebra")

@@ -354,6 +354,11 @@ def cmd_apply(args):
                 r.warn(f"{mid}: extract failed ({exc})")
                 continue
             r.ok(f"{mid}: generator extracted to tools/{mid}/")
+            # Record it (kind="randomizer") so the mutual-exclusion guard sees a
+            # randomizer as installed and `erm uninstall` can remove its tools/
+            # dir — even though the generator itself never lands in Game/.
+            state_mod.record_randomizer(state, mid, meta.get("version"),
+                                        asset, str(Path("tools") / mid))
             exe = (Path("tools") / mid / "randomizer" / "EldenRingRandomizer.exe").resolve()
             proton = paths.find_proton()
             try:
@@ -531,6 +536,35 @@ def _uninstall_one(game, mod_id, state, r):
                 r.warn(f"{mod_id}: could not remove {pkg} ({exc}) — left on disk")
         else:
             r.ok(f"{mod_id}: me3 package already gone")
+        state_mod.forget(state, mod_id)
+        return
+    if entry and entry.get("kind") == "randomizer":
+        tdir_str = entry.get("tools")
+        if not tdir_str:
+            r.warn(f"{mod_id}: randomizer entry has no recorded tools path — forgetting it")
+            state_mod.forget(state, mod_id)
+            return
+        tdir = Path(tdir_str)
+        # Same containment re-validation as the me3-package branch: installed.json
+        # can be hand-edited, so confirm the dir is under tools/ before rmtree.
+        tools_root = Path("tools").resolve()
+        try:
+            tdir.resolve().relative_to(tools_root)
+            contained = True
+        except (ValueError, OSError):
+            contained = False
+        if not contained:
+            r.warn(f"{mod_id}: recorded generator {tdir} is outside {tools_root} — refusing to remove")
+            state_mod.forget(state, mod_id)
+            return
+        if tdir.is_dir():
+            try:
+                shutil.rmtree(tdir)
+                r.ok(f"{mod_id}: removed randomizer generator")
+            except OSError as exc:
+                r.warn(f"{mod_id}: could not remove {tdir} ({exc}) — left on disk")
+        else:
+            r.ok(f"{mod_id}: randomizer generator already gone")
         state_mod.forget(state, mod_id)
         return
     if entry and entry.get("files"):

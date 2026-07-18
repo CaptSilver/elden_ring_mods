@@ -42,6 +42,15 @@ def record_me3_package(state, mod_id, version, archive, package):
                      "kind": "me3-package", "package": package}
 
 
+def record_randomizer(state, mod_id, version, archive, tools):
+    """Record a randomizer generator (extracted to tools/<id>, not Game/).
+    `tools` is the repo-cwd-relative path to that dir. Its own kind so it's
+    tracked for the mutual-exclusion guard and `erm uninstall`, without counting
+    as a me3 asset package (has_me3_packages/me3_packages ignore it)."""
+    state[mod_id] = {"version": version, "archive": archive,
+                     "kind": "randomizer", "tools": tools}
+
+
 def me3_packages(state):
     """Sorted (mod_id, package_path) for every recorded me3 package. Sorted so the
     regenerated me3 profile is byte-deterministic regardless of install order."""

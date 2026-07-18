@@ -286,8 +286,8 @@ def _seed_exclude_pair(tmp_path, installed_state=None):
         'source = "nexus"\n'
         'nexus_id = 1928\n'
         'kind = "overhaul"\n'
-        'install = "me3-package"\n'
-    )
+        'install = "me3-package"\n',
+        excludes=["randomizer-like"])
     _write_profile(tmp_path / "profiles", "randomizer-like",
         '[[mods]]\n'
         'id = "item-enemy-randomizer"\n'
@@ -353,6 +353,33 @@ def test_apply_excludes_gate_passes_with_empty_state(
     assert "clevers-moveset" not in state
 
 
+def test_apply_refuses_when_recorded_randomizer_blocks_excluding_profile(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # The reverse direction: the randomizer generator is recorded in
+    # installed.json (kind="randomizer"), so applying gameplay-extras-like —
+    # which excludes randomizer-like — must refuse before touching disk. Proves
+    # recording the randomizer makes the mutual exclusion work BOTH ways.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _seed_exclude_pair(tmp_path, installed_state={
+        "item-enemy-randomizer": {"version": "1.0", "archive": "randomizer.zip",
+                                   "kind": "randomizer", "tools": "tools/item-enemy-randomizer"},
+    })
+
+    with pytest.raises(ErmError) as excinfo:
+        cli.cmd_apply(_apply_args("gameplay-extras-like"))
+    capsys.readouterr()
+
+    msg = str(excinfo.value)
+    assert "gameplay-extras-like" in msg
+    assert "randomizer-like" in msg
+    assert "item-enemy-randomizer" in msg
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert list(state.keys()) == ["item-enemy-randomizer"]   # unchanged
+
+
 def test_apply_unknown_profile_raises_patherror_not_filenotfound(
         tmp_path, monkeypatch, tmp_game):
     # A typo'd profile name must surface as a clean ErmError-derived PathError,
@@ -413,7 +440,9 @@ def test_apply_randomizer_extracts_to_tools_and_prints_proton_command(
     assert "run" in out
 
     state = json.loads((tmp_path / "installed.json").read_text())
-    assert "item-enemy-randomizer" not in state   # a tool, not a Game/ mod
+    entry = state["item-enemy-randomizer"]        # recorded so the exclude guard sees it
+    assert entry["kind"] == "randomizer"
+    assert entry["tools"] == str(Path("tools") / "item-enemy-randomizer")
 
 
 def test_apply_randomizer_falls_back_when_no_proton_found(
@@ -546,12 +575,13 @@ def test_apply_me3_reconcile_write_failure_warns_and_preserves_earlier_state(
     assert "me3" not in state        # me3 is a tool, never recorded
 
 
-def test_uninstall_profile_skips_tools_kind_mods(
+def test_uninstall_profile_removes_recorded_randomizer_and_skips_unrecorded_me3(
         tmp_path, monkeypatch, capsys, tmp_game):
-    # me3/randomizer install to tools/, never into Game/, so they're never in
-    # installed.json. Profile-uninstall must skip them — not fall into the
-    # single-mod vendor-archive fallback, which would open their tool zip and
-    # report a bogus "removed 0 file(s)" against the wrong directory.
+    # me3 installs to tools/ and is never recorded, so profile-uninstall must
+    # skip it — not fall into the single-mod vendor-archive fallback, which would
+    # open its tool zip and report a bogus "removed 0 file(s)". The randomizer
+    # also lives in tools/ but IS recorded now (kind="randomizer"), so uninstall
+    # removes its generator dir and forgets it.
     game_dir = tmp_game
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
@@ -598,18 +628,21 @@ def test_uninstall_profile_skips_tools_kind_mods(
     cli.cmd_apply(_apply_args("tools-mix"))
     capsys.readouterr()
 
-    # only mod-a landed in Game/ and got recorded; the tools went to tools/
+    # mod-a landed in Game/; the randomizer is recorded (tools/); me3 is not.
     state = json.loads((tmp_path / "installed.json").read_text())
-    assert list(state.keys()) == ["mod-a"]
+    assert set(state.keys()) == {"mod-a", "item-enemy-randomizer"}
+    assert (tmp_path / "tools" / "item-enemy-randomizer").is_dir()
 
     rc = cli.cmd_uninstall(_uninstall_args("tools-mix"))
     out = capsys.readouterr().out
 
     assert rc == 0
     assert not (game_dir / "a.dll").exists()            # mod-a really removed
-    # No bogus removal claim and no vendor-archive fallback read for the tools.
+    assert not (tmp_path / "tools" / "item-enemy-randomizer").exists()  # generator removed
+    assert (tmp_path / "tools" / "me3").is_dir()        # me3 skipped, left on disk
+    assert "randomizer generator" in out                # the recorded randomizer was removed
+    # me3 is unrecorded: skipped, not force-read from its vendor archive.
     assert "for me3" not in out
-    assert "for item-enemy-randomizer" not in out
     assert "vendor archive" not in out
     assert "removed 0 file" not in out
 
