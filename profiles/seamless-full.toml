@@ -6,26 +6,16 @@
 name = "seamless-full"
 description = "The complete SHARED coop stack — the one profile the whole party runs. Composes gameplay-extras (Clever's Moveset, a shared regulation.bin mod), so `erm apply seamless-full` pulls in everything required to play together. Per-machine visuals (textures, ReShade) live in cosmetic-extras and are NOT needed by co-op partners."
 
-# Compose the shared gameplay overlay so this single profile is the complete
-# "what your friends need" set. gameplay-extras' mods (Clever's Moveset) merge
-# in; cosmetic-extras stays separate (per-machine, not required for co-op).
-includes = ["gameplay-extras"]
+# Compose the shared stack so this single profile is the complete "what your
+# friends need" set:
+#   - seamless-extras: the base coop framework (ersc), the DLL loader, and a
+#     couple client-side QoL/cosmetics — defined ONCE there, not duplicated here.
+#   - gameplay-extras: Clever's Moveset (the shared regulation.bin mod).
+# cosmetic-extras stays separate (per-machine, not required for co-op).
+includes = ["seamless-extras", "gameplay-extras"]
 
-# --- coop framework + loaders ---
-[[mods]]
-id = "seamless-coop"
-source = "nexus"
-nexus_id = 510
-kind = "coop-framework"
-install = "game"
-
-[[mods]]
-id = "elden-mod-loader"           # dinput8 loader for the DLL mods
-source = "nexus"
-nexus_id = 117
-kind = "loader"
-install = "game"
-
+# --- loaders ---
+# seamless-coop + elden-mod-loader come from the seamless-extras include above.
 [[mods]]
 id = "me3"                        # modern loader (replaces the old ModEngine2)
 source = "github"
@@ -74,20 +64,10 @@ source = "nexus"
 nexus_id = 179
 kind = "cosmetic"
 install = "game"
-[[mods]]
-id = "remove-vignette"
-source = "nexus"
-nexus_id = 177
-kind = "cosmetic"
-install = "game"
+# remove-vignette comes from the seamless-extras include.
 
 # --- QoL (client-side) ---
-[[mods]]
-id = "skip-the-intro"
-source = "nexus"
-nexus_id = 421
-kind = "qol"
-install = "game"
+# skip-the-intro comes from the seamless-extras include.
 [[mods]]
 id = "adjust-the-fov"
 source = "nexus"

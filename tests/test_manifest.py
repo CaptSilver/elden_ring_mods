@@ -20,10 +20,17 @@ def test_seamless_only_profile_has_ersc():
 def test_seamless_full_profile_loads_all_mods():
     prof = load_profile("seamless-full", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    assert len(prof["mods"]) == 16   # 15 own + clevers-moveset composed from gameplay-extras via includes
-    # seamless-full composes gameplay-extras (Clever's Moveset) — so it's the
-    # single "what the whole party needs" profile.
+    # 11 own + 4 from seamless-extras + clevers-moveset from gameplay-extras
+    assert len(prof["mods"]) == 16
+    # seamless-full composes seamless-extras (the base coop framework + loader +
+    # a couple client-side QoL/cosmetics, defined once there) and gameplay-extras
+    # (Clever's Moveset) — the single "what the whole party needs" profile.
+    assert set(prof["includes"]) == {"seamless-extras", "gameplay-extras"}
     assert "clevers-moveset" in ids
+    # base coop framework + loader come from the seamless-extras include now,
+    # not redundant own entries
+    assert "seamless-coop" in ids
+    assert "elden-mod-loader" in ids
 
     ersc = next(m for m in prof["mods"] if m["id"] == "seamless-coop")
     assert ersc["source"] == "nexus"
