@@ -12,16 +12,16 @@ asset = "FixTheCamera-118-3-0-1652303340.zip"
 sha256 = "749174278e9147fb099c37592f98811c9e737645c913d12fe64b9b94bd03250d"
 source = "nexus"
 
+[clevers-moveset]
+version = "25.0"
+asset = "moveset_modpack 25.0-1928-25-0-1738532654.zip"
+sha256 = "9ccfedc32901c89c3b12135988e2d7119aae028e34818ecda0b8fdb01444f03a"
+source = "nexus"
+
 [disable-rune-loss]
 version = "2.0"
 asset = "DisableRuneLoss-376-2-0-1670867876.zip"
 sha256 = "6d69b51cde189b8ebedcd858aa5b25bb394c49e8e1df79c207a28d46ce0ccf6b"
-source = "nexus"
-
-[eac-toggler]
-version = "4.2"
-asset = "ToggleAntiCheat-90-4-2-1651610211.zip"
-sha256 = "6df8dc11e7a79ac355067cc2fdfb28ab224e431959949ac16f569290a65063bd"
 source = "nexus"
 
 [elden-mod-loader]
@@ -108,8 +108,20 @@ asset = "SkipTheIntro-421-4-0-1732388874.zip"
 sha256 = "c660891df61628a93632c8ccbf460ff473139f68acd4a5b0e97ac3733c215a75"
 source = "nexus"
 
+[texture-improvement]
+version = "4.0"
+asset = "Environment - Flora-2431-4-0-1692550959.zip"
+sha256 = "1871f8f849e1ef3f7e1dad219d4161afb90aa5816ec420aeaf13f603010f027d"
+source = "nexus"
+
 [unlock-the-fps]
 version = "4.0"
 asset = "UnlockTheFps-216-4-0-1652302882.zip"
 sha256 = "116a523d858ab76ed38ca8a918c1f1e393d646f4d632ea2f692a614524b86a51"
+source = "nexus"
+
+[weapons-animated-glow]
+version = "1.0"
+asset = "Weapon Glow 1.0 - crucible weapons update-4433-1-0-1737030867.zip"
+sha256 = "57dd241aafa00c1632e5d0f47253042f78afd90b5fe9e00cd670d10a146dc3b2"
 source = "nexus"
