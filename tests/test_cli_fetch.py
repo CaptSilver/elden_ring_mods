@@ -396,3 +396,38 @@ def test_fetch_profile_nexus_multiple_main_no_file_id_warns_and_skips(tmp_path, 
     assert "id=100" in out and "Minimal HUD - Variant A.zip" in out
     assert "id=200" in out and "Minimal HUD - Variant B.zip" in out
     assert "file_id" in out
+
+
+def test_pinned_nexus_fetch_with_file_id_selects_by_id_not_version(tmp_path, monkeypatch):
+    # A pinned nexus mod whose file_id points at one of several files sharing a
+    # version (e.g. Boss Resurrection's full + Lite both at 2.0.1). The pinned
+    # path must select by file_id — find_file_by_version returns the FIRST file
+    # at that version (the wrong one), whose hash then fails the locked-sha
+    # check. Here file 200 (Variant B) is pinned; if selection fell back to
+    # version, _fetch_bytes would see file 100's url and blow up.
+    payload_b = b"variant-b-bytes"
+    sha_b = hashlib.sha256(payload_b).hexdigest()
+    lock_path = tmp_path / "mods.lock.toml"
+    lock_path.write_text(
+        '[minimal-hud]\n'
+        'version = "1.0.0"\n'
+        'asset = "Minimal HUD - Variant B.zip"\n'
+        f'sha256 = "{sha_b}"\n'
+        'source = "nexus"\n'
+    )
+    monkeypatch.setattr(nexus, "list_files", lambda mod_id, key: _nexus_multi_main_files_fixture())
+    monkeypatch.setattr(nexus, "download_url",
+                        lambda mod_id, file_id, key: f"https://cdn/x/{file_id}.zip")
+
+    def fetch_bytes(url):
+        assert url.endswith("/200.zip"), f"pinned path selected the wrong file: {url}"
+        return payload_b
+    monkeypatch.setattr(github, "_fetch_bytes", fetch_bytes)  # real download_verified runs
+
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    profiles_dir = _write_nexus_profile(tmp_path / "profiles", file_id=200)
+    updated = cli.fetch_profile("nexus-only", vendor, lock_path,
+                                profiles_base=profiles_dir, update=False, nexus_api_key="TESTKEY")
+
+    assert updated["minimal-hud"]["asset"] == "Minimal HUD - Variant B.zip"
+    assert (vendor / "Minimal HUD - Variant B.zip").read_bytes() == payload_b

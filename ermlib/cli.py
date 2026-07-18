@@ -199,11 +199,16 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                 if pinned:
                     # Same reproducibility promise as the GitHub pin: verify
                     # against the LOCKED sha256, not anything Nexus reports —
-                    # Nexus's files.json carries no hash to trust anyway. The
-                    # lock already names the exact asset, so file_id (an
-                    # unpinned-path selector) plays no role here.
+                    # Nexus's files.json carries no hash to trust anyway.
                     files = nexus.list_files(nid, nexus_api_key)
-                    f = nexus.find_file_by_version(files, locked["version"])
+                    if file_id is not None:
+                        # A pinned file_id must still select by id here: a mod
+                        # can ship several files under one version (a full + a
+                        # Lite build), and find_file_by_version would grab the
+                        # wrong one — its hash then fails the locked-sha check.
+                        f = nexus.find_file_by_id(files, file_id)
+                    else:
+                        f = nexus.find_file_by_version(files, locked["version"])
                     url = nexus.download_url(nid, f["file_id"], nexus_api_key)
                     dest = vendor / f["file_name"]
                     github.download_verified(url, dest, locked["sha256"])
