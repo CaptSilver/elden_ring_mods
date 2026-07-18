@@ -1,6 +1,12 @@
 name = "single-full"
 description = "The full SINGLE-PLAYER mod stack (no Seamless Co-op). Includes pause-the-game and unlock-the-fps, which desync co-op but are fine solo. There's no ersc_launcher here — launch via me3, or `erm harden` + a launch option that runs eldenring.exe directly, so EAC stays off. This is offline single-player: never take a modded save into vanilla online."
 
+# Compose the moveset overlay (Clever's Moveset) — the same pack as the coop
+# side, defined once in gameplay-extras. Solo the "shared" framing is moot; it's
+# just the moveset. Clever's claims the regulation slot, so the randomizer below
+# is disabled (only one regulation.bin mod at a time).
+includes = ["gameplay-extras"]
+
 # --- loaders ---
 [[mods]]
 id = "elden-mod-loader"           # dinput8 loader for the DLL mods
@@ -18,12 +24,10 @@ kind = "loader"
 install = "me3"
 
 # --- randomizer ---
-[[mods]]
-id = "item-enemy-randomizer"
-source = "nexus"
-nexus_id = 428
-kind = "randomizer"
-install = "randomizer"
+# item-enemy-randomizer DISABLED — Clever's Moveset (composed from gameplay-extras)
+# claims the single regulation.bin slot; only ONE regulation mod can be active.
+# To swap back to a randomizer run, drop the gameplay-extras include above and
+# uncomment this. Was: nexus_id=428, kind="randomizer", install="randomizer".
 
 # --- item spawners: can put illegitimate items in your save. Solo they only affect
 #     your own save, but never take that save to vanilla online. ---

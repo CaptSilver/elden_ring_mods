@@ -59,11 +59,12 @@ def test_single_full_profile_is_non_coop_with_the_conflict_mods():
     # the mods that desync co-op but work solo are included
     assert "pause-the-game" in ids
     assert "unlock-the-fps" in ids
-    # the loaders/randomizer still route to their special install kinds
+    # me3 still routes to its special install kind
     me3 = next(m for m in prof["mods"] if m["id"] == "me3")
     assert me3["install"] == "me3"
-    rnd = next(m for m in prof["mods"] if m["id"] == "item-enemy-randomizer")
-    assert rnd["install"] == "randomizer"
+    # randomizer disabled; Clever's Moveset (composed via includes) owns the regulation slot
+    assert "item-enemy-randomizer" not in ids
+    assert "clevers-moveset" in ids
     assert len(ids) == len(set(ids))   # no duplicate mod ids
 
 
