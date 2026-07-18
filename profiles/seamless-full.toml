@@ -4,7 +4,12 @@
 # me3 and the randomizer are tools, not Game/ mods, so apply extracts them
 # to tools/ and prints what to do next instead of placing files itself.
 name = "seamless-full"
-description = "The full 2025 randomizer-coop mod set: framework, loaders, randomizer, item spawners, cosmetics, and QoL."
+description = "The complete SHARED coop stack — the one profile the whole party runs. Composes gameplay-extras (Clever's Moveset, a shared regulation.bin mod), so `erm apply seamless-full` pulls in everything required to play together. Per-machine visuals (textures, ReShade) live in cosmetic-extras and are NOT needed by co-op partners."
+
+# Compose the shared gameplay overlay so this single profile is the complete
+# "what your friends need" set. gameplay-extras' mods (Clever's Moveset) merge
+# in; cosmetic-extras stays separate (per-machine, not required for co-op).
+includes = ["gameplay-extras"]
 
 # --- coop framework + loaders ---
 [[mods]]

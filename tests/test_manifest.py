@@ -1,5 +1,9 @@
 from pathlib import Path
+
+import pytest
+
 from ermlib.manifest import load_profile, write_lock, load_lock, set_mod
+from ermlib.errors import PathError
 
 
 def test_seamless_only_profile_has_ersc():
@@ -16,7 +20,10 @@ def test_seamless_only_profile_has_ersc():
 def test_seamless_full_profile_loads_all_mods():
     prof = load_profile("seamless-full", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    assert len(prof["mods"]) == 15   # eac-toggler/unlock-the-fps dropped; randomizer + glorious-merchant disabled
+    assert len(prof["mods"]) == 16   # 15 own + clevers-moveset composed from gameplay-extras via includes
+    # seamless-full composes gameplay-extras (Clever's Moveset) — so it's the
+    # single "what the whole party needs" profile.
+    assert "clevers-moveset" in ids
 
     ersc = next(m for m in prof["mods"] if m["id"] == "seamless-coop")
     assert ersc["source"] == "nexus"
@@ -163,3 +170,43 @@ def test_lock_deterministic_multi_mod_order(tmp_path):
     write_lock(p, lock)
     text = p.read_text()
     assert text.index("[alpha]") < text.index("[zebra]")
+
+
+def _mod(base, name, includes=None, mods=None):
+    lines = [f'name = "{name}"']
+    if includes:
+        lines.append("includes = [" + ", ".join(f'"{i}"' for i in includes) + "]")
+    for m in mods or []:
+        lines += ["", "[[mods]]"] + [f'{k} = {v!r}' if not isinstance(v, str) else f'{k} = "{v}"'
+                                     for k, v in m.items()]
+    (base / f"{name}.toml").write_text("\n".join(lines) + "\n")
+
+
+def test_profile_includes_composes_mods_included_first(tmp_path):
+    _mod(tmp_path, "child", mods=[{"id": "a", "source": "nexus", "nexus_id": 1}])
+    _mod(tmp_path, "parent", includes=["child"],
+         mods=[{"id": "b", "source": "nexus", "nexus_id": 2}])
+    prof = load_profile("parent", base=tmp_path)
+    assert [m["id"] for m in prof["mods"]] == ["a", "b"]   # included first, then own
+
+
+def test_profile_includes_own_entry_overrides_included(tmp_path):
+    _mod(tmp_path, "child", mods=[{"id": "a", "source": "nexus", "nexus_id": 1, "install": "game"}])
+    _mod(tmp_path, "parent", includes=["child"],
+         mods=[{"id": "a", "source": "nexus", "nexus_id": 1, "install": "mods"}])
+    prof = load_profile("parent", base=tmp_path)
+    assert [m["id"] for m in prof["mods"]] == ["a"]        # deduped
+    assert prof["mods"][0]["install"] == "mods"            # own entry wins
+
+
+def test_profile_includes_cycle_raises(tmp_path):
+    _mod(tmp_path, "x", includes=["y"])
+    _mod(tmp_path, "y", includes=["x"])
+    with pytest.raises(PathError):
+        load_profile("x", base=tmp_path)
+
+
+def test_profile_includes_unknown_raises(tmp_path):
+    _mod(tmp_path, "p", includes=["nope-xyz"])
+    with pytest.raises(PathError):
+        load_profile("p", base=tmp_path)

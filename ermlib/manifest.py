@@ -1,10 +1,44 @@
 import tomllib
 from pathlib import Path
 
+from .errors import PathError
 
-def load_profile(name, base=Path("profiles")):
-    data = tomllib.loads((Path(base) / f"{name}.toml").read_text())
-    data.setdefault("mods", [])
+
+def load_profile(name, base=Path("profiles"), _seen=None):
+    """Load a profile, resolving an optional `includes = ["other", ...]` list.
+
+    Included profiles are merged in first (in include order), then this
+    profile's own `[[mods]]`. On a duplicate mod id the entry defined LATEST
+    wins — a later include, or this profile's own entry, overrides an earlier
+    one — so a profile can both compose others and override individual mods.
+    A cycle in the include graph, or an unknown included profile, raises
+    PathError. Callers already wrap a missing top-level profile.
+    """
+    base = Path(base)
+    _seen = _seen or ()
+    if name in _seen:
+        raise PathError("profile include cycle: " + " -> ".join(_seen + (name,)))
+    data = tomllib.loads((base / f"{name}.toml").read_text())
+    merged, index = [], {}
+
+    def add(mod):
+        mid = mod["id"]
+        if mid in index:
+            merged[index[mid]] = mod          # latest definition wins, in place
+        else:
+            index[mid] = len(merged)
+            merged.append(mod)
+
+    for inc in data.get("includes", []):
+        try:
+            included = load_profile(inc, base, _seen + (name,))
+        except OSError as exc:
+            raise PathError(f"profile '{name}' includes unknown profile '{inc}': {exc}") from exc
+        for m in included["mods"]:
+            add(m)
+    for m in data.get("mods", []):
+        add(m)
+    data["mods"] = merged
     return data
 
 
