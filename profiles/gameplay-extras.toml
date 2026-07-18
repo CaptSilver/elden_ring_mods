@@ -1,20 +1,13 @@
 name = "gameplay-extras"
 description = "SHARED gameplay mods for Seamless Co-op. Opposite of cosmetic-extras: every player in the party must run the IDENTICAL set, or you desync. Ban-safe under Seamless (no EAC, separate .co2 save) — but never take that .co2 to vanilla online. Layers on top of a coop base like seamless-full."
 
-# Boss Resurrection Lite — re-fight bosses without NG+, via a site-of-grace menu.
-# The LITE build has NO regulation.bin (verified from the archive), so it doesn't
-# claim the single regulation slot and won't collide with the randomizer; it works
-# through msg/ + param/systemparam/ + script/talk/. v2.0.1 (Jul 2024) is DLC-current
-# (ships item_dlc02/menu_dlc02), unlike a lot of older boss mods. Every player needs
-# the identical file.
-[[mods]]
-id = "boss-resurrection-lite"
-source = "nexus"
-nexus_id = 2790
-file_id = 24925                   # "Boss Resurrection - Lite" v2.0.1 (post-DLC)
-kind = "gameplay"
-install = "me3-package"
-requires_all_players = true
+# --- Boss Resurrection Lite REMOVED (text conflict with Clever's Moveset) ---
+# Both packages ship msg/engus/{item_dlc02,menu_dlc02}.msgbnd.dcx; me3 loads only
+# one, Clever's wins (it needs those for weapon names), so boss-res's resurrect
+# menu text rendered as tofu. Nothing else conflicted. To run both, those two
+# .msgbnd.dcx files must be MERGED (unpack with WitchyBND/soulstruct, splice
+# boss-res's entries into Clever's, repack). Was: nexus_id=2790, file_id=24925,
+# install="me3-package", requires_all_players=true.
 
 # Clever's Moveset Modpack — new weapon movesets + animations. EDITS regulation.bin
 # + c0000.anibnd (the character animation bundle), so it claims the ONE regulation

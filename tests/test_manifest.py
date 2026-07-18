@@ -104,13 +104,6 @@ def test_gameplay_extras_is_a_shared_coop_overlay():
     # that every player must run identically (requires_all_players), not
     # per-machine visuals. No loader → never trips auto-harden on its own.
     prof = load_profile("gameplay-extras", base=Path("profiles"))
-    br = next(m for m in prof["mods"] if m["id"] == "boss-resurrection-lite")
-    assert br["source"] == "nexus"
-    assert br["nexus_id"] == 2790
-    assert br["file_id"] == 24925          # the Lite build (no regulation.bin)
-    assert br["install"] == "me3-package"
-    assert br["kind"] == "gameplay"
-    assert br["requires_all_players"] is True
 
     cl = next(m for m in prof["mods"] if m["id"] == "clevers-moveset")
     assert cl["nexus_id"] == 1928
@@ -119,8 +112,10 @@ def test_gameplay_extras_is_a_shared_coop_overlay():
     assert cl["kind"] == "overhaul"
     assert cl["requires_all_players"] is True
 
-    # summon-anywhere was removed (loaded fine, but useless in co-op).
-    assert "summon-anywhere" not in [m["id"] for m in prof["mods"]]
+    # Both removed: summon-anywhere (useless in co-op), boss-res (msg conflict w/ Clever's).
+    ids = [m["id"] for m in prof["mods"]]
+    assert "summon-anywhere" not in ids
+    assert "boss-resurrection-lite" not in ids
 
     assert not any(m.get("kind") == "loader" for m in prof["mods"])
 
