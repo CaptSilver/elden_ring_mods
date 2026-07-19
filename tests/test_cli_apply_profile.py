@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ermlib import cli, harden, me3profile, paths
-from ermlib.errors import ErmError, PathError
+from ermlib.errors import ErmError, NetworkError, PathError
 from tests.conftest import REPO
 
 
@@ -82,6 +82,121 @@ def _seed_two_mod_profile(tmp_path):
     vendor.mkdir()
     _zip_with(vendor / "mod-a.zip", "mods/x.dll")
     _zip_with(vendor / "mod-b.zip", "y.dll")
+
+
+def test_profile_needs_fetch_detects_missing_and_ignores_manual(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    profile = {"mods": [
+        {"id": "have", "install": "game"},
+        {"id": "manual-mod", "install": "manual"},
+        {"id": "missing", "install": "mods"},
+    ]}
+    (tmp_path / "vendor" / "have.zip").write_bytes(b"x")
+    lock = {"have": {"asset": "have.zip"}}
+    assert cli._profile_needs_fetch(profile, lock) is True    # 'missing' has no lock entry
+    lock["missing"] = {"asset": "missing.zip"}
+    assert cli._profile_needs_fetch(profile, lock) is True    # 'missing' vendor file absent
+    (tmp_path / "vendor" / "missing.zip").write_bytes(b"y")
+    assert cli._profile_needs_fetch(profile, lock) is False   # all present; manual ignored
+
+
+def test_apply_auto_fetches_missing_mod_then_installs(tmp_path, monkeypatch, capsys, tmp_game):
+    # A mod that isn't fetched yet must be fetched automatically (only_missing=True),
+    # then installed — no separate `erm fetch` step required.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _write_profile(tmp_path / "profiles", "needs-fetch",
+        '[[mods]]\n'
+        'id = "mod-a"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "test"\n'
+        'install = "mods"\n'
+    )
+    (tmp_path / "vendor").mkdir()   # empty: mod-a not fetched yet
+
+    calls = {}
+    def fake_fetch(profile_name, vendor, lock_path, only_missing=False, **kw):
+        calls["profile"] = profile_name
+        calls["only_missing"] = only_missing
+        _zip_with(Path(vendor) / "mod-a.zip", "a.dll")   # simulate the download
+        return {"mod-a": {"version": "1.0", "asset": "mod-a.zip",
+                          "sha256": "a", "source": "github"}}
+    monkeypatch.setattr(cli, "fetch_profile", fake_fetch)
+
+    rc = cli.cmd_apply(_apply_args("needs-fetch"))
+    capsys.readouterr()
+
+    assert rc == 0
+    assert calls == {"profile": "needs-fetch", "only_missing": True}
+    assert (game_dir / "mods" / "a.dll").exists()    # fetched, then installed
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "mod-a" in state
+
+
+def test_apply_skips_auto_fetch_when_all_present(tmp_path, monkeypatch, capsys, tmp_game):
+    # Everything already on disk -> no auto-fetch (a fetched profile applies
+    # offline). The spy raises if fetch_profile is called at all.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.setattr(harden, "set_immutable", lambda p, o: None)
+    monkeypatch.chdir(tmp_path)
+    _seed_two_mod_profile(tmp_path)   # mod-a, mod-b fetched (lock+vendor); me3 is manual
+
+    def boom(*a, **k):
+        raise AssertionError("auto-fetch must not run when nothing is missing")
+    monkeypatch.setattr(cli, "fetch_profile", boom)
+
+    rc = cli.cmd_apply(_apply_args("two-mod"))
+    capsys.readouterr()
+
+    assert rc == 0
+    assert (game_dir / "mods" / "x.dll").exists()    # installed from the present vendor archive
+
+
+def test_apply_auto_fetch_failure_warns_and_installs_present(tmp_path, monkeypatch, capsys, tmp_game):
+    # Auto-fetch hitting a network error must NOT abort apply: warn, then install
+    # whatever's already present. mod-a is fetched, mod-b is not.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _write_profile(tmp_path / "profiles", "partial",
+        '[[mods]]\n'
+        'id = "mod-a"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "test"\n'
+        'install = "mods"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "mod-b"\n'
+        'source = "github"\n'
+        'repo_id = 2\n'
+        'kind = "test"\n'
+        'install = "mods"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"mod-a": ("1.0", "mod-a.zip")})   # only mod-a locked
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    _zip_with(vendor / "mod-a.zip", "a.dll")   # mod-a present, mod-b missing -> triggers fetch
+
+    def fake_fetch(*a, **k):
+        raise NetworkError("no route to host")
+    monkeypatch.setattr(cli, "fetch_profile", fake_fetch)
+
+    rc = cli.cmd_apply(_apply_args("partial"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "auto-fetch incomplete" in out.lower()
+    assert (game_dir / "mods" / "a.dll").exists()     # present mod still installed
+    assert "mod-b" in out                              # still-missing mod warned about
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "mod-a" in state and "mod-b" not in state
 
 
 def test_apply_two_mod_profile_installs_game_and_mods_targets_and_skips_manual(

@@ -172,16 +172,24 @@ def test_restore_resolves_snapshot_name_under_backups(tmp_path, monkeypatch):
 
 def test_apply_missing_vendor_archive_warns_and_continues(tmp_path, monkeypatch, capsys):
     # Fresh clone that runs `apply` before `fetch`: the lockfile names an asset
-    # that was never downloaded. This is now a per-mod warning (like "not
-    # fetched"), not a raised error — apply keeps going, records nothing for
-    # that mod, and still runs doctor rather than crashing the whole command.
-    from ermlib import paths
+    # that was never downloaded, so apply now auto-fetches it. Here the fetch
+    # fails (simulated offline) — apply must warn, install what's present, record
+    # nothing for that mod, and still run doctor rather than crashing.
+    import urllib.error
+    from ermlib import paths, github
 
     game_dir = tmp_path / "Game"
     game_dir.mkdir()
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
+
+    # Auto-fetch would reach for GitHub; simulate no network so it fails cleanly
+    # instead of downloading the real release.
+    def offline(*a, **k):
+        raise urllib.error.URLError("no route to host")
+    monkeypatch.setattr(github, "release_by_tag", offline)
+    monkeypatch.setattr(github, "latest_release", offline)
 
     _seed_profile(tmp_path)
     (tmp_path / "vendor").mkdir()
@@ -196,7 +204,8 @@ def test_apply_missing_vendor_archive_warns_and_continues(tmp_path, monkeypatch,
     args = type("A", (), {"profile": "seamless-only", "json": False})()
     cli.cmd_apply(args)
     out = capsys.readouterr().out
-    assert "archive missing from vendor" in out.lower()
+    assert "auto-fetch incomplete" in out.lower()      # fetch was attempted, failed gracefully
+    assert "archive missing from vendor" in out.lower()  # still-missing mod warned, not crashed
 
     import json
     state = json.loads((tmp_path / "installed.json").read_text())

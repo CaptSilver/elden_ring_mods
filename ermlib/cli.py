@@ -144,8 +144,23 @@ def _default_nexus_api_key():
     return install.read_secret(secrets_path, "NEXUS_API_KEY")
 
 
+def _profile_needs_fetch(profile, lock, vendor=Path("vendor")):
+    """True if any auto-installable mod in `profile` isn't on disk yet — it has
+    no lock asset, or its recorded vendor archive is missing. Manual-install
+    mods never fetch, so they don't count. Drives apply's auto-fetch."""
+    vendor = Path(vendor)
+    for mod in profile["mods"]:
+        if mod.get("install", "game") == "manual":
+            continue
+        meta = lock.get(mod["id"])
+        asset = meta.get("asset") if meta else None
+        if not asset or not (vendor / asset).exists():
+            return True
+    return False
+
+
 def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"),
-                   update=False, nexus_api_key=None):
+                   update=False, nexus_api_key=None, only_missing=False):
     try:
         prof = manifest.load_profile(profile_name, base=profiles_base)
     except OSError as exc:
@@ -156,6 +171,14 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
     if nexus_api_key is None:
         nexus_api_key = _default_nexus_api_key()
     for mod in prof["mods"]:
+        if only_missing:
+            # Auto-fetch mode (apply/switch): leave a mod that's already pinned
+            # AND on disk alone — no network, no re-verify. Explicit `erm fetch`
+            # (only_missing=False) still re-checks every pin against upstream.
+            locked = lock.get(mod["id"])
+            asset_name = locked.get("asset") if locked else None
+            if asset_name and (vendor / asset_name).exists():
+                continue
         if mod["source"] == "github":
             locked = lock.get(mod["id"])
             pinned = not update and locked and locked.get("version")
@@ -328,6 +351,22 @@ def cmd_apply(args):
             )
     password = install.read_secret(Path("secrets.env")) if Path("secrets.env").exists() else ""
     r = Report()
+    # Auto-fetch anything the profile needs that isn't on disk yet, so apply/switch
+    # works without a separate `erm fetch` first. Only the MISSING mods are pulled
+    # (only_missing=True) — present, pinned ones are left untouched, so a fully
+    # fetched profile still applies offline. A fetch failure isn't fatal: warn and
+    # install whatever's already present.
+    if _profile_needs_fetch(profile, lock):
+        print(f"fetching missing mods for {args.profile}…")
+        try:
+            lock = fetch_profile(args.profile, Path("vendor"), Path("mods.lock.toml"),
+                                 only_missing=True)
+        except ErmError as exc:
+            # Any fetch problem (network down, a stale pin failing its hash check,
+            # an unknown source) — warn and install what's already present rather
+            # than aborting the whole apply. A failed pin leaves nothing on disk
+            # (download_verified fails closed), so the loop just skips that mod.
+            r.warn(f"auto-fetch incomplete ({exc}) — installing what's already present")
     installed_seamless = False
     for mod in profile["mods"]:
         mid = mod["id"]

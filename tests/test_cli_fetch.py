@@ -398,6 +398,47 @@ def test_fetch_profile_nexus_multiple_main_no_file_id_warns_and_skips(tmp_path, 
     assert "file_id" in out
 
 
+def test_fetch_profile_only_missing_skips_already_present(tmp_path, monkeypatch):
+    # only_missing=True (apply's auto-fetch) leaves an already-pinned, already-
+    # downloaded mod alone: no network, no re-verify. That's what lets a fully
+    # fetched profile apply offline; explicit `erm fetch` still re-verifies.
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path)   # seamless-coop v1.9.8, asset seamless-coop-v1.9.8.zip
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    (vendor / "seamless-coop-v1.9.8.zip").write_bytes(b"present")
+
+    def boom(*a, **k):
+        raise AssertionError("network must not be touched for an already-present mod")
+    monkeypatch.setattr(github, "release_by_tag", boom)
+    monkeypatch.setattr(github, "latest_release", boom)
+
+    profiles_dir = _write_github_profile(tmp_path / "profiles")
+    updated = cli.fetch_profile("gh-only", vendor, lock_path,
+                                profiles_base=profiles_dir, only_missing=True)
+
+    assert updated["seamless-coop"]["version"] == "v1.9.8"                  # pin preserved
+    assert (vendor / "seamless-coop-v1.9.8.zip").read_bytes() == b"present"  # untouched
+
+
+def test_fetch_profile_only_missing_still_fetches_absent_mod(tmp_path, monkeypatch):
+    # The other half: only_missing=True must still fetch a mod that has no lock
+    # entry / no archive on disk — otherwise auto-fetch would be a no-op.
+    monkeypatch.setattr(github, "latest_release", lambda rid: {
+        "tag": "v1.9.8",
+        "assets": [{"name": "Seamless.zip", "url": "http://x/Seamless.zip",
+                    "digest": "sha256:" + "a" * 64}],
+    })
+    monkeypatch.setattr(github, "download_verified",
+                        lambda url, dest, sha256: Path(dest).write_bytes(b"z"))
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    lock = tmp_path / "mods.lock.toml"
+    profiles_dir = _write_github_profile(tmp_path / "profiles")
+    updated = cli.fetch_profile("gh-only", vendor, lock,
+                                profiles_base=profiles_dir, only_missing=True)
+    assert updated["seamless-coop"]["version"] == "v1.9.8"   # absent -> fetched
+    assert (vendor / "seamless-coop-v1.9.8.zip").exists()
+
+
 def test_pinned_nexus_fetch_with_file_id_selects_by_id_not_version(tmp_path, monkeypatch):
     # A pinned nexus mod whose file_id points at one of several files sharing a
     # version (e.g. Boss Resurrection's full + Lite both at 2.0.1). The pinned
