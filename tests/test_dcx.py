@@ -1,3 +1,4 @@
+import struct
 import zlib
 
 import pytest
@@ -49,3 +50,39 @@ def test_read_rejects_an_unknown_compression():
     blob[0x28:0x2c] = b"ZSTD"
     with pytest.raises(dcx.DcxError):
         dcx.read(bytes(blob))
+
+
+def test_read_rejects_a_truncated_body():
+    """A file cut short mid-download or mid-extraction still has a valid
+    header claiming the original compressed size. Without this check, zlib
+    would be handed a partial stream and either raise its own opaque error
+    deep in the decompressor or, worse, silently decompress a truncated
+    prefix and hand back incomplete game data as if it were valid."""
+    blob = bytearray(dcx.write_dflt(b"payload" * 50))
+    truncated = bytes(blob[:-10])  # header still claims the full compressed size
+    with pytest.raises(dcx.DcxError):
+        dcx.read(truncated)
+
+
+def test_read_rejects_a_dflt_size_mismatch():
+    """If the decompressed size didn't have to match the header's claim, a
+    corrupted or hand-edited size field would go unnoticed — anyone sizing
+    a buffer off this field, or relying on it to sanity-check the payload,
+    would get silently wrong data instead of a loud failure."""
+    payload = b"payload" * 30
+    blob = bytearray(dcx.write_dflt(payload))
+    struct.pack_into(">I", blob, 0x1C, len(payload) + 1)
+    with pytest.raises(dcx.DcxError):
+        dcx.read(bytes(blob))
+
+
+def test_read_rejects_a_compressed_size_that_overruns_the_buffer():
+    """A corrupted or hostile header can claim megabytes of compressed data
+    against a file that holds almost none. Python slicing doesn't raise on
+    an out-of-range stop index, so without the length check this would pass
+    a near-empty body straight to the decompressor instead of failing here."""
+    blob = bytearray(dcx.write_dflt(b"x"))
+    struct.pack_into(">I", blob, 0x20, 10_000_000)
+    truncated = bytes(blob[:dcx.HEADER_SIZE])  # header intact, body entirely gone
+    with pytest.raises(dcx.DcxError):
+        dcx.read(truncated)

@@ -26,8 +26,11 @@ class DcxError(ErmError):
 
 def read(data):
     """Decompress a DCX container and return its payload."""
-    if len(data) < HEADER_SIZE or data[:4] != MAGIC:
+    if data[:4] != MAGIC:
         raise DcxError("not a DCX container (bad magic)")
+    if len(data) < HEADER_SIZE:
+        raise DcxError(
+            f"DCX header is truncated: need {HEADER_SIZE} bytes, file holds {len(data)}")
     uncompressed, compressed = struct.unpack_from(">II", data, 0x1C)
     method = data[0x28:0x2C]
     body = data[HEADER_SIZE:HEADER_SIZE + compressed]
@@ -58,11 +61,11 @@ def write_dflt(payload, level=9):
             f"rejects the container before decompressing it")
     body = zlib.compress(payload, level)
     header = bytearray()
-    header += MAGIC + struct.pack(">IIIII", 0x11000, 0x18, 0x24, 0x44, 0x4C)
+    header += MAGIC + struct.pack(">IIIII", MAX_UNK04, 0x18, 0x24, 0x44, HEADER_SIZE)
     header += b"DCS\x00" + struct.pack(">II", len(payload), len(body))
     header += b"DCP\x00" + DFLT + struct.pack(">I", 0x20)
     header += bytes([level, 0, 0, 0]) + struct.pack(">III", 0, 0, 0)
-    header += struct.pack(">I", 0x00010100)
+    header += struct.pack(">I", 0x00010100)  # fixed value; confirmed against real game archives
     header += b"DCA\x00" + struct.pack(">I", 8)
     assert len(header) == HEADER_SIZE, len(header)
     return bytes(header) + body
