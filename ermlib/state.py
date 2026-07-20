@@ -83,8 +83,12 @@ def record_merged(state, package):
     """Record the synthetic package holding merged conflict output.
 
     Recorded as a me3-package so me3profile.reconcile emits it like any other,
-    but flagged `derived` and given no archive: it's computed from the other
-    packages, not fetched, so update/fetch must not try to resolve it.
+    but flagged `derived` and given no archive since it's computed from the
+    other packages, not fetched. Nothing reads the `derived` flag back -- it's
+    accurate metadata for a human skimming installed.json, not enforcement.
+    What actually keeps update/fetch from trying to resolve MERGED_ID as a
+    real mod is that it never appears in a profile or in mods.lock.toml, so
+    those commands never even iterate over it.
     """
     state[MERGED_ID] = {"version": "derived", "archive": None,
                         "kind": "me3-package", "package": package,

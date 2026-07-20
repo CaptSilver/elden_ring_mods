@@ -16,6 +16,14 @@ BUILD_DIR = Path("tools/ooz")
 SOURCES = ("kraken_lib.cpp", "bitknit.cpp", "lzna.cpp")
 # Bumped whenever the build flags change, so a flag-only edit still rebuilds.
 BUILD_KEY = "1"
+# DCX's uncompressed-size field is a bare big-endian u32 straight from the
+# file -- up to 4 GB -- with nothing upstream validating it against reality.
+# Upstream ooz's own CLI caps at 1 GB; matched here. The largest uncompressed
+# archive this project's mods produce today is ~17 MB, and the largest
+# installed file is a 92 MB archive, so 1 GB leaves over 10x headroom for
+# real game data while still refusing to allocate a gigabytes-sized buffer
+# for a corrupted or hostile header.
+MAX_UNCOMPRESSED_SIZE = 1024 * 1024 * 1024
 
 _lib = None
 
@@ -74,6 +82,11 @@ def decompress(src, uncompressed_size):
     Raises rather than returning short output: a partial decode would produce a
     structurally valid but truncated archive, which nothing downstream catches.
     """
+    if uncompressed_size > MAX_UNCOMPRESSED_SIZE:
+        raise OozError(
+            f"refusing to allocate {uncompressed_size} bytes for a Kraken "
+            f"decode — exceeds the {MAX_UNCOMPRESSED_SIZE}-byte cap"
+        )
     fn = _load()
     # Slack: the decoder may overwrite past the logical end within a chunk.
     dst = ctypes.create_string_buffer(uncompressed_size + 65536)

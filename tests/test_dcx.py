@@ -45,6 +45,15 @@ def test_read_rejects_a_non_dcx():
         dcx.read(b"NOTDCX" + b"\x00" * 200)
 
 
+def test_read_rejects_a_truncated_header():
+    """A file cut short before the fixed-size header even ends can't be
+    unpacked at all -- struct.unpack_from on the compression fields would
+    raise a bare struct.error instead of DcxError. Magic intact, everything
+    after it gone, so only the header-length check can catch this."""
+    with pytest.raises(dcx.DcxError, match="header is truncated"):
+        dcx.read(b"DCX\x00" + b"\x00" * 10)
+
+
 def test_read_rejects_an_unknown_compression():
     blob = bytearray(dcx.write_dflt(b"payload"))
     blob[0x28:0x2c] = b"ZSTD"

@@ -9,11 +9,12 @@ CLEVERS_MENU = Path("tools/me3/mods/clevers-moveset/msg/engus/menu_dlc02.msgbnd.
 
 
 def _resolve_real_archive():
-    """Find the first available real BND4 archive for testing rebuild.
+    """Find a real BND4 archive to test rebuild against.
 
-    Archives move as mods merge and profiles are applied. This function checks
-    candidates in order of preference (survivors first, then merged output, then
-    originals), ensuring tests remain valid across profile applications.
+    The real archive moves between package directories when a merge runs, so
+    pinning one path would break the moment seamless-full gets re-applied.
+    Check likely locations in order -- survivor first, then merged output,
+    then the untouched original -- and use whichever one exists.
 
     Returns Path to the archive if found, else None.
     """
@@ -340,10 +341,14 @@ def test_rebuild_preserves_an_unaligned_leading_gap_before_the_first_entry():
     assert rebuilt[data_offset:first_off] == gap
 
 
-def test_rebuild_rejects_a_first_entry_offset_before_the_data_section():
-    """If the first entry's own recorded offset points before the declared
-    data section, slicing the (negative-length) gap would silently return an
-    empty byte string instead of raising -- this must be caught explicitly."""
+def test_rebuild_propagates_reads_guard_for_a_first_entry_offset_before_the_data_section():
+    """rebuild used to carry its own check for this case, but it was dead code:
+    rebuild calls read(base) first, and read's own per-entry check already
+    rejects an offset preceding data_offset for every entry, entry 0 included
+    -- by the time rebuild would reach its old check, read() has already
+    raised. This test now proves rebuild still fails on this input (it must,
+    or a corrupted first entry could slice a negative-length, silently-empty
+    gap into the output) via that read() guard, not a duplicate of it."""
     raw = bytearray(_synthetic_bnd4([(10, "a.fmg", b"AAA")]))
     data_offset, = struct.unpack_from("<q", raw, 0x28)
     struct.pack_into("<I", raw, 0x40 + 0x18, data_offset - 4)
@@ -353,7 +358,14 @@ def test_rebuild_rejects_a_first_entry_offset_before_the_data_section():
 
 def test_identity_rebuild_of_a_real_msgbnd():
     """A real archive exercises the populated hash table and the true entry
-    layout, neither of which the synthetic fixture fully reproduces."""
+    layout, neither of which the synthetic fixture fully reproduces.
+
+    This is also the whole project's only real coverage of the vendored
+    Kraken decompressor -- the C++ code and the GPL relicense that allowed
+    vendoring it. _resolve_real_archive's fallback candidates can land on a
+    DFLT archive (one erm itself wrote), which would let this test keep
+    passing while silently testing zlib instead of Kraken. Assert KRAK
+    explicitly so that degrades loudly instead of quietly."""
     archive = _resolve_real_archive()
     if not archive:
         pytest.skip(
@@ -362,5 +374,12 @@ def test_identity_rebuild_of_a_real_msgbnd():
             "_merged/msg/engus/menu_dlc02.msgbnd.dcx, "
             "clevers-moveset/msg/engus/menu_dlc02.msgbnd.dcx"
         )
-    raw = dcx.read(archive.read_bytes())
+    raw_bytes = archive.read_bytes()
+    method = raw_bytes[0x28:0x2C]
+    assert method == dcx.KRAK, (
+        f"resolved archive {archive} is DCX method {method!r}, not KRAK -- "
+        "a degraded fallback to a zlib self-round-trip must fail here, not "
+        "pass while testing nothing"
+    )
+    raw = dcx.read(raw_bytes)
     assert bnd4.rebuild(raw, {}) == raw

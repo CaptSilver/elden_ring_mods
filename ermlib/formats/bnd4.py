@@ -10,6 +10,7 @@ import struct
 from typing import NamedTuple
 
 from ..errors import ErmError
+from ._util import read_utf16z
 
 MAGIC = b"BND4"
 HEADER_SIZE = 0x40
@@ -71,12 +72,7 @@ def _entry_layout(data):
 
 
 def _read_utf16z(data, offset):
-    end = offset
-    while data[end:end + 2] != b"\x00\x00":
-        if end >= len(data):
-            raise Bnd4Error("unterminated entry name in BND4")
-        end += 2
-    return data[offset:end].decode("utf-16-le")
+    return read_utf16z(data, offset, Bnd4Error, "unterminated entry name in BND4")
 
 
 def read(data):
@@ -170,11 +166,12 @@ def rebuild(base, replacements):
     # necessarily an aligned entry start -- real archives can leave a few
     # padding bytes between the two. Anchor on the first entry's own recorded
     # offset and carry that gap across verbatim rather than assuming it's zero.
+    # No need to check first_offset against data_offset here: read(base)
+    # above already rejects any entry (including this one) whose offset
+    # precedes data_offset, so that's already guaranteed by the time we get
+    # here -- entries is non-empty, since we only reach this line when
+    # replacements is nonempty and unknown is empty (see above).
     first_offset, = struct.unpack_from("<I", base, HEADER_SIZE + 0x18)
-    if first_offset < data_offset:
-        raise Bnd4Error(
-            f"BND4 first entry offset {first_offset} precedes the "
-            f"declared data section at {data_offset}")
     out += base[data_offset:first_offset]
     cursor = first_offset
     for i, entry in enumerate(entries):

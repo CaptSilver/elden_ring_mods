@@ -7,6 +7,7 @@ range per run rather than one per id.
 import struct
 
 from ..errors import ErmError
+from ._util import read_utf16z
 
 VERSION = 2
 HEADER_SIZE = 0x28
@@ -18,12 +19,7 @@ class FmgError(ErmError):
 
 
 def _read_utf16z(data, offset):
-    end = offset
-    while data[end:end + 2] != b"\x00\x00":
-        if end >= len(data):
-            raise FmgError("unterminated string in FMG")
-        end += 2
-    return data[offset:end].decode("utf-16-le")
+    return read_utf16z(data, offset, FmgError, "unterminated string in FMG")
 
 
 def read(data):
