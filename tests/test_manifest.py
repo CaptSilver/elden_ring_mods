@@ -256,17 +256,13 @@ def test_experimental_composes_seamless_full_with_the_trial_overlays():
     # everything first, so a standalone profile would strip Seamless.
     assert prof["includes"] == ["seamless-full"]
     assert "seamless-coop" in ids and "clevers-moveset" in ids
-    assert "map-for-goblins" in ids
-    # questpath is disabled: its DXGI/NVAPI hooks killed the game during startup,
-    # taking Elden Mod Loader down mid-load with it.
+    # Nothing on trial right now — both candidates were rejected. questpath's
+    # render hooks killed the game at startup; map-for-goblins ran fine but its
+    # overlay takes no controller input.
     assert "questpath" not in ids
+    assert "map-for-goblins" not in ids
     # Inherits seamless-full's mutual exclusion with the randomizer.
     assert "randomizer" in prof["excludes"]
 
-    goblins = next(m for m in prof["mods"] if m["id"] == "map-for-goblins")
-    # The mod publishes several MAIN files at once (one per overhaul) sharing a
-    # version, so the file_id is what selects the vanilla build.
-    assert goblins["file_id"] == 48311
-    assert goblins["install"] == "mods"
 
 

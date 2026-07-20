@@ -3,28 +3,24 @@
 # plus whatever's being tried out — switching to a standalone profile would
 # uninstall Seamless along with everything else.
 name = "experimental"
-description = "seamless-full plus mods on trial. Currently Map for Goblins, whose in-game overlay is the thing being evaluated — it hasn't been played long enough to promote into the shared stack. Nothing here is required by co-op partners."
+description = "seamless-full plus whatever is currently on trial. Empty right now — both candidates were rejected, and the notes below record why so they don't get re-added. Applying this is identical to applying seamless-full until something new goes in. Nothing here is ever required by co-op partners."
 
 includes = ["seamless-full"]
 
-# --- on trial: in-game overlay ---
-# Map for Goblins, DLL rebuild. The original (#3091) ships a regulation.bin and
-# would fight Clever's Moveset for the single regulation slot; this one injects
-# its map data at runtime instead, so it composes cleanly. Author states
-# Seamless Co-op compatibility outright. Ships MapForGoblins.dll + .ini at the
-# archive root, so it loads via Elden Mod Loader like the other QoL DLLs.
+# --- tried and rejected ---
+# map-for-goblins (#10062, DLL rebuild) DISABLED — loads and runs fine, but its
+# overlay takes no controller input, which makes it unusable for a controller
+# playthrough. The mod documents Y+R3 as the panel toggle; that didn't work
+# here. Nothing wrong with the install, so "it loads" is not the bar — don't
+# re-add it on that basis.
 #
-# file_id pins the "Vanilla or Randomizer" build. The mod publishes NINE files
-# under MAIN at once — one per overhaul (ERR, Convergence, ERTE, Graceborne…) —
-# and they all share a version, so version alone can't distinguish them. Without
-# the pin you'd silently get whichever was uploaded last.
-[[mods]]
-id = "map-for-goblins"
-source = "nexus"
-nexus_id = 10062
-file_id = 48311
-kind = "qol"
-install = "mods"
+# To re-enable: nexus_id=10062, file_id=48311, kind="qol", install="mods".
+# The file_id matters: the mod publishes NINE files under MAIN at once, one per
+# overhaul (ERR, Convergence, ERTE, Graceborne…), all sharing a version, so
+# version alone can't pick between them — 48311 is "Vanilla or Randomizer".
+# Take the DLL rebuild, never the original (#3091): that one ships a
+# regulation.bin and would fight Clever's Moveset for the single slot, while
+# this one injects its map data at runtime.
 
 # questpath (#10363) DISABLED — it kills the game during startup on this box.
 # Every launch with it died ~10ms after its own log recorded "DXGI creation
