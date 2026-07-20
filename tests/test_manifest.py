@@ -20,7 +20,6 @@ def test_seamless_only_profile_has_ersc():
 def test_seamless_full_profile_loads_all_mods():
     prof = load_profile("seamless-full", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    assert len(ids) == len(set(ids))   # no duplicate mod ids
     # seamless-full composes seamless-extras (the base coop framework + loader +
     # a couple client-side QoL/cosmetics, defined once there) and gameplay-extras
     # (Clever's Moveset) — the single "what the whole party needs" profile.
@@ -248,3 +247,26 @@ def test_seamless_full_excludes_randomizer_via_gameplay_extras_include():
     # via the includes merge, since it composes gameplay-extras (Clever's Moveset).
     prof = load_profile("seamless-full", base=Path("profiles"))
     assert "randomizer" in prof["excludes"]
+
+
+def test_experimental_composes_seamless_full_with_the_trial_overlays():
+    prof = load_profile("experimental", base=Path("profiles"))
+    ids = [m["id"] for m in prof["mods"]]
+    assert len(ids) == len(set(ids))   # no duplicate mod ids
+    # Composes the coop stack rather than replacing it — `erm switch` uninstalls
+    # everything first, so a standalone profile would strip Seamless.
+    assert prof["includes"] == ["seamless-full"]
+    assert "seamless-coop" in ids and "clevers-moveset" in ids
+    assert "map-for-goblins" in ids and "questpath" in ids
+    # Inherits seamless-full's mutual exclusion with the randomizer.
+    assert "randomizer" in prof["excludes"]
+
+    goblins = next(m for m in prof["mods"] if m["id"] == "map-for-goblins")
+    # The mod publishes several MAIN files at once (one per overhaul) sharing a
+    # version, so the file_id is what selects the vanilla build.
+    assert goblins["file_id"] == 48311
+    assert goblins["install"] == "mods"
+
+    qp = next(m for m in prof["mods"] if m["id"] == "questpath")
+    # Its dll is nested in a folder; Elden Mod Loader only scans mods/*.dll.
+    assert qp["install"] == "me3-native"

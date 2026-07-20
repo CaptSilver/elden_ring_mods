@@ -1,0 +1,40 @@
+# Testbed for mods that aren't trusted in the shared stack yet. Composes
+# seamless-full, so `erm switch experimental` gives you the whole co-op setup
+# plus whatever's being tried out — switching to a standalone profile would
+# uninstall Seamless along with everything else.
+name = "experimental"
+description = "seamless-full plus mods on trial. Both current entries draw in-game overlays, which is the thing being evaluated — they haven't been played long enough to promote into the shared stack. Nothing here is required by co-op partners."
+
+includes = ["seamless-full"]
+
+# --- on trial: in-game overlays ---
+# Map for Goblins, DLL rebuild. The original (#3091) ships a regulation.bin and
+# would fight Clever's Moveset for the single regulation slot; this one injects
+# its map data at runtime instead, so it composes cleanly. Author states
+# Seamless Co-op compatibility outright. Ships MapForGoblins.dll + .ini at the
+# archive root, so it loads via Elden Mod Loader like the other QoL DLLs.
+#
+# file_id pins the "Vanilla or Randomizer" build. The mod publishes NINE files
+# under MAIN at once — one per overhaul (ERR, Convergence, ERTE, Graceborne…) —
+# and they all share a version, so version alone can't distinguish them. Without
+# the pin you'd silently get whichever was uploaded last.
+[[mods]]
+id = "map-for-goblins"
+source = "nexus"
+nexus_id = 10062
+file_id = 48311
+kind = "qol"
+install = "mods"
+
+# QuestPath ships its DLL inside a QuestPath/ folder, and Elden Mod Loader only
+# scans mods/*.dll — it never recurses — so EML would load nothing and report
+# nothing. me3 chainloads it by explicit path instead, hence install =
+# "me3-native". Overlaps with quest-log (#3585) in seamless-full: both are quest
+# trackers with overlays. Running both is deliberate for now, to compare them;
+# each has an ini toggle and an in-game hotkey.
+[[mods]]
+id = "questpath"
+source = "nexus"
+nexus_id = 10363
+kind = "qol"
+install = "me3-native"
