@@ -104,6 +104,15 @@ source = "nexus"
 nexus_id = 501
 kind = "qol"
 install = "mods"
+# Ships erquestlog.dll alongside an .ini and a questlog_lang/ dir, all at the
+# archive root — hence install = "mods" rather than "game". Reads quest flags
+# for its overlay; nothing written back, so it's per-player like the rest here.
+[[mods]]
+id = "quest-log"
+source = "nexus"
+nexus_id = 3585
+kind = "qol"
+install = "mods"
 
 # NOTE: ReShade (reshade.me) + the Tarnished preset and RandomizerHelper (bundled inside
 # the randomizer #428 download) are NOT listed as fetchable mods — ReShade is a general

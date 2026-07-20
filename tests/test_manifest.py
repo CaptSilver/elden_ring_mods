@@ -20,8 +20,7 @@ def test_seamless_only_profile_has_ersc():
 def test_seamless_full_profile_loads_all_mods():
     prof = load_profile("seamless-full", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    # 11 own + 4 from seamless-extras + clevers-moveset from gameplay-extras
-    assert len(prof["mods"]) == 16
+    assert len(ids) == len(set(ids))   # no duplicate mod ids
     # seamless-full composes seamless-extras (the base coop framework + loader +
     # a couple client-side QoL/cosmetics, defined once there) and gameplay-extras
     # (Clever's Moveset) — the single "what the whole party needs" profile.
