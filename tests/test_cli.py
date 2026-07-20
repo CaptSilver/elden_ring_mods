@@ -358,6 +358,10 @@ def test_launch_option_json_emits_the_variant_set(pinned_machine, capsys):
     assert data["me3"]["plain"].endswith(" # %command%")
     for key in ("reshade_installed", "me3_packages", "profile_exists"):
         assert isinstance(data[key], bool)
+    # The profile actually used to build the me3 command above — a consumer
+    # shouldn't have to parse it back out of me3.plain.
+    assert data["profile"] == str(pinned_machine / "erm-coop.me3")
+    assert pathlib.Path(data["profile"]).is_absolute()
 
 
 def test_launch_option_json_me3_is_null_when_binary_missing(

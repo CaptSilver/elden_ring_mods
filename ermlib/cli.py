@@ -12,7 +12,7 @@ from .report import Report
 from .savefile import SaveFile
 from .audit import audit_save
 from .doctor import run_doctor
-# Re-exported so `cli.LAUNCH_OPTION` keeps resolving for callers and tests.
+# Re-exported so `cli.LAUNCH_OPTION` keeps resolving for tests.
 from .launch import LAUNCH_OPTION, LAUNCH_VALIDATOR, RESHADE_ENV
 
 ME3_DIR = Path("tools") / "me3"

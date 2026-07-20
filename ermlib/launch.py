@@ -12,8 +12,6 @@ from .report import Report
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROFILE = REPO_ROOT / "tools" / "me3" / "erm-coop.me3"
-# How the profile is spelled in prose — the absolute form is for the command line.
-PROFILE_DISPLAY = "tools/me3/erm-coop.me3"
 ME3_FALLBACK = Path("~/.local/bin/me3").expanduser()
 
 LAUNCH_OPTION = (
@@ -75,6 +73,11 @@ def build_variants(me3_bin, reshade_installed, me3_packages, profile=None):
         "reshade_installed": bool(reshade_installed),
         "me3_packages": bool(me3_packages),
         "profile_exists": Path(profile).exists(),
+        # The absolute path actually used to build the me3 command above, so
+        # render (and --json consumers) don't have to parse it back out of
+        # me3.plain or fall back to a module global that can name a different
+        # profile than the one the commands point at.
+        "profile": str(profile),
     }
 
 
@@ -121,6 +124,15 @@ def _warn(msg):
     return r.render()
 
 
+def _display_profile(profile):
+    """Show the repo-relative spelling when we can; an outside path prints in full."""
+    p = Path(profile)
+    try:
+        return str(p.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(p)
+
+
 def _pair(label, plain, reshade):
     return (f"{label}\n\n"
             f"  plain\n    {plain}\n\n"
@@ -140,7 +152,7 @@ def render(variants):
         out.append(_ME3_MISSING)
     else:
         if not variants["profile_exists"]:
-            out.append(_warn(f"{PROFILE_DISPLAY} does not exist yet — "
+            out.append(_warn(f"{_display_profile(variants['profile'])} does not exist yet — "
                              "run `erm apply <profile>` first."))
         out.append(_pair(
             f"me3 — loose-asset mods + Seamless (this install: {note})",
@@ -150,6 +162,10 @@ def render(variants):
 
     out.append(_pair("ersc_launcher — Seamless only, no me3 packages",
                      variants["ersc"]["plain"], variants["ersc"]["reshade"]))
+    if variants["me3_packages"]:
+        out.append(_warn("me3 packages are installed on this machine — launching via "
+                         "ersc_launcher will NOT load them (only me3's VFS does). Use the "
+                         "me3 command above instead."))
     out.append(_ERSC_NOTE)
     out.append("")
 

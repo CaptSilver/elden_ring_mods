@@ -93,6 +93,16 @@ def test_build_variants_reports_observations(tmp_path):
     assert v["profile_exists"] is True
 
 
+def test_build_variants_reports_the_profile_actually_used(tmp_path):
+    # render (and --json consumers) key off this field rather than a module
+    # global or parsing it back out of me3.plain, so it must name the exact
+    # path the commands above were built from.
+    prof = tmp_path / "custom" / "other.me3"
+    v = _variants(tmp_path, profile=prof)
+    assert v["profile"] == str(prof)
+    assert Path(v["profile"]).is_absolute()
+
+
 def test_build_variants_me3_is_none_when_binary_missing(tmp_path):
     v = _variants(tmp_path, me3_bin=None)
     assert v["me3"] is None
@@ -185,3 +195,33 @@ def test_render_warns_when_profile_absent_but_still_shows_commands(tmp_path):
     prof = tmp_path / "erm-coop.me3"
     prof.write_text("")
     assert "does not exist yet" not in launch.render(_variants(tmp_path, profile=prof))
+
+
+def test_render_profile_missing_warning_names_the_profile_the_commands_use(tmp_path):
+    # render must read the profile from variants["profile"], not the module
+    # global — otherwise render(build_variants(..., profile=X)) can print
+    # commands pointing at X alongside a warning naming a different profile.
+    custom = tmp_path / "somewhere" / "other.me3"
+    out = launch.render(_variants(tmp_path, profile=custom))
+    assert str(custom) in out
+    assert "tools/me3/erm-coop.me3" not in out
+
+
+def test_render_profile_missing_warning_uses_repo_relative_spelling_when_under_repo_root(tmp_path):
+    # The command lines legitimately carry the absolute path (Steam's working
+    # directory is Game/, not this repo) — only the warning's own framing
+    # should prefer the shorter repo-relative spelling.
+    prof = launch.REPO_ROOT / "tools" / "me3" / "scratch-test.me3"
+    out = launch.render(_variants(tmp_path, profile=prof))
+    assert "tools/me3/scratch-test.me3 does not exist yet" in out
+
+
+def test_render_warns_when_me3_packages_installed_that_ersc_wont_load_them(tmp_path):
+    with_packages = launch.render(_variants(tmp_path, packages=True))
+    without_packages = launch.render(_variants(tmp_path, packages=False))
+    assert "will not load them" in with_packages.lower()
+    assert "will not load them" not in without_packages.lower()
+    # Never hide a variant — the ersc commands still print either way.
+    for out in (with_packages, without_packages):
+        assert f"  plain\n    {launch.LAUNCH_OPTION}\n" in out
+        assert launch.RESHADE_ENV + launch.LAUNCH_OPTION in out
