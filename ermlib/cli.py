@@ -414,7 +414,13 @@ def cmd_apply(args):
             if mid == "seamless-coop":
                 files = install.apply_ersc(vpath, game, password)   # legacy-clean + password inject
             else:
-                files = install.extract_archive(vpath, game, subdir)
+                # Only the mods/ path strips a wrapper dir: Elden Mod Loader
+                # scans mods/*.dll and never recurses, so a mod zipped inside a
+                # version-named folder would load nothing. install="game"
+                # archives usually ARE a single top-level mods/ dir — stripping
+                # there would drop their DLLs into Game/ and unload them.
+                files = install.extract_archive(vpath, game, subdir,
+                                                strip_wrapper=(kind == "mods"))
         except (OSError, zipfile.BadZipFile) as exc:
             r.warn(f"{mid}: install failed ({exc})")
             continue

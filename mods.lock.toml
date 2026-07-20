@@ -72,6 +72,12 @@ asset = "Elden Ring Randomizer-428-v0-11-4-1763103112.zip"
 sha256 = "b1b7ea2370a49d03d7e4ee0a9cd25fc887b21bb364e37a6cdf0330de77be4387"
 source = "nexus"
 
+[map-for-goblins]
+version = "v2.0.5"
+asset = "Vanilla or Randomizer - v2.0.5 10062 v2.0.5 2026-07-14T10-47Z ZTHtIFwXR.zip"
+sha256 = "896a82fcb1d739491edbf56683e71cc20cef8146ae8618140010a83881ca3ec1"
+source = "nexus"
+
 [me3]
 version = "v0.11.0"
 asset = "me3-v0.11.0.zip"
@@ -82,6 +88,18 @@ source = "github"
 version = "2.1"
 asset = "NoWeight-481-2-1-1681740990.zip"
 sha256 = "8992b80201a84bde963c625ffdbab1bdd4e54ca2dd7119b7984a998d8ac6e52c"
+source = "nexus"
+
+[quest-log]
+version = "v1.1.3"
+asset = "ERQuestLog v1.1.3 (DLL Version)-3585-v1-1-3-1772125971.rar"
+sha256 = "9d935d332cdcba9d6b873c45c0c6e7ead7380323e177c9d0fd5ec6be56eb9c22"
+source = "nexus"
+
+[questpath]
+version = "1.3.0"
+asset = "QuestPath 10363 1.3.0 2026-07-19T20-46Z NhlU57Tcv.rar"
+sha256 = "fa5f2ebda4ff35a77416414076beb9223d3cea65d2c31cb75035548418306e75"
 source = "nexus"
 
 [remove-chromatic-aberration]
