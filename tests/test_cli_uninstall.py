@@ -1,3 +1,4 @@
+import json
 import zipfile
 from pathlib import Path
 
@@ -413,3 +414,48 @@ def test_uninstall_never_removes_stock_files(tmp_path, monkeypatch, capsys, tmp_
     assert rc == 0
     assert (game_dir / "eldenring.exe").exists()
     assert (game_dir / "start_protected_game.exe").exists()
+
+
+def test_uninstall_removes_a_me3_native_dir(tmp_path, monkeypatch, capsys, tmp_game):
+    # A native lives under tools/me3/natives/<id>/, not Game/ — the file-list
+    # path would find nothing and leave the whole dir orphaned.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    nat = tmp_path / "tools" / "me3" / "natives" / "questpath" / "QuestPath"
+    nat.mkdir(parents=True)
+    (nat / "QuestPath.dll").write_bytes(b"MZ")
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "questpath": {"version": "1.3.0", "archive": "questpath.zip",
+                      "kind": "me3-native",
+                      "native": str(nat / "QuestPath.dll")}}))
+
+    rc = cli.cmd_uninstall(type("A", (), {"mod": "questpath", "json": False})())
+    assert rc == 0
+    assert not (tmp_path / "tools" / "me3" / "natives" / "questpath").exists()
+    assert json.loads((tmp_path / "installed.json").read_text()) == {}
+
+
+def test_uninstall_refuses_a_native_recorded_outside_the_natives_dir(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # installed.json is hand-editable; a path escaping tools/me3/natives/ must
+    # not be rmtree'd. Same containment reasoning as the me3-package branch.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    outside = tmp_path / "precious"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("do not delete")
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "evil": {"version": "1", "archive": "e.zip", "kind": "me3-native",
+                 "native": str(outside / "evil.dll")}}))
+
+    rc = cli.cmd_uninstall(type("A", (), {"mod": "evil", "json": False})())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert (outside / "keep.txt").exists()
+    assert "refusing" in out.lower()

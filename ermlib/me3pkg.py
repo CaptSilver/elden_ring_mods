@@ -51,6 +51,70 @@ def list_option_dirs(base):
     return out
 
 
+def _normalized(name):
+    return "".join(c for c in name.lower() if c.isalnum())
+
+
+def find_native_dll(base, mod_id):
+    """The mod's own DLL under `base`, or None if it can't be picked confidently.
+
+    Elden Mod Loader only scans mods/*.dll, so a mod shipping its DLL inside a
+    folder has to be chainloaded by me3 instead — which means naming the exact
+    file. Prefer a DLL whose name matches the mod id, since archives that carry
+    a redistributable beside the real one would otherwise load the dependency
+    and leave the mod dormant. Returning None (rather than guessing) makes the
+    caller ask for an explicit choice.
+    """
+    dlls = sorted(Path(base).rglob("*.dll"))
+    if not dlls:
+        return None
+    named = [d for d in dlls if _normalized(d.stem) == _normalized(mod_id)]
+    if len(named) == 1:
+        return named[0]
+    if len(dlls) == 1:
+        return dlls[0]
+    return None
+
+
+def install_me3_native(archive_path, mod_id, me3_dir, dll=None):
+    """Extract `archive_path` to <me3_dir>/natives/<mod_id>/ and return the path
+    to the DLL me3 should chainload. Raises PathError if it can't be identified.
+
+    The whole archive is kept, not just the DLL: these mods read an .ini and
+    sometimes a lang/ dir from beside the binary, so flattening would break them.
+    """
+    me3_dir = Path(me3_dir)
+    dest = me3_dir / "natives" / mod_id
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    # extract_archive enforces the zip-slip guard; game_dir=dest, no subdir.
+    install.extract_archive(Path(archive_path), dest, "")
+    if dll is not None:
+        if not is_safe_relpath(dll):
+            shutil.rmtree(dest, ignore_errors=True)
+            raise PathError(f"{mod_id}: unsafe dll path {dll!r}")
+        chosen = dest / dll
+        if not chosen.is_file():
+            shutil.rmtree(dest, ignore_errors=True)
+            raise PathError(
+                f"{mod_id}: dll {dll!r} not found in {Path(archive_path).name} "
+                f"— check the profile's `dll` against the archive's actual layout")
+        return str(chosen)
+    chosen = find_native_dll(dest, mod_id)
+    if chosen is None:
+        found = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*.dll"))
+        shutil.rmtree(dest, ignore_errors=True)
+        if found:
+            raise PathError(
+                f"{mod_id}: several DLLs in {Path(archive_path).name} — set `dll` in "
+                f"the profile to one of: " + ", ".join(repr(f) for f in found))
+        raise PathError(
+            f"{mod_id}: no .dll found in {Path(archive_path).name} — this doesn't look "
+            f"like a native mod; check the profile's install kind")
+    return str(chosen)
+
+
 def install_me3_package(archive_path, mod_id, me3_dir, subdir=None):
     """Extract `archive_path`, find its DVDBND root, and move it to
     <me3_dir>/mods/<mod_id>/. Returns (package_path_str, has_regulation).

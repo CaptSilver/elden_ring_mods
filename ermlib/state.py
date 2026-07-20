@@ -51,6 +51,22 @@ def record_randomizer(state, mod_id, version, archive, tools):
                      "kind": "randomizer", "tools": tools}
 
 
+def record_me3_native(state, mod_id, version, archive, native):
+    """Record a me3 native DLL mod (chainloaded, not a VFS asset override).
+    `native` is the path to the .dll under tools/me3/natives/<id>/. Its own kind
+    so me3_packages/has_me3_packages ignore it — a native doesn't change which
+    launcher you need the way a loose-asset package does."""
+    state[mod_id] = {"version": version, "archive": archive,
+                     "kind": "me3-native", "native": native}
+
+
+def me3_natives(state):
+    """Sorted (mod_id, dll_path) for every recorded native. Sorted so the
+    regenerated me3 profile is byte-deterministic regardless of install order."""
+    return sorted((mid, e["native"]) for mid, e in state.items()
+                  if e.get("kind") == "me3-native" and e.get("native"))
+
+
 def me3_packages(state):
     """Sorted (mod_id, package_path) for every recorded me3 package. Sorted so the
     regenerated me3 profile is byte-deterministic regardless of install order."""

@@ -1123,3 +1123,108 @@ def test_apply_auto_harden_sudo_failure_warns_not_crash(tmp_path, monkeypatch, c
     assert "auto-harden incomplete" in out.lower()
     assert "safety check" in out.lower()   # final doctor block still ran
     assert "traceback" not in out.lower()
+
+
+def test_apply_me3_native_installs_and_chainloads(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # A native DLL mod ships its .dll inside a folder, which Elden Mod Loader
+    # never scans — so it lands under tools/me3/natives/<id>/ and gets a
+    # [[natives]] entry in the regenerated profile instead of a Game/ file list.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "unit-native",
+        '[[mods]]\n'
+        'id = "questpath"\n'
+        'source = "nexus"\n'
+        'nexus_id = 10363\n'
+        'kind = "qol"\n'
+        'install = "me3-native"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"questpath": ("1.3.0", "questpath.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "questpath.zip", "w") as z:
+        z.writestr("QuestPath/QuestPath.dll", b"MZ")
+        z.writestr("QuestPath/QuestPath.ini", b"[overlay]")
+
+    rc = cli.cmd_apply(_apply_args("unit-native"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    dll = tmp_path / "tools" / "me3" / "natives" / "questpath" / "QuestPath" / "QuestPath.dll"
+    assert dll.exists()
+    # sibling config has to survive alongside the dll
+    assert dll.with_suffix(".ini").exists()
+    assert "questpath" in out
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert state["questpath"]["kind"] == "me3-native"
+    assert state["questpath"]["native"].endswith("QuestPath.dll")
+
+    prof_text = (tmp_path / "tools" / "me3" / "erm-coop.me3").read_text()
+    assert "[[natives]]" in prof_text and "QuestPath.dll" in prof_text
+
+
+def test_apply_me3_native_warns_when_the_dll_is_ambiguous(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # Two DLLs and no `dll` field: guessing could chainload a redistributable
+    # and leave the mod dormant, so apply must skip it and name the candidates.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "unit-native-ambig",
+        '[[mods]]\n'
+        'id = "twodll"\n'
+        'source = "nexus"\n'
+        'nexus_id = 1\n'
+        'kind = "qol"\n'
+        'install = "me3-native"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"twodll": ("1.0", "twodll.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "twodll.zip", "w") as z:
+        z.writestr("alpha.dll", b"MZ")
+        z.writestr("beta.dll", b"MZ")
+
+    rc = cli.cmd_apply(_apply_args("unit-native-ambig"))
+    out = capsys.readouterr().out
+
+    assert rc == 0                      # one bad mod doesn't sink the run
+    assert "alpha.dll" in out and "beta.dll" in out
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "twodll" not in state        # nothing half-recorded
+
+
+def test_apply_me3_native_honours_an_explicit_dll_field(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "unit-native-pick",
+        '[[mods]]\n'
+        'id = "twodll"\n'
+        'source = "nexus"\n'
+        'nexus_id = 1\n'
+        'kind = "qol"\n'
+        'install = "me3-native"\n'
+        'dll = "beta.dll"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"twodll": ("1.0", "twodll.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "twodll.zip", "w") as z:
+        z.writestr("alpha.dll", b"MZ")
+        z.writestr("beta.dll", b"MZ")
+
+    rc = cli.cmd_apply(_apply_args("unit-native-pick"))
+    assert rc == 0
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert state["twodll"]["native"].endswith("beta.dll")

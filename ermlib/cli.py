@@ -377,6 +377,18 @@ def cmd_apply(args):
             r.info("me3 profile is generated as tools/me3/erm-coop.me3 by erm — launch via me3 "
                     "(see me3.help for the Linux setup)")
             continue
+        if kind == "me3-native":
+            try:
+                native = me3pkg.install_me3_native(vpath, mid, ME3_DIR, dll=mod.get("dll"))
+            except PathError as exc:
+                r.warn(str(exc))
+                continue
+            except (OSError, zipfile.BadZipFile) as exc:
+                r.warn(f"{mid}: install failed ({exc})")
+                continue
+            state_mod.record_me3_native(state, mid, meta.get("version", "?"), asset, native)
+            r.ok(f"{mid} {meta.get('version', '')} → me3 native (chainloaded)")
+            continue
         if kind == "me3-package":
             try:
                 package, has_reg = me3pkg.install_me3_package(vpath, mid, ME3_DIR, subdir=mod.get("subdir"))
@@ -502,6 +514,36 @@ def _uninstall_one(game, mod_id, state, r):
     there's nothing safe to derive the file list from (never touches disk
     in that case)."""
     entry = state.get(mod_id)
+    if entry and entry.get("kind") == "me3-native":
+        native = entry.get("native")
+        if not native:
+            r.warn(f"{mod_id}: native entry has no recorded dll path — forgetting it")
+            state_mod.forget(state, mod_id)
+            return
+        # Remove the mod's whole dir, not the dll's parent — the dll often sits
+        # in a subfolder, and its sibling ini/lang files have to go too. install
+        # always creates natives/<id>/, so that's the unit; the recorded dll only
+        # has to prove it lives inside it (installed.json is hand-editable).
+        ndir = ME3_DIR / "natives" / mod_id
+        try:
+            Path(native).resolve().relative_to(ndir.resolve())
+            contained = True
+        except (ValueError, OSError):
+            contained = False
+        if not contained:
+            r.warn(f"{mod_id}: recorded native {native} is outside {ndir} — refusing to remove")
+            state_mod.forget(state, mod_id)
+            return
+        if ndir.is_dir():
+            try:
+                shutil.rmtree(ndir)
+                r.ok(f"{mod_id}: removed me3 native")
+            except OSError as exc:
+                r.warn(f"{mod_id}: could not remove {ndir} ({exc}) — left on disk")
+        else:
+            r.ok(f"{mod_id}: me3 native already gone")
+        state_mod.forget(state, mod_id)
+        return
     if entry and entry.get("kind") == "me3-package":
         pkg = Path(entry["package"])
         # installed.json can be hand-edited (or corrupted), so re-validate

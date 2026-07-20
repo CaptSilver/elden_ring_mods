@@ -46,6 +46,10 @@ def reconcile(state, me3_dir, game_dir):
     if "seamless-coop" in state:
         ersc = (Path(game_dir) / "SeamlessCoop" / "ersc.dll").resolve()
         lines += ["[[natives]]", f"path = {_toml_path(ersc)}", ""]
+    for _mid, native in state_mod.me3_natives(state):
+        # Absolute: me3 resolves a relative native against the profile's dir, and
+        # the profile is regenerated from whatever cwd erm ran in.
+        lines += ["[[natives]]", f"path = {_toml_path(Path(native).resolve())}", ""]
     for mid, _package in state_mod.me3_packages(state):
         lines += ["[[packages]]", f'id = "{_esc(mid)}"', f"path = {_toml_path(f'mods/{mid}/')}", ""]
     me3_dir.mkdir(parents=True, exist_ok=True)
