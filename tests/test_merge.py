@@ -53,5 +53,13 @@ def test_an_entry_only_in_other_is_refused():
         merge.fmg_union(base, other)
 
 
+def test_base_none_defers_to_others_real_text():
+    """A base id with no text (None) isn't an authored value -- it shouldn't
+    clobber a real string the other side has for that id."""
+    base = _msgbnd({1: {5: None, 6: "kept"}})
+    other = _msgbnd({1: {5: "real text from other"}})
+    assert _read_back(merge.fmg_union(base, other))[1] == {5: "real text from other", 6: "kept"}
+
+
 def test_strategy_is_registered_by_name():
     assert merge.STRATEGIES["fmg-union"] is merge.fmg_union

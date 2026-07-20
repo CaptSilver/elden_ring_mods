@@ -15,9 +15,11 @@ class MergeError(ErmError):
 def fmg_union(base, other):
     """Union the FMG text tables of two .msgbnd.dcx archives.
 
-    `base` wins any id both sides define. That matters for exactly one entry in
-    practice -- Clever's Moveset replaces a vanilla save-failure string with its
-    own diagnostic note, and we keep Clever's.
+    When both sides define an id, base wins only if it has real text (not None).
+    None means a structural absence, not an authored value, so we defer to the
+    other side's text when base has none. This preserves Clever's Moveset's
+    diagnostic note overriding a vanilla string, and handles game-patch wording
+    drift where Clever's carries newer text than the paired mod.
 
     Returns a zlib-compressed DCX, not Kraken: there is no open-source Kraken
     encoder and the game reads zlib fine.
@@ -39,8 +41,11 @@ def fmg_union(base, other):
         if not incoming:
             continue
         table = fmg.read(entry.data)
-        merged = dict(incoming)
-        merged.update(table)               # base wins genuine collisions
+        merged = {}
+        for tid in table.keys() | incoming.keys():
+            base_v = table.get(tid)
+            # Base wins only if it has real text; None defers to other's content
+            merged[tid] = base_v if base_v is not None else incoming.get(tid)
         if merged != table:
             replacements[entry.id] = fmg.write(merged)
     return dcx.write_dflt(bnd4.rebuild(base_raw, replacements))
