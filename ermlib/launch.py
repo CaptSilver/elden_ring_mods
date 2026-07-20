@@ -53,3 +53,24 @@ def me3_command(me3_bin, profile=None):
     profile = PROFILE if profile is None else profile
     return (f"{shlex.quote(str(me3_bin))} launch "
             f"-p {shlex.quote(str(profile))} # %command%")
+
+
+def build_variants(me3_bin, reshade_installed, me3_packages, profile=None):
+    """Every launch command, plus the machine observations that annotate them.
+
+    The observations are outputs, not inputs to a decision — the commands are
+    identical whatever they say.
+    """
+    profile = PROFILE if profile is None else profile
+    me3 = None
+    if me3_bin is not None:
+        plain = me3_command(me3_bin, profile)
+        me3 = {"plain": plain, "reshade": RESHADE_ENV + plain}
+    return {
+        "me3": me3,
+        "ersc": {"plain": LAUNCH_OPTION, "reshade": RESHADE_ENV + LAUNCH_OPTION},
+        "validator": LAUNCH_VALIDATOR,
+        "reshade_installed": bool(reshade_installed),
+        "me3_packages": bool(me3_packages),
+        "profile_exists": Path(profile).exists(),
+    }
