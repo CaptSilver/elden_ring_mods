@@ -1,5 +1,6 @@
 import importlib.machinery
 import importlib.util
+import json
 import pathlib
 import zipfile
 
@@ -347,3 +348,27 @@ def test_verify_missing_asset_key_warns_instead_of_crashing(tmp_path, monkeypatc
     rc = cli.cmd_verify(args)
     out = capsys.readouterr().out
     assert "no asset" in out.lower()
+
+
+def test_launch_option_json_emits_the_variant_set(pinned_machine, capsys):
+    # --json was accepted and ignored before, printing prose regardless.
+    data = json.loads(_launch_out(capsys, json_mode=True))
+    assert data["ersc"]["plain"] == cli.LAUNCH_OPTION
+    assert data["ersc"]["reshade"] == cli.RESHADE_ENV + cli.LAUNCH_OPTION
+    assert data["validator"] == cli.LAUNCH_VALIDATOR
+    assert data["me3"]["plain"].endswith("# %command%")
+    for key in ("reshade_installed", "me3_packages", "profile_exists"):
+        assert isinstance(data[key], bool)
+
+
+def test_launch_option_json_me3_is_null_when_binary_missing(
+        monkeypatch, pinned_machine, capsys):
+    monkeypatch.setattr(cli.launch, "find_me3", lambda: None)
+    data = json.loads(_launch_out(capsys, json_mode=True))
+    assert data["me3"] is None
+
+
+def test_launch_option_json_emits_no_prose(pinned_machine, capsys):
+    out = _launch_out(capsys, json_mode=True)
+    assert "Steam → ELDEN RING" not in out
+    assert "Dual GPU" not in out

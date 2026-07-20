@@ -1,3 +1,4 @@
+import json
 import shutil
 import time
 import urllib.error
@@ -27,6 +28,9 @@ def cmd_launch_option(args):
     except (PathError, OSError):
         reshade = False
     variants = launch.build_variants(launch.find_me3(), reshade, me3_packages)
+    if getattr(args, "json", False):
+        print(json.dumps(variants, indent=2, sort_keys=True))
+        return 0
     print(launch.render(variants))
     return 0
 
