@@ -81,8 +81,9 @@ def _read_utf16z(data, offset):
 
 def read(data):
     """Parse a BND4 into its entries, in file order."""
-    count, entry_header_size, _ = _entry_layout(data)
+    count, entry_header_size, data_offset = _entry_layout(data)
     entries = []
+    spans = []
     for i in range(count):
         base = HEADER_SIZE + i * entry_header_size
         # _entry_layout already guarantees entry_header_size >= ENTRY_FIELDS_SIZE
@@ -95,6 +96,15 @@ def read(data):
 
         if size < 0:
             raise Bnd4Error(f"BND4 entry {i} (id={entry_id}) has a negative size: {size}")
+        # A corrupted offset that lands before data_offset (0 is the extreme
+        # case) slices into the header/name/hash region instead of the data
+        # section, silently handing back the magic bytes or some other
+        # unrelated field as this entry's "data".
+        if offset < data_offset:
+            raise Bnd4Error(
+                f"BND4 entry {i} (id={entry_id}) data offset {offset} "
+                f"precedes the declared data section at {data_offset}"
+            )
         if offset + size > len(data):
             raise Bnd4Error(
                 f"BND4 entry {i} (id={entry_id}) data (offset {offset}, size {size}) "
@@ -108,6 +118,23 @@ def read(data):
 
         entries.append(Entry(entry_id, _read_utf16z(data, name_offset),
                              bytes(data[offset:offset + size])))
+        spans.append((offset, size, i, entry_id))
+
+    # Nothing above stops one entry's declared data region from overlapping
+    # another's. An overlap means at least one of them isn't returning the
+    # bytes its own header claims -- blended with its neighbor's -- so this
+    # has to raise rather than hand back a value. Real archives lay entries
+    # out back-to-back with only alignment padding between them, never
+    # overlapping, so a strict non-overlap check doesn't cost us anything
+    # real files rely on.
+    sorted_spans = sorted(spans)
+    for (offset, size, i, entry_id), (next_offset, _next_size, next_i, next_id) in zip(
+            sorted_spans, sorted_spans[1:]):
+        if next_offset < offset + size:
+            raise Bnd4Error(
+                f"BND4 entry {i} (id={entry_id}) data region [{offset}, {offset + size}) "
+                f"overlaps entry {next_i} (id={next_id}) starting at {next_offset}"
+            )
     return entries
 
 

@@ -34,7 +34,7 @@ def _synthetic_bnd4(entries, hash_table=b"\xAB\xCD\xEF\x01" * 4):
     struct.pack_into("<q", out, 0x38, hash_off)
 
     headers, blob, cursor = bytearray(), bytearray(), data_off
-    for (eid, _name, data), noff in zip(entries, name_offs):
+    for i, ((eid, _name, data), noff) in enumerate(zip(entries, name_offs)):
         e = bytearray(entry_header_size)
         struct.pack_into("<i", e, 0, 0x40)
         struct.pack_into("<i", e, 4, -1)
@@ -46,9 +46,14 @@ def _synthetic_bnd4(entries, hash_table=b"\xAB\xCD\xEF\x01" * 4):
         headers += e
         blob += data
         cursor += len(data)
-        pad = (-len(data)) % 0x10
-        blob += b"\x00" * pad
-        cursor += pad
+        # Real archives carry no padding after the last entry (see rebuild's
+        # own `if i < count - 1` skip) -- match that here so this fixture
+        # doesn't mask a regression to always-pad by comparing against a
+        # buffer that already has trailing pad baked in.
+        if i < count - 1:
+            pad = (-len(data)) % 0x10
+            blob += b"\x00" * pad
+            cursor += pad
 
     middle = bytearray(name_blob)
     middle += hash_table
@@ -64,10 +69,23 @@ def test_read_returns_entries_in_order():
 
 
 def test_rebuild_with_no_changes_is_byte_identical():
-    """The strongest guarantee this module offers: an identity rebuild must
-    reproduce the input exactly, hash table and all."""
+    """rebuild(base, {}) short-circuits to a pass-through (see its docstring),
+    so this only proves that early return hands back the same bytes -- it
+    never touches the clone-and-relayout logic. That logic is covered
+    separately by feeding every entry its own bytes as a replacement."""
     raw = _synthetic_bnd4([(10, "a.fmg", b"AAA"), (20, "b.fmg", b"BBBB")])
     assert bnd4.rebuild(raw, {}) == raw
+
+
+def test_rebuild_with_identical_replacements_is_byte_identical():
+    """The strongest guarantee this module offers: replacing every entry with
+    its own existing bytes forces the full clone-and-relayout path -- offsets,
+    sizes, the leading gap, interior padding -- and the result must still
+    match the input exactly, since nothing semantically changed. Unlike
+    rebuild(base, {}), this doesn't take the early-return shortcut."""
+    raw = _synthetic_bnd4([(10, "a.fmg", b"AAA"), (20, "b.fmg", b"BBBB"), (30, "c.fmg", b"C")])
+    same = {e.id: e.data for e in bnd4.read(raw)}
+    assert bnd4.rebuild(raw, same) == raw
 
 
 def test_rebuild_preserves_the_hash_table():
@@ -86,6 +104,22 @@ def test_rebuild_replaces_entry_data():
     rebuilt = bnd4.rebuild(raw, {20: b"replaced with something longer"})
     by_id = {e.id: e.data for e in bnd4.read(rebuilt)}
     assert by_id == {10: b"AAA", 20: b"replaced with something longer"}
+
+
+def test_rebuild_has_no_trailing_padding_after_the_last_entry():
+    """Padding aligns the *next* entry's start to 0x10; there's no next entry
+    after the last one, and real archives carry none there either. Only
+    test_identity_rebuild_of_a_real_msgbnd catches a regression to
+    unconditional padding, and that test is skipped wherever the real mod
+    isn't installed -- pin the same guarantee on a synthetic fixture so it
+    runs everywhere. Replacement length (1) is deliberately not a multiple of
+    0x10, so reverting to always-pad would append 15 stray bytes."""
+    raw = _synthetic_bnd4([(10, "a.fmg", b"AAA"), (20, "b.fmg", b"BBBBB")])
+    rebuilt = bnd4.rebuild(raw, {20: b"X"})
+    last_header = 0x40 + 1 * 0x24  # the second (last) entry's header
+    last_offset, = struct.unpack_from("<I", rebuilt, last_header + 0x18)
+    last_size, = struct.unpack_from("<q", rebuilt, last_header + 0x10)
+    assert len(rebuilt) == last_offset + last_size
 
 
 def test_rebuild_keeps_the_header_region_identical():
@@ -111,6 +145,18 @@ def test_rebuild_rejects_an_unknown_entry_id():
 def test_read_rejects_a_non_bnd4():
     with pytest.raises(bnd4.Bnd4Error):
         bnd4.read(b"NOTBND4" + b"\x00" * 128)
+
+
+def test_read_rejects_a_bnd4_with_only_the_magic_corrupted():
+    """test_read_rejects_a_non_bnd4 is caught by coincidence: an all-zero
+    buffer trips the unrelated data_offset check, not the magic check itself.
+    Corrupt only the magic bytes of an otherwise-valid archive so the magic
+    check is the only guard that can catch it -- without it, this parses
+    silently in full."""
+    raw = bytearray(_synthetic_bnd4([(10, "a.fmg", b"AAA")]))
+    raw[0:4] = b"DCX\x00"
+    with pytest.raises(bnd4.Bnd4Error):
+        bnd4.read(bytes(raw))
 
 
 # --- Hardening: BND4 archives are arbitrary third-party mod files. Every guard
@@ -224,6 +270,29 @@ def test_read_rejects_a_name_offset_past_the_end_of_the_buffer():
     raw = bytearray(_synthetic_bnd4([(10, "a.fmg", b"AAA")]))
     struct.pack_into("<i", raw, 0x40 + 0x20, len(raw) + 1000)
     with pytest.raises(bnd4.Bnd4Error, match="name offset"):
+        bnd4.read(bytes(raw))
+
+
+def test_read_rejects_an_entry_data_offset_before_the_data_section():
+    """Forcing an entry's offset to 0 walks it off the front of the data
+    section entirely: nothing before this check stops it, and the entry
+    silently returns the file's own magic bytes as its "data" instead of
+    raising."""
+    raw = bytearray(_synthetic_bnd4([(10, "a.fmg", b"AAA"), (20, "b.fmg", b"BBBB")]))
+    struct.pack_into("<I", raw, 0x40 + 0x24 + 0x18, 0)  # entry 1's offset -> 0
+    with pytest.raises(bnd4.Bnd4Error, match="precedes"):
+        bnd4.read(bytes(raw))
+
+
+def test_read_rejects_overlapping_entry_data_regions():
+    """Forcing entry B's offset to land inside entry A's data region returns
+    blended bytes as B's "data" instead of raising -- once two entries'
+    regions overlap, at least one of them isn't the bytes its own header
+    claims."""
+    raw = bytearray(_synthetic_bnd4([(10, "a.fmg", b"AAAA"), (20, "b.fmg", b"BBBB")]))
+    data_off, = struct.unpack_from("<q", raw, 0x28)
+    struct.pack_into("<I", raw, 0x40 + 0x24 + 0x18, data_off + 2)  # B starts inside A's span
+    with pytest.raises(bnd4.Bnd4Error, match="overlap"):
         bnd4.read(bytes(raw))
 
 
