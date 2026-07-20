@@ -62,10 +62,16 @@ def test_build_variants_always_emits_every_command(tmp_path):
 
 
 def test_build_variants_commands_do_not_vary_with_detected_state(tmp_path):
-    a = _variants(tmp_path, reshade=False, packages=False)
-    b = _variants(tmp_path, reshade=True, packages=True)
-    for key in ("me3", "ersc", "validator"):
-        assert a[key] == b[key]
+    # The emitted commands must be identical for every combination of what
+    # happens to be installed — those two values annotate the output, they
+    # never select it. Comparing only (False, False) against (True, True)
+    # would miss an implementation that diverged on the mixed corners.
+    baseline = _variants(tmp_path, reshade=False, packages=False)
+    for reshade in (True, False):
+        for packages in (True, False):
+            v = _variants(tmp_path, reshade=reshade, packages=packages)
+            for key in ("me3", "ersc", "validator"):
+                assert v[key] == baseline[key], (reshade, packages, key)
 
 
 def test_build_variants_reshade_forms_prepend_the_override(tmp_path):
@@ -92,3 +98,19 @@ def test_build_variants_me3_is_none_when_binary_missing(tmp_path):
     assert v["me3"] is None
     # ersc still works without me3 installed.
     assert v["ersc"]["plain"] == launch.LAUNCH_OPTION
+
+
+def test_me3_command_defaults_to_the_module_profile(monkeypatch, tmp_path):
+    # A `profile=PROFILE` default would bind at def time and ignore this patch.
+    patched = tmp_path / "patched.me3"
+    monkeypatch.setattr(launch, "PROFILE", patched)
+    assert str(patched) in launch.me3_command(Path("/opt/me3"))
+
+
+def test_build_variants_defaults_to_the_module_profile(monkeypatch, tmp_path):
+    patched = tmp_path / "patched.me3"
+    patched.write_text("")
+    monkeypatch.setattr(launch, "PROFILE", patched)
+    v = launch.build_variants(Path("/opt/me3"), False, False)
+    assert str(patched) in v["me3"]["plain"]
+    assert v["profile_exists"] is True
