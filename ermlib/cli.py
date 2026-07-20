@@ -4,7 +4,7 @@ import urllib.error
 import zipfile
 from pathlib import Path
 
-from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy, me3pkg, me3profile
+from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy, me3pkg, me3profile, launch
 from . import state as state_mod
 from .errors import ErmError, NetworkError, PathError
 from .report import Report
@@ -14,74 +14,21 @@ from .doctor import run_doctor
 
 ME3_DIR = Path("tools") / "me3"
 
-LAUNCH_OPTION = (
-    "bash -c 'exec \"${@/start_protected_game.exe/ersc_launcher.exe}\"' -- %command%"
-)
-LAUNCH_VALIDATOR = (
-    "bash -c 'printf \"%q\\n\" \"$@\" > /tmp/ercmd.txt; exec \"$@\"' -- %command%"
-)
-# me3-mode launch (verified live on Proton/RADV, me3 v0.11.0): me3 does the VFS asset
-# overrides and chainloads Seamless's ersc.dll (a [[natives]] entry in erm-coop.me3),
-# then starts the game. Replaces the ersc_launcher wrapper once packages are installed.
-ME3_LAUNCH = "me3 launch -p tools/me3/erm-coop.me3"
-# ReShade (installed per-machine via reshade-steam-proton) chainloads as dxgi.dll
-# and needs this env prefix. It's NOT part of the shared launch option — a box
-# without ReShade must not carry it — so we prepend it only when it's installed
-# on this machine (or when the user forces it with --reshade).
-RESHADE_ENV = 'WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b" '
-
-
-def build_launch_option(reshade, me3):
-    base = ME3_LAUNCH if me3 else LAUNCH_OPTION
-    return (RESHADE_ENV + base) if reshade else base
+# Re-exported so `cli.LAUNCH_OPTION` keeps resolving for callers and tests.
+from .launch import LAUNCH_OPTION, LAUNCH_VALIDATOR, RESHADE_ENV
 
 
 def cmd_launch_option(args):
-    me3 = getattr(args, "me3", None)
-    if me3 is None:                     # auto-detect from install state
-        try:
-            me3 = state_mod.has_me3_packages(state_mod.load_state())
-        except ErmError:
-            me3 = False
-    reshade = getattr(args, "reshade", None)
-    if reshade is None:                 # auto-detect from this machine's game dir
-        try:
-            game = paths.find_game_dir(paths.find_steam_root())
-            reshade = paths.reshade_active(game)
-        except (PathError, OSError):
-            reshade = False
-    if me3:
-        # me3 is a standalone launcher (it finds ELDEN RING via --steam-id/--auto-detect
-        # and runs it under Proton itself) — not a %command% wrapper. Pasting this into
-        # Steam's Launch Options is the wrong move: Steam appends %command% (the game's
-        # own launch line) to anything you put there, so me3 receives the game exe as
-        # trailing args it doesn't understand and the game autocloses after the title
-        # screen. Run it directly instead.
-        print("Launch me3 from a TERMINAL (or a .desktop shortcut) — do NOT put this in Steam's\n"
-              "Launch Options:\n")
-        print(f"  {build_launch_option(reshade, me3)}\n")
-        print("me3 does the asset overrides and chainloads Seamless, then starts the game itself.\n"
-              "If you paste this into Steam's Launch Options, Steam appends %command% (the game's\n"
-              "own launch line) to it, so me3 receives the game's exe as trailing arguments it\n"
-              "doesn't expect — the game starts, shows the title screen, then autocloses.\n"
-              "`--ersc` prints the non-me3 Steam Launch Option wrapper instead.\n")
-        print("The profile path above is relative, so run this from the erm project directory —\n"
-              "or use the absolute path to tools/me3/erm-coop.me3.\n")
-        if reshade:
-            print("ReShade is installed on this machine, so the dxgi override is prepended. This variant\n"
-                  "is per-machine — don't give it to a box without ReShade (e.g. a Steam Deck); there it'd\n"
-                  "point at a dxgi.dll that isn't there. `--no-reshade` prints the plain one.\n")
-    else:
-        print("Steam → ELDEN RING → Properties → Launch Options:\n")
-        print(f"  {build_launch_option(reshade, me3)}\n")
-        if reshade:
-            print("ReShade is installed on this machine, so the dxgi override is prepended. This variant\n"
-                  "is per-machine — don't give it to a box without ReShade (e.g. a Steam Deck); there it'd\n"
-                  "point at a dxgi.dll that isn't there. `--no-reshade` prints the plain one.\n")
-        print("Validate once (last argv token must be .../Game/start_protected_game.exe):\n")
-        print(f"  {LAUNCH_VALIDATOR}\n")
-    print("Dual GPU: prepend MESA_VK_DEVICE_SELECT=<vendor>:<device> "
-          "(discover with MESA_VK_DEVICE_SELECT=list %command%).")
+    try:
+        me3_packages = state_mod.has_me3_packages(state_mod.load_state())
+    except ErmError:
+        me3_packages = False
+    try:
+        reshade = paths.reshade_active(paths.find_game_dir(paths.find_steam_root()))
+    except (PathError, OSError):
+        reshade = False
+    variants = launch.build_variants(launch.find_me3(), reshade, me3_packages)
+    print(launch.render(variants))
     return 0
 
 
@@ -894,18 +841,9 @@ def register(subparsers):
     a.add_argument("save", nargs="?", help="path to ER0000.sl2 (default: live save)")
     a.set_defaults(func=cmd_audit)
     subparsers.add_parser("status", help="install + version summary").set_defaults(func=cmd_status)
-    lo = subparsers.add_parser("launch-option", help="print the Steam launch option")
-    lo_re = lo.add_mutually_exclusive_group()
-    lo_re.add_argument("--reshade", dest="reshade", action="store_const", const=True, default=None,
-                       help="force the ReShade (dxgi override) variant")
-    lo_re.add_argument("--no-reshade", dest="reshade", action="store_const", const=False,
-                       help="force the plain variant even if ReShade is installed here")
-    lo_m = lo.add_mutually_exclusive_group()
-    lo_m.add_argument("--me3", dest="me3", action="store_const", const=True, default=None,
-                      help="force the me3-mode launch command")
-    lo_m.add_argument("--ersc", dest="me3", action="store_const", const=False,
-                      help="force the ersc_launcher wrapper even if me3 packages are installed")
-    lo.set_defaults(func=cmd_launch_option)
+    subparsers.add_parser(
+        "launch-option", help="print every Steam launch option"
+    ).set_defaults(func=cmd_launch_option)
     f = subparsers.add_parser("fetch", help="download + verify a profile's mods")
     f.add_argument("profile", nargs="?", default="seamless-only")
     f.add_argument("--update", action="store_true",

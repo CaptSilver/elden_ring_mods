@@ -1,3 +1,5 @@
+import importlib.util
+import pathlib
 import zipfile
 
 import pytest
@@ -5,6 +7,13 @@ import pytest
 from ermlib import cli, paths
 from ermlib import state as state_mod
 from ermlib.errors import PathError
+
+_ERM = pathlib.Path(__file__).resolve().parent.parent / "erm"
+_spec = importlib.util.spec_from_loader(
+    "erm_cli", importlib.machinery.SourceFileLoader("erm_cli", str(_ERM)))
+_erm = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_erm)
+build_parser = _erm.build_parser
 
 
 def _make_ersc_zip(path):
@@ -45,89 +54,76 @@ def _seed_apply_fixture(tmp_path, game_dir):
     _make_ersc_zip(vendor / "seamless-coop-v1.9.8.zip")
 
 
-def test_launch_option_string(capsys):
-    # reshade=False and me3=False are explicit so the assertion is deterministic
-    # regardless of whether the machine running the tests happens to have ReShade
-    # installed, or the cwd's installed.json happens to have me3 packages recorded.
-    rc = cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": False})())
-    out = capsys.readouterr().out
-    assert 'start_protected_game.exe/ersc_launcher.exe' in out
-    assert out.count('"') >= 2          # quoting preserved
-    assert "WINEDLLOVERRIDES" not in out
+@pytest.fixture
+def pinned_machine(monkeypatch, tmp_path):
+    """Pin everything cmd_launch_option reads off this machine.
+
+    It looks up three things: the me3 binary, whether ReShade is linked into the
+    game dir, and whether installed.json records me3 packages. Unpinned, these
+    assertions would pass or fail depending on the box running them — the flags
+    that used to make this deterministic are gone.
+    """
+    monkeypatch.setattr(cli.launch, "find_me3", lambda: pathlib.Path("/opt/me3"))
+    monkeypatch.setattr(cli.launch, "PROFILE", tmp_path / "erm-coop.me3")
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: tmp_path)
+    monkeypatch.setattr(paths, "reshade_active", lambda g: False)
+    monkeypatch.chdir(tmp_path)          # no installed.json -> no me3 packages
+    return tmp_path
+
+
+def _launch_out(capsys, json_mode=False):
+    rc = cli.cmd_launch_option(type("A", (), {"json": json_mode})())
     assert rc == 0
+    return capsys.readouterr().out
 
 
-def test_launch_option_prepends_reshade_override_when_present(capsys):
-    rc = cli.cmd_launch_option(type("A", (), {"json": False, "reshade": True, "me3": False})())
-    out = capsys.readouterr().out
-    # the ReShade dxgi override is prepended, and the ERSC wrapper is preserved
-    assert 'WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b"' in out
-    assert 'start_protected_game.exe/ersc_launcher.exe' in out
-    # and it warns that this variant is per-machine (don't hand it to the Deck)
-    assert "per-machine" in out.lower()
-    assert rc == 0
-
-
-def test_build_launch_option_helper():
-    assert cli.build_launch_option(False, False) == cli.LAUNCH_OPTION
-    reshaded = cli.build_launch_option(True, False)
-    assert reshaded.startswith('WINEDLLOVERRIDES=')
-    assert reshaded.endswith(cli.LAUNCH_OPTION)
-
-
-def test_build_launch_option_me3_mode_uses_me3_command():
-    assert cli.build_launch_option(False, True) == cli.ME3_LAUNCH
-    assert cli.build_launch_option(False, False) == cli.LAUNCH_OPTION
-    withrs = cli.build_launch_option(True, True)
-    assert withrs.startswith("WINEDLLOVERRIDES=")
-    assert cli.ME3_LAUNCH in withrs
-
-
-def test_launch_option_me3_flag_forces_me3(capsys):
-    cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": True})())
-    out = capsys.readouterr().out
-    assert cli.ME3_LAUNCH in out
-
-
-def test_launch_option_ersc_flag_forces_wrapper(capsys):
-    cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": False})())
-    out = capsys.readouterr().out
-    assert "ersc_launcher.exe" in out
-    assert cli.ME3_LAUNCH not in out
-
-
-def test_launch_option_ersc_mode_keeps_steam_launch_options_framing(capsys):
-    # ersc mode is a %command% wrapper, so it belongs in Steam's Launch Options field —
-    # this framing (and the validator) must survive the me3-mode split untouched.
-    cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": False})())
-    out = capsys.readouterr().out
-    assert "Steam → ELDEN RING → Properties → Launch Options" in out
+def test_launch_option_prints_every_variant_in_one_run(pinned_machine, capsys):
+    out = _launch_out(capsys)
+    assert cli.LAUNCH_OPTION in out
+    assert cli.RESHADE_ENV + cli.LAUNCH_OPTION in out
     assert cli.LAUNCH_VALIDATOR in out
     assert "Dual GPU" in out
 
 
-def test_launch_option_me3_mode_frames_as_terminal_command_not_steam_option(capsys):
-    # me3 is a standalone launcher, not a %command% wrapper: pasting its command into
-    # Steam's Launch Options makes Steam append %command% (the game's own launch line)
-    # to it, so me3 gets the game exe as trailing args it doesn't expect and the game
-    # autocloses after the title screen. The me3 command must be framed as something
-    # you run from a terminal / desktop shortcut, never as a Steam Launch Option.
-    cli.cmd_launch_option(type("A", (), {"json": False, "reshade": False, "me3": True})())
-    out = capsys.readouterr().out
-    assert cli.ME3_LAUNCH in out
-    assert "terminal" in out.lower()
-    assert "steam → elden ring → properties → launch options" not in out.lower()
-    assert "%command%" in out
-    assert "autoclos" in out.lower()  # autocloses / autoclosing
-    assert cli.LAUNCH_VALIDATOR not in out
-    assert "--ersc" in out
-    assert "Dual GPU" in out
+def test_launch_option_keeps_steam_launch_options_framing(pinned_machine, capsys):
+    out = _launch_out(capsys)
+    assert "Steam → ELDEN RING → Properties → Launch Options" in out
 
 
-def test_me3_launch_constant_is_nonempty_and_names_the_profile():
-    # Verified live: me3 launches ELDEN RING + Seamless on Proton with this command.
-    assert cli.ME3_LAUNCH.strip()
-    assert "erm-coop.me3" in cli.ME3_LAUNCH
+def test_launch_option_me3_command_is_a_steam_launch_option(pinned_machine, capsys):
+    # The me3 command belongs in Steam's Launch Options like the ersc wrapper.
+    # `# %command%` comments out the Proton chain Steam substitutes; without the
+    # token Steam appends the field as argv to the game exe and vanilla boots
+    # with no mods and no error. An earlier version of this command blamed that
+    # on me3 and told you to run it from a terminal instead.
+    out = _launch_out(capsys)
+    assert "# %command%" in out
+    assert "/opt/me3 launch -p /" in out
+    assert "terminal" not in out.lower()
+
+
+def test_launch_option_reports_a_missing_me3_binary(monkeypatch, pinned_machine, capsys):
+    monkeypatch.setattr(cli.launch, "find_me3", lambda: None)
+    out = _launch_out(capsys)
+    assert "me3 is not installed on this machine" in out
+    # ersc still printed — it does not need me3.
+    assert cli.LAUNCH_OPTION in out
+
+
+def test_launch_option_takes_no_filter_flags():
+    # --me3/--ersc/--reshade/--no-reshade existed only to override auto-detection.
+    # Nothing is auto-detected now, so they are gone.
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["launch-option", "--me3"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["launch-option", "--reshade"])
+
+
+def test_launch_option_no_longer_exposes_a_single_string_builder():
+    assert not hasattr(cli, "build_launch_option")
+    assert not hasattr(cli, "ME3_LAUNCH")
 
 
 def test_audit_on_fixture_save(capsys, tmp_path):

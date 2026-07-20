@@ -114,3 +114,54 @@ def test_build_variants_defaults_to_the_module_profile(monkeypatch, tmp_path):
     v = launch.build_variants(Path("/opt/me3"), False, False)
     assert str(patched) in v["me3"]["plain"]
     assert v["profile_exists"] is True
+
+
+def test_render_contains_every_command_in_one_output(tmp_path):
+    out = launch.render(_variants(tmp_path))
+    assert "Steam → ELDEN RING → Properties → Launch Options" in out
+    assert launch.LAUNCH_OPTION in out
+    assert launch.RESHADE_ENV + launch.LAUNCH_OPTION in out
+    assert launch.LAUNCH_VALIDATOR in out
+    assert "launch -p" in out
+    assert "# %command%" in out
+    assert "Dual GPU" in out
+
+
+def test_render_annotates_me3_packages_without_hiding_commands(tmp_path):
+    present = launch.render(_variants(tmp_path, packages=True))
+    absent = launch.render(_variants(tmp_path, packages=False))
+    assert "me3 packages present" in present
+    assert "no me3 packages" in absent
+    for out in (present, absent):
+        assert launch.LAUNCH_OPTION in out
+        assert "launch -p" in out
+
+
+def test_render_annotates_reshade_without_hiding_variants(tmp_path):
+    on = launch.render(_variants(tmp_path, reshade=True))
+    off = launch.render(_variants(tmp_path, reshade=False))
+    assert "ReShade is installed on this machine" in on
+    assert "ReShade is not installed on this machine" in off
+    # Both forms print either way — that's what makes the output copyable
+    # for a machine you're not on.
+    for out in (on, off):
+        assert launch.RESHADE_ENV + launch.LAUNCH_OPTION in out
+
+
+def test_render_warns_and_omits_commands_when_me3_missing(tmp_path):
+    out = launch.render(_variants(tmp_path, me3_bin=None))
+    assert "me3 is not installed on this machine" in out
+    # No broken-but-plausible command.
+    assert "launch -p" not in out
+    assert launch.LAUNCH_OPTION in out
+
+
+def test_render_warns_when_profile_absent_but_still_shows_commands(tmp_path):
+    out = launch.render(_variants(tmp_path))
+    assert "does not exist yet" in out
+    assert "erm apply" in out
+    assert "launch -p" in out
+
+    prof = tmp_path / "erm-coop.me3"
+    prof.write_text("")
+    assert "does not exist yet" not in launch.render(_variants(tmp_path, profile=prof))
