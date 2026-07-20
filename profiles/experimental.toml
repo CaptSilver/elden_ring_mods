@@ -3,11 +3,11 @@
 # plus whatever's being tried out — switching to a standalone profile would
 # uninstall Seamless along with everything else.
 name = "experimental"
-description = "seamless-full plus mods on trial. Both current entries draw in-game overlays, which is the thing being evaluated — they haven't been played long enough to promote into the shared stack. Nothing here is required by co-op partners."
+description = "seamless-full plus mods on trial. Currently Map for Goblins, whose in-game overlay is the thing being evaluated — it hasn't been played long enough to promote into the shared stack. Nothing here is required by co-op partners."
 
 includes = ["seamless-full"]
 
-# --- on trial: in-game overlays ---
+# --- on trial: in-game overlay ---
 # Map for Goblins, DLL rebuild. The original (#3091) ships a regulation.bin and
 # would fight Clever's Moveset for the single regulation slot; this one injects
 # its map data at runtime instead, so it composes cleanly. Author states
@@ -26,16 +26,17 @@ file_id = 48311
 kind = "qol"
 install = "mods"
 
-# QuestPath ships its DLL inside a QuestPath/ folder, and Elden Mod Loader only
-# scans mods/*.dll — it never recurses — so EML would load nothing and report
-# nothing. me3 chainloads it by explicit path instead, hence install =
-# "me3-native". Overlaps with quest-log (#3585) in seamless-full: both are quest
-# trackers, though they present differently: quest-log goes through the game's
-# own menu system, this one draws its own overlay. Running both is deliberate
-# for now, to compare them; each has an ini toggle and an in-game hotkey.
-[[mods]]
-id = "questpath"
-source = "nexus"
-nexus_id = 10363
-kind = "qol"
-install = "me3-native"
+# questpath (#10363) DISABLED — it kills the game during startup on this box.
+# Every launch with it died ~10ms after its own log recorded "DXGI creation
+# hooks installed" and "NVIDIA NVAPI HDR observer installed", between me3's
+# wwise and device_manager asset hooks, taking Elden Mod Loader down mid-DLL-
+# loop with it (mod_loader_log.txt truncates after the first entry instead of
+# reaching "Loaded N .dll mods"). Removing it fixed the boot with nothing else
+# changed. Untested theory: it fights ReShade, which already owns dxgi.dll here
+# — so it may be fine on a machine without ReShade. The NVAPI hook on a Radeon
+# is the other suspect.
+#
+# To re-enable: nexus_id=10363, kind="qol", install="me3-native". It needs
+# me3-native rather than "mods" because its dll sits inside a QuestPath/ folder
+# and Elden Mod Loader only scans mods/*.dll — it never recurses. Try its ini's
+# overlay toggle first; the quest tracking may work with the overlay off.
