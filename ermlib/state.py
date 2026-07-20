@@ -76,3 +76,16 @@ def me3_packages(state):
 
 def has_me3_packages(state):
     return any(e.get("kind") == "me3-package" for e in state.values())
+
+
+def record_merged(state, package):
+    """Record the synthetic package holding merged conflict output.
+
+    Recorded as a me3-package so me3profile.reconcile emits it like any other,
+    but flagged `derived` and given no archive: it's computed from the other
+    packages, not fetched, so update/fetch must not try to resolve it.
+    """
+    from .conflicts import MERGED_ID
+    state[MERGED_ID] = {"version": "derived", "archive": None,
+                        "kind": "me3-package", "package": package,
+                        "derived": True}

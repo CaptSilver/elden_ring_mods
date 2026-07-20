@@ -459,3 +459,77 @@ def test_uninstall_refuses_a_native_recorded_outside_the_natives_dir(
     assert rc == 0
     assert (outside / "keep.txt").exists()
     assert "refusing" in out.lower()
+
+
+def test_uninstall_drops_the_merged_package(tmp_path, monkeypatch, capsys, tmp_game):
+    """Merging strips the shared path out of its source packages, so derived
+    output that outlives an uninstall becomes the sole provider of content
+    nothing ships anymore. Uninstalling must drop it; the next apply rebuilds it."""
+    from ermlib import conflicts
+
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "unit-merged",
+        '[[mods]]\n'
+        'id = "unit-mod"\n'
+        'source = "nexus"\n'
+        'nexus_id = 999\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+    )
+    (tmp_path / "mods.lock.toml").write_text(
+        '[unit-mod]\n'
+        'version = "1.0"\n'
+        'asset = "unit-mod.zip"\n'
+        'sha256 = "a"\n'
+        'source = "nexus"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "unit-mod.zip", "w") as z:
+        z.writestr("parts/wp_a.dcx", b"x")
+
+    assert cli.cmd_apply(type("A", (), {"profile": "unit-merged", "json": False})()) == 0
+    capsys.readouterr()
+
+    # Stand in for a merge having run on a previous apply.
+    merged = tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID / "msg" / "engus"
+    merged.mkdir(parents=True)
+    (merged / "menu_dlc02.msgbnd.dcx").write_bytes(b"stale merged output")
+
+    rc = cli.cmd_uninstall(type("A", (), {"mod": "unit-merged", "json": False})())
+    capsys.readouterr()
+
+    assert rc == 0
+    assert not merged.parent.parent.exists()
+    assert conflicts.MERGED_ID not in json.loads(
+        (tmp_path / "installed.json").read_text())
+
+
+def test_uninstall_forgets_the_merged_state_entry_even_without_a_stale_dir(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """clear_merged() only ever touches the filesystem -- installed.json has
+    to drop the _merged entry too, or erm would keep reporting/reconciling it
+    as installed even with nothing on disk to back it."""
+    from ermlib import conflicts, state as state_mod
+
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    state = {"sample": {"version": "1.0", "archive": "sample.zip",
+                         "kind": "me3-package", "package": "tools/me3/mods/sample"}}
+    state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}")
+    (tmp_path / "installed.json").write_text(json.dumps(state))
+    (tmp_path / "tools" / "me3" / "mods" / "sample").mkdir(parents=True)
+
+    rc = cli.cmd_uninstall(type("A", (), {"mod": "sample", "json": False})())
+    capsys.readouterr()
+
+    assert rc == 0
+    assert conflicts.MERGED_ID not in json.loads(
+        (tmp_path / "installed.json").read_text())

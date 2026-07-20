@@ -5,9 +5,10 @@ import urllib.error
 import zipfile
 from pathlib import Path
 
-from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy, me3pkg, me3profile, launch
+from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy, me3pkg, me3profile, launch, conflicts
 from . import state as state_mod
 from .errors import ErmError, NetworkError, PathError
+from .conflicts import ConflictError
 from .report import Report
 from .savefile import SaveFile
 from .audit import audit_save
@@ -428,6 +429,31 @@ def cmd_apply(args):
             installed_seamless = True
         state_mod.record_install(state, mid, meta.get("version", "?"), asset, files)
         r.ok(f"{mid} {meta.get('version', '')} → {subdir or 'Game/'}")
+    # Resolve VFS collisions before recording state: every me3 package is on
+    # disk by now, and me3 would otherwise mount one file per path and drop the
+    # rest silently. Runs on the profile's package ids, not on state, so a
+    # stale package from an earlier profile can't pull itself into the merge.
+    conflicts.clear_merged(ME3_DIR)
+    package_ids = [m["id"] for m in profile["mods"]
+                   if m.get("install") == "me3-package" and m["id"] in state]
+    for pruned in conflicts.apply_prunes(ME3_DIR, profile.get("prunes", [])):
+        r.info(f"pruned {pruned} (ships no content of its own)")
+    try:
+        merged = conflicts.resolve(ME3_DIR, package_ids, profile.get("merges", []))
+    except ConflictError:
+        state_mod.write_state(Path("installed.json"), state)
+        raise
+    # Forget any merged package from a PRIOR apply before conditionally
+    # re-recording it below. clear_merged() already wiped the physical dir
+    # unconditionally, so a state entry that survives only because THIS run
+    # had nothing to merge (the profile dropped a contributor, or dropped the
+    # [[merges]] entry) would leave erm-coop.me3 pointing at a directory that
+    # no longer exists.
+    state_mod.forget(state, conflicts.MERGED_ID)
+    if merged:
+        state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}")
+        for rel in merged:
+            r.ok(f"merged {rel} (both mods' content kept)")
     state_mod.write_state(Path("installed.json"), state)
     try:
         me3profile.reconcile(state, ME3_DIR, game)
@@ -707,6 +733,17 @@ def cmd_uninstall(args):
                 r.warn(f"{mid}: {exc}")
     else:
         _uninstall_one(game, target, state, r)
+    # Merged output is derived from packages that just changed, and the merge
+    # stripped the merged path out of its sources — so a surviving _merged would
+    # be the only provider of content whose source is gone. Drop it; the next
+    # apply rebuilds it. A removal failure here follows the same rule as every
+    # other rmtree above: warn and keep going rather than abort a run that
+    # already removed what it came here to remove.
+    try:
+        conflicts.clear_merged(ME3_DIR)
+    except OSError as exc:
+        r.warn(f"could not clear stale merged output ({exc}) — remove tools/me3/mods/_merged by hand")
+    state_mod.forget(state, conflicts.MERGED_ID)
     state_mod.write_state(Path("installed.json"), state)
     try:
         me3profile.reconcile(state, ME3_DIR, game)

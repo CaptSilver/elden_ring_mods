@@ -1228,3 +1228,279 @@ def test_apply_me3_native_honours_an_explicit_dll_field(
     assert rc == 0
     state = json.loads((tmp_path / "installed.json").read_text())
     assert state["twodll"]["native"].endswith("beta.dll")
+
+
+def test_apply_records_the_merged_package_in_state(tmp_path, monkeypatch):
+    """The merged package has to reach installed.json, or reconcile won't emit
+    it and me3 will never mount the merged file."""
+    from ermlib import conflicts, state as state_mod
+
+    state = {}
+    state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}")
+    assert state[conflicts.MERGED_ID]["kind"] == "me3-package"
+    assert conflicts.MERGED_ID in dict(state_mod.me3_packages(state))
+
+
+def test_merged_package_is_not_confused_for_a_real_mod(tmp_path):
+    """It's derived output, not something fetched from Nexus, so it must not
+    carry a version or archive that update/fetch would try to resolve."""
+    from ermlib import conflicts, state as state_mod
+
+    state = {}
+    state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}")
+    assert state[conflicts.MERGED_ID].get("archive") is None
+    assert state[conflicts.MERGED_ID]["derived"] is True
+
+
+_MERGE_TWO_MODS = (
+    '[[mods]]\n'
+    'id = "mod-x"\n'
+    'source = "nexus"\n'
+    'nexus_id = 1\n'
+    'kind = "cosmetic"\n'
+    'install = "me3-package"\n'
+    '\n'
+    '[[mods]]\n'
+    'id = "mod-y"\n'
+    'source = "nexus"\n'
+    'nexus_id = 2\n'
+    'kind = "cosmetic"\n'
+    'install = "me3-package"\n'
+    '\n'
+    '[[merges]]\n'
+    'path = "msg/x.dcx"\n'
+    'strategy = "concat-test"\n'
+    'mods = ["mod-x", "mod-y"]\n'
+    'prefer = "mod-x"\n'
+)
+
+_MERGE_ONE_MOD_LEFT = (
+    '[[mods]]\n'
+    'id = "mod-x"\n'
+    'source = "nexus"\n'
+    'nexus_id = 1\n'
+    'kind = "cosmetic"\n'
+    'install = "me3-package"\n'
+)
+
+
+def test_apply_forgets_a_stale_merged_package_once_the_conflict_stops_recurring(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """A profile can drop a merge's declaration (or one of its contributing
+    mods) between two applies. clear_merged() always wipes the physical
+    _merged dir up front regardless -- so a stale state entry that survives
+    only because THIS run had nothing to merge would leave erm-coop.me3
+    pointing at a directory that's already gone."""
+    from ermlib import conflicts
+
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(conflicts.STRATEGIES, "concat-test", lambda base, other: base + other)
+
+    _write_profile(tmp_path / "profiles", "unit-merge-drift", _MERGE_TWO_MODS)
+    (tmp_path / "mods.lock.toml").write_text(
+        '[mod-x]\nversion = "1.0"\nasset = "mod-x.zip"\nsha256 = "a"\nsource = "nexus"\n\n'
+        '[mod-y]\nversion = "1.0"\nasset = "mod-y.zip"\nsha256 = "a"\nsource = "nexus"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "mod-x.zip", "w") as z:
+        z.writestr("msg/x.dcx", b"AAA")
+    with zipfile.ZipFile(vendor / "mod-y.zip", "w") as z:
+        z.writestr("msg/x.dcx", b"BBB")
+
+    assert cli.cmd_apply(_apply_args("unit-merge-drift")) == 0
+    out = capsys.readouterr().out
+    assert "merged msg/x.dcx" in out
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert conflicts.MERGED_ID in state
+    prof_text = (tmp_path / "tools" / "me3" / "erm-coop.me3").read_text()
+    assert conflicts.MERGED_ID in prof_text
+
+    # Edit the profile in place: drop mod-y and the merge declaration, then
+    # re-apply the SAME profile name. Nothing collides this time.
+    _write_profile(tmp_path / "profiles", "unit-merge-drift", _MERGE_ONE_MOD_LEFT)
+
+    assert cli.cmd_apply(_apply_args("unit-merge-drift")) == 0
+    capsys.readouterr()
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert conflicts.MERGED_ID not in state
+    prof_text = (tmp_path / "tools" / "me3" / "erm-coop.me3").read_text()
+    assert conflicts.MERGED_ID not in prof_text
+
+
+def test_apply_clears_stale_merged_output_for_a_path_that_stops_colliding(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """A merge set can shrink without going empty: two paths collide on the
+    first apply, only one still does on the second (mod-y stopped shipping
+    the other one). _merged is still referenced by state and by the me3
+    profile both times, so this can't rely on the whole package being
+    forgotten -- the leftover file for the path that no longer collides has to
+    be cleared, or me3 would keep mounting stale content nothing produces
+    anymore even though the package that used to isn't gone."""
+    from ermlib import conflicts
+
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(conflicts.STRATEGIES, "concat-test", lambda base, other: base + other)
+
+    _write_profile(tmp_path / "profiles", "unit-merge-shrink",
+        '[[mods]]\n'
+        'id = "mod-x"\n'
+        'source = "nexus"\n'
+        'nexus_id = 1\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "mod-y"\n'
+        'source = "nexus"\n'
+        'nexus_id = 2\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+        '\n'
+        '[[merges]]\n'
+        'path = "msg/a.dcx"\n'
+        'strategy = "concat-test"\n'
+        'mods = ["mod-x", "mod-y"]\n'
+        'prefer = "mod-x"\n'
+        '\n'
+        '[[merges]]\n'
+        'path = "msg/b.dcx"\n'
+        'strategy = "concat-test"\n'
+        'mods = ["mod-x", "mod-y"]\n'
+        'prefer = "mod-x"\n'
+    )
+    (tmp_path / "mods.lock.toml").write_text(
+        '[mod-x]\nversion = "1.0"\nasset = "mod-x.zip"\nsha256 = "a"\nsource = "nexus"\n\n'
+        '[mod-y]\nversion = "1.0"\nasset = "mod-y.zip"\nsha256 = "a"\nsource = "nexus"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "mod-x.zip", "w") as z:
+        z.writestr("msg/a.dcx", b"XA")
+        z.writestr("msg/b.dcx", b"XB")
+    with zipfile.ZipFile(vendor / "mod-y.zip", "w") as z:
+        z.writestr("msg/a.dcx", b"YA")
+        z.writestr("msg/b.dcx", b"YB")
+
+    assert cli.cmd_apply(_apply_args("unit-merge-shrink")) == 0
+    capsys.readouterr()
+    merged_dir = tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID
+    assert (merged_dir / "msg" / "a.dcx").read_bytes() == b"XAYA"
+    assert (merged_dir / "msg" / "b.dcx").read_bytes() == b"XBYB"
+
+    # mod-y ships a new build that dropped msg/b.dcx -- only msg/a.dcx still collides.
+    with zipfile.ZipFile(vendor / "mod-y.zip", "w") as z:
+        z.writestr("msg/a.dcx", b"YA2")
+
+    assert cli.cmd_apply(_apply_args("unit-merge-shrink")) == 0
+    capsys.readouterr()
+    assert (merged_dir / "msg" / "a.dcx").read_bytes() == b"XAYA2"
+    assert not (merged_dir / "msg" / "b.dcx").exists()
+
+
+def test_apply_prunes_a_declared_dead_file_from_its_package(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """[[prunes]] must actually run during apply, not just exist as an inert
+    conflicts.py function -- a stale file a mod ships but the profile author
+    knows carries no content of its own has to be gone before conflict
+    detection ever sees it, or it could still count as a collision provider."""
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "unit-prune",
+        '[[mods]]\n'
+        'id = "mod-p"\n'
+        'source = "nexus"\n'
+        'nexus_id = 1\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+        '\n'
+        '[[prunes]]\n'
+        'mod = "mod-p"\n'
+        'paths = ["msg/dead.dcx"]\n'
+    )
+    (tmp_path / "mods.lock.toml").write_text(
+        '[mod-p]\nversion = "1.0"\nasset = "mod-p.zip"\nsha256 = "a"\nsource = "nexus"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "mod-p.zip", "w") as z:
+        z.writestr("msg/dead.dcx", b"carries nothing of its own")
+        z.writestr("msg/live.dcx", b"keep me")
+
+    rc = cli.cmd_apply(_apply_args("unit-prune"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    pkg = tmp_path / "tools" / "me3" / "mods" / "mod-p"
+    assert not (pkg / "msg" / "dead.dcx").exists()
+    assert (pkg / "msg" / "live.dcx").exists()
+    assert "pruned mod-p:msg/dead.dcx" in out
+
+
+def test_apply_writes_state_before_an_undeclared_conflict_aborts(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """An undeclared collision must still abort loudly (ConflictError
+    propagates, not swallowed) -- but everything the install loop already got
+    onto disk this run, including both colliding packages themselves, has to
+    stay recorded. Matches the existing per-mod extract-failure reasoning:
+    apply keeps whatever succeeded rather than discarding it on a later
+    failure."""
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "unit-undeclared-conflict",
+        '[[mods]]\n'
+        'id = "mod-a"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "test"\n'
+        'install = "game"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "mod-x"\n'
+        'source = "nexus"\n'
+        'nexus_id = 1\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "mod-y"\n'
+        'source = "nexus"\n'
+        'nexus_id = 2\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"mod-a": ("1.0", "mod-a.zip")})
+    (tmp_path / "mods.lock.toml").write_text(
+        (tmp_path / "mods.lock.toml").read_text() +
+        '\n[mod-x]\nversion = "1.0"\nasset = "mod-x.zip"\nsha256 = "a"\nsource = "nexus"\n'
+        '\n[mod-y]\nversion = "1.0"\nasset = "mod-y.zip"\nsha256 = "a"\nsource = "nexus"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "mod-a.zip", "somefile.txt", b"a")
+    with zipfile.ZipFile(vendor / "mod-x.zip", "w") as z:
+        z.writestr("chr/c0000.anibnd.dcx", b"X")
+    with zipfile.ZipFile(vendor / "mod-y.zip", "w") as z:
+        z.writestr("chr/c0000.anibnd.dcx", b"Y")
+
+    from ermlib.conflicts import ConflictError
+    with pytest.raises(ConflictError):
+        cli.cmd_apply(_apply_args("unit-undeclared-conflict"))
+    capsys.readouterr()
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "mod-a" in state             # plain install succeeded before the conflict check ran
+    assert "mod-x" in state             # both me3 packages extracted fine -- the VFS
+    assert "mod-y" in state             # collision is a separate, later concern
