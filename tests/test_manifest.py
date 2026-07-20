@@ -265,4 +265,42 @@ def test_experimental_composes_seamless_full_with_the_trial_overlays():
     assert "randomizer" in prof["excludes"]
 
 
+def test_merges_and_prunes_resolve_through_includes(tmp_path):
+    """A merge declared in an included profile is inherited, the same way
+    excludes are — otherwise every composing profile would have to repeat it."""
+    (tmp_path / "base.toml").write_text(
+        'name = "base"\n'
+        '[[merges]]\n'
+        'path = "msg/engus/menu_dlc02.msgbnd.dcx"\n'
+        'strategy = "fmg-union"\n'
+        'mods = ["a", "b"]\n'
+        'prefer = "a"\n'
+        '[[prunes]]\n'
+        'mod = "b"\n'
+        'paths = ["msg/engus/item_dlc02.msgbnd.dcx"]\n')
+    (tmp_path / "top.toml").write_text('name = "top"\nincludes = ["base"]\n')
+
+    prof = load_profile("top", base=tmp_path)
+    assert [m["path"] for m in prof["merges"]] == ["msg/engus/menu_dlc02.msgbnd.dcx"]
+    assert prof["merges"][0]["prefer"] == "a"
+    assert prof["prunes"][0]["paths"] == ["msg/engus/item_dlc02.msgbnd.dcx"]
+
+
+def test_a_merge_declared_twice_is_deduplicated(tmp_path):
+    """Two profiles in the include graph may both declare the same merge.
+    Applying it twice would merge an already-merged file into itself."""
+    body = ('[[merges]]\n'
+            'path = "p"\nstrategy = "fmg-union"\nmods = ["a", "b"]\nprefer = "a"\n')
+    (tmp_path / "one.toml").write_text('name = "one"\n' + body)
+    (tmp_path / "two.toml").write_text('name = "two"\nincludes = ["one"]\n' + body)
+
+    prof = load_profile("two", base=tmp_path)
+    assert len(prof["merges"]) == 1
+
+
+def test_profiles_without_merges_get_empty_lists(tmp_path):
+    (tmp_path / "plain.toml").write_text('name = "plain"\n')
+    prof = load_profile("plain", base=tmp_path)
+    assert prof["merges"] == []
+    assert prof["prunes"] == []
 

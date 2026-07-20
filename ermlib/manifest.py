@@ -20,6 +20,13 @@ def load_profile(name, base=Path("profiles"), _seen=None):
     included profile's `excludes` plus this profile's own, de-duplicated,
     order-stable — so a profile that includes another inherits its excludes
     too, without having to repeat them.
+
+    Also resolves optional `[[merges]]` and `[[prunes]]` tables. A merge names a
+    game-relative path two mods both ship, the strategy that resolves it, and
+    which mod wins a genuine collision. A prune names files a mod ships that
+    carry no content of its own. Both are unioned across the include chain and
+    de-duplicated, so a merge declared once in gameplay-extras is inherited by
+    every profile composing it.
     """
     base = Path(base)
     _seen = _seen or ()
@@ -28,6 +35,8 @@ def load_profile(name, base=Path("profiles"), _seen=None):
     data = tomllib.loads((base / f"{name}.toml").read_text())
     merged, index = [], {}
     excludes, excludes_seen = [], set()
+    merges, prunes = [], []
+    merge_seen, prune_seen = set(), set()
 
     def add(mod):
         mid = mod["id"]
@@ -42,6 +51,20 @@ def load_profile(name, base=Path("profiles"), _seen=None):
             excludes_seen.add(exc_name)
             excludes.append(exc_name)
 
+    def add_merge(entry):
+        # Two profiles in the include graph can declare the same merge; running
+        # it twice would merge an already-merged file into itself.
+        key = (entry["path"], tuple(entry["mods"]))
+        if key not in merge_seen:
+            merge_seen.add(key)
+            merges.append(entry)
+
+    def add_prune(entry):
+        key = (entry["mod"], tuple(entry["paths"]))
+        if key not in prune_seen:
+            prune_seen.add(key)
+            prunes.append(entry)
+
     for inc in data.get("includes", []):
         try:
             included = load_profile(inc, base, _seen + (name,))
@@ -51,12 +74,22 @@ def load_profile(name, base=Path("profiles"), _seen=None):
             add(m)
         for exc_name in included.get("excludes", []):
             add_exclude(exc_name)
+        for entry in included.get("merges", []):
+            add_merge(entry)
+        for entry in included.get("prunes", []):
+            add_prune(entry)
     for m in data.get("mods", []):
         add(m)
     for exc_name in data.get("excludes", []):
         add_exclude(exc_name)
+    for entry in data.get("merges", []):
+        add_merge(entry)
+    for entry in data.get("prunes", []):
+        add_prune(entry)
     data["mods"] = merged
     data["excludes"] = excludes
+    data["merges"] = merges
+    data["prunes"] = prunes
     return data
 
 
