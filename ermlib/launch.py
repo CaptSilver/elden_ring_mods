@@ -163,9 +163,12 @@ def render(variants):
     out.append(_pair("ersc_launcher — Seamless only, no me3 packages",
                      variants["ersc"]["plain"], variants["ersc"]["reshade"]))
     if variants["me3_packages"]:
-        out.append(_warn("me3 packages are installed on this machine — launching via "
-                         "ersc_launcher will NOT load them (only me3's VFS does). Use the "
-                         "me3 command above instead."))
+        out.append(_warn(
+            "me3 packages are installed here, and this route will not load them — loose\n"
+            "  assets only reach the game through me3's VFS. Seamless still works, so the\n"
+            "  game boots looking fine with half your mods missing. Use the me3 line above\n"
+            "  unless you actually want Seamless on its own."))
+        out.append("")
     out.append(_ERSC_NOTE)
     out.append("")
 
