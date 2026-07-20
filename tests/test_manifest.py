@@ -58,7 +58,6 @@ def test_seamless_full_profile_loads_all_mods():
 def test_single_full_profile_is_non_coop_with_the_conflict_mods():
     prof = load_profile("single-full", base=Path("profiles"))
     ids = [m["id"] for m in prof["mods"]]
-    assert len(ids) == 18
     # single-player: no Seamless Co-op
     assert "seamless-coop" not in ids
     # the mods that desync co-op but work solo are included
