@@ -11,11 +11,10 @@ from .report import Report
 from .savefile import SaveFile
 from .audit import audit_save
 from .doctor import run_doctor
-
-ME3_DIR = Path("tools") / "me3"
-
 # Re-exported so `cli.LAUNCH_OPTION` keeps resolving for callers and tests.
 from .launch import LAUNCH_OPTION, LAUNCH_VALIDATOR, RESHADE_ENV
+
+ME3_DIR = Path("tools") / "me3"
 
 
 def cmd_launch_option(args):

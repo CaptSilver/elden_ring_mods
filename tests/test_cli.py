@@ -1,3 +1,4 @@
+import importlib.machinery
 import importlib.util
 import pathlib
 import zipfile
@@ -80,7 +81,10 @@ def _launch_out(capsys, json_mode=False):
 
 def test_launch_option_prints_every_variant_in_one_run(pinned_machine, capsys):
     out = _launch_out(capsys)
-    assert cli.LAUNCH_OPTION in out
+    # LAUNCH_OPTION is a substring of RESHADE_ENV + LAUNCH_OPTION, so a bare
+    # membership check would pass even if only the ReShade line printed and
+    # the plain one got dropped. Pin the plain line's own framing instead.
+    assert f"  plain\n    {cli.LAUNCH_OPTION}\n" in out
     assert cli.RESHADE_ENV + cli.LAUNCH_OPTION in out
     assert cli.LAUNCH_VALIDATOR in out
     assert "Dual GPU" in out
@@ -98,8 +102,13 @@ def test_launch_option_me3_command_is_a_steam_launch_option(pinned_machine, caps
     # with no mods and no error. An earlier version of this command blamed that
     # on me3 and told you to run it from a terminal instead.
     out = _launch_out(capsys)
-    assert "# %command%" in out
-    assert "/opt/me3 launch -p /" in out
+    # The explanatory paragraph below also contains the literal text
+    # "# %command%" (it's discussing the token), so a bare membership check
+    # would pass even if the rendered command itself dropped it. Assert
+    # against the actual plain me3 command line instead.
+    plain_me3 = cli.launch.me3_command(pathlib.Path("/opt/me3"), pinned_machine / "erm-coop.me3")
+    assert plain_me3.endswith("# %command%")
+    assert f"  plain\n    {plain_me3}\n" in out
     assert "terminal" not in out.lower()
 
 
@@ -107,8 +116,21 @@ def test_launch_option_reports_a_missing_me3_binary(monkeypatch, pinned_machine,
     monkeypatch.setattr(cli.launch, "find_me3", lambda: None)
     out = _launch_out(capsys)
     assert "me3 is not installed on this machine" in out
-    # ersc still printed — it does not need me3.
-    assert cli.LAUNCH_OPTION in out
+    # ersc still printed — it does not need me3. Pin the plain line's own
+    # framing, not a bare substring (it's also a substring of the ReShade form).
+    assert f"  plain\n    {cli.LAUNCH_OPTION}\n" in out
+
+
+def test_launch_option_shows_clean_output_when_profile_exists(pinned_machine, capsys):
+    # pinned_machine never creates erm-coop.me3, so every other test here
+    # exercises the "does not exist yet" warning path. Create it and confirm
+    # the warning drops out while the commands themselves are unaffected.
+    (pinned_machine / "erm-coop.me3").write_text("")
+    out = _launch_out(capsys)
+    assert "does not exist yet" not in out
+    plain_me3 = cli.launch.me3_command(pathlib.Path("/opt/me3"), pinned_machine / "erm-coop.me3")
+    assert f"  plain\n    {plain_me3}\n" in out
+    assert f"  plain\n    {cli.LAUNCH_OPTION}\n" in out
 
 
 def test_launch_option_takes_no_filter_flags():

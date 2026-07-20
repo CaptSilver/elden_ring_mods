@@ -117,24 +117,33 @@ def test_build_variants_defaults_to_the_module_profile(monkeypatch, tmp_path):
 
 
 def test_render_contains_every_command_in_one_output(tmp_path):
-    out = launch.render(_variants(tmp_path))
+    v = _variants(tmp_path)
+    out = launch.render(v)
     assert "Steam → ELDEN RING → Properties → Launch Options" in out
-    assert launch.LAUNCH_OPTION in out
+    # LAUNCH_OPTION is a substring of RESHADE_ENV + LAUNCH_OPTION, so a bare
+    # membership check would pass even if only the ReShade line printed.
+    # Pin the plain line's own framing instead.
+    assert f"  plain\n    {launch.LAUNCH_OPTION}\n" in out
     assert launch.RESHADE_ENV + launch.LAUNCH_OPTION in out
     assert launch.LAUNCH_VALIDATOR in out
-    assert "launch -p" in out
-    assert "# %command%" in out
+    # Same substring trap for me3's plain vs. ReShade forms, and the prose
+    # below also contains the literal text "# %command%" — assert against
+    # the real command rather than a bare token search.
+    assert v["me3"]["plain"].endswith("# %command%")
+    assert f"  plain\n    {v['me3']['plain']}\n" in out
     assert "Dual GPU" in out
 
 
 def test_render_annotates_me3_packages_without_hiding_commands(tmp_path):
-    present = launch.render(_variants(tmp_path, packages=True))
-    absent = launch.render(_variants(tmp_path, packages=False))
+    present_v = _variants(tmp_path, packages=True)
+    absent_v = _variants(tmp_path, packages=False)
+    present = launch.render(present_v)
+    absent = launch.render(absent_v)
     assert "me3 packages present" in present
     assert "no me3 packages" in absent
-    for out in (present, absent):
-        assert launch.LAUNCH_OPTION in out
-        assert "launch -p" in out
+    for v, out in ((present_v, present), (absent_v, absent)):
+        assert f"  plain\n    {launch.LAUNCH_OPTION}\n" in out
+        assert f"  plain\n    {v['me3']['plain']}\n" in out
 
 
 def test_render_annotates_reshade_without_hiding_variants(tmp_path):
@@ -142,6 +151,9 @@ def test_render_annotates_reshade_without_hiding_variants(tmp_path):
     off = launch.render(_variants(tmp_path, reshade=False))
     assert "ReShade is installed on this machine" in on
     assert "ReShade is not installed on this machine" in off
+    # The ReShade variants are per-machine (dxgi.dll only exists where ReShade
+    # was actually installed) — the guidance must say so, not just print them.
+    assert "per-machine" in on.lower()
     # Both forms print either way — that's what makes the output copyable
     # for a machine you're not on.
     for out in (on, off):
@@ -153,14 +165,17 @@ def test_render_warns_and_omits_commands_when_me3_missing(tmp_path):
     assert "me3 is not installed on this machine" in out
     # No broken-but-plausible command.
     assert "launch -p" not in out
-    assert launch.LAUNCH_OPTION in out
+    # ersc still printed — pin its own framing, not a bare substring (it's
+    # also a substring of the ReShade form).
+    assert f"  plain\n    {launch.LAUNCH_OPTION}\n" in out
 
 
 def test_render_warns_when_profile_absent_but_still_shows_commands(tmp_path):
-    out = launch.render(_variants(tmp_path))
+    v = _variants(tmp_path)
+    out = launch.render(v)
     assert "does not exist yet" in out
     assert "erm apply" in out
-    assert "launch -p" in out
+    assert f"  plain\n    {v['me3']['plain']}\n" in out
 
     prof = tmp_path / "erm-coop.me3"
     prof.write_text("")
