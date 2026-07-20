@@ -27,7 +27,12 @@ def _read_utf16z(data, offset):
 
 
 def read(data):
-    """Parse an FMG into {id: str or None}. None means the id exists with no text."""
+    """Parse an FMG into {id: str or None}. None means the id exists with no text.
+
+    These files come from arbitrary third-party mod archives, so every header
+    and offset is treated as untrusted: malformed values must raise FmgError,
+    never return a wrong or silently-truncated result.
+    """
     if len(data) < HEADER_SIZE:
         raise FmgError("FMG is shorter than its header")
     version = data[2]
@@ -35,14 +40,44 @@ def read(data):
         raise FmgError(f"unsupported FMG version {version}, expected {VERSION}")
     range_count, string_count = struct.unpack_from("<ii", data, 0x0C)
     offsets_off, = struct.unpack_from("<q", data, 0x18)
+
+    # A negative range_count makes range(range_count) empty further down,
+    # which would silently return zero entries instead of an error.
+    if range_count < 0:
+        raise FmgError(f"FMG range_count is negative: {range_count}")
+    ranges_end = HEADER_SIZE + range_count * RANGE_SIZE
+    if ranges_end > len(data):
+        raise FmgError(
+            f"FMG range table ({range_count} ranges) runs past the end of "
+            f"the {len(data)}-byte buffer"
+        )
+
+    # offsets_off is read straight from the header with no bound on it. Left
+    # unchecked, a negative value is reinterpreted by struct.unpack_from as
+    # counting from the end of the buffer (same trap as string_off below),
+    # and a too-large value overruns the buffer with a bare struct.error.
+    offsets_end = offsets_off + string_count * 8
+    if offsets_off < 0 or offsets_end > len(data):
+        raise FmgError(
+            f"FMG offset table (offset {offsets_off}, {string_count} entries) "
+            f"runs outside the {len(data)}-byte buffer"
+        )
+
     entries = {}
     for r in range(range_count):
         index, first, last = struct.unpack_from("<iii", data, HEADER_SIZE + r * RANGE_SIZE)
+        if last < first:
+            raise FmgError(f"FMG range {r} is reversed: first={first}, last={last}")
         for step, text_id in enumerate(range(first, last + 1)):
             slot = index + step
             if slot >= string_count:
                 raise FmgError(f"FMG range {r} points past the offset table")
             string_off, = struct.unpack_from("<q", data, offsets_off + slot * 8)
+            # Same trap as offsets_off: a negative value would silently read
+            # from the wrong place instead of raising (`if string_off:` alone
+            # doesn't catch it, since -10 is truthy).
+            if string_off < 0:
+                raise FmgError(f"FMG string offset for id {text_id} is negative: {string_off}")
             entries[text_id] = _read_utf16z(data, string_off) if string_off else None
     return entries
 
@@ -62,6 +97,11 @@ def _consecutive_ranges(ids):
 def write(entries):
     """Serialize {id: str or None} to FMG version 2."""
     ids = sorted(entries)
+    for text_id in ids:
+        # Ids are packed as signed 32-bit below; an out-of-range id would
+        # otherwise raise a bare struct.error instead of FmgError.
+        if not (-(2**31) <= text_id < 2**31):
+            raise FmgError(f"FMG id {text_id} does not fit in a signed 32-bit field")
     ranges = _consecutive_ranges(ids)
     offsets_off = HEADER_SIZE + len(ranges) * RANGE_SIZE
     strings_off = offsets_off + len(ids) * 8
