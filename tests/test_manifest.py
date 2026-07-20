@@ -124,12 +124,33 @@ def test_gameplay_extras_is_a_shared_coop_overlay():
     assert cl["kind"] == "overhaul"
     assert cl["requires_all_players"] is True
 
-    # Both removed: summon-anywhere (useless in co-op), boss-res (msg conflict w/ Clever's).
-    ids = [m["id"] for m in prof["mods"]]
-    assert "summon-anywhere" not in ids
-    assert "boss-resurrection-lite" not in ids
+    br = next(m for m in prof["mods"] if m["id"] == "boss-resurrection-lite")
+    assert br["nexus_id"] == 2790
+    assert br["file_id"] == 24925          # the Lite build (no regulation.bin)
+    assert br["install"] == "me3-package"
+    assert br["requires_all_players"] is True
+
+    # summon-anywhere was removed (loaded fine, but useless in co-op).
+    assert "summon-anywhere" not in [m["id"] for m in prof["mods"]]
 
     assert not any(m.get("kind") == "loader" for m in prof["mods"])
+
+
+def test_boss_resurrection_conflict_is_declared():
+    """Boss Res and Clever's both ship menu_dlc02, and me3 mounts one file per
+    path. Without the merge declaration one of them silently isn't in the game."""
+    prof = load_profile("gameplay-extras", base=Path("profiles"))
+    merge = next(m for m in prof["merges"]
+                 if m["path"] == "msg/engus/menu_dlc02.msgbnd.dcx")
+    assert merge["strategy"] == "fmg-union"
+    assert set(merge["mods"]) == {"clevers-moveset", "boss-resurrection-lite"}
+    assert merge["prefer"] == "clevers-moveset"
+
+    # Boss Res also ships item_dlc02 and systemparam byte-identical to its own
+    # baseline; its item_dlc02 is older vanilla that would regress item text.
+    prune = next(p for p in prof["prunes"] if p["mod"] == "boss-resurrection-lite")
+    assert "msg/engus/item_dlc02.msgbnd.dcx" in prune["paths"]
+    assert "param/systemparam/systemparam.parambnd.dcx" in prune["paths"]
 
 
 def test_seamless_randomizer_me3_uses_numeric_id():

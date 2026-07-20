@@ -6,6 +6,12 @@ asset = "AdjustTheFov-325-2-0-1653830963.zip"
 sha256 = "339a27e94780c1550380d0fbc81026265da0539f95cfd004b012ec5c99c8323b"
 source = "nexus"
 
+[boss-resurrection-lite]
+version = "2.0.1"
+asset = "Boss Resurrection - Lite-2790-2-0-1-1720450846.zip"
+sha256 = "669ca5ab38227f84073265f0b37d615a9520f7973078c23e92f4b81d8f2a5d5f"
+source = "nexus"
+
 [camera-fix]
 version = "3.0"
 asset = "FixTheCamera-118-3-0-1652303340.zip"

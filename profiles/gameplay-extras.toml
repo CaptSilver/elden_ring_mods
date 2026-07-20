@@ -2,13 +2,23 @@ name = "gameplay-extras"
 description = "SHARED gameplay mods for Seamless Co-op. Opposite of cosmetic-extras: every player in the party must run the IDENTICAL set, or you desync. Ban-safe under Seamless (no EAC, separate .co2 save) — but never take that .co2 to vanilla online. Layers on top of a coop base like seamless-full."
 excludes = ["randomizer"]
 
-# --- Boss Resurrection Lite REMOVED (text conflict with Clever's Moveset) ---
-# Both packages ship msg/engus/{item_dlc02,menu_dlc02}.msgbnd.dcx; me3 loads only
-# one, Clever's wins (it needs those for weapon names), so boss-res's resurrect
-# menu text rendered as tofu. Nothing else conflicted. To run both, those two
-# .msgbnd.dcx files must be MERGED (unpack with WitchyBND/soulstruct, splice
-# boss-res's entries into Clever's, repack). Was: nexus_id=2790, file_id=24925,
-# install="me3-package", requires_all_players=true.
+# Boss Resurrection Lite — re-fight bosses without NG+, via a site-of-grace menu.
+# The LITE build has no regulation.bin, so it doesn't claim the single regulation
+# slot and won't collide with the randomizer. v2.0.1 is DLC-current. Every player
+# needs the identical file.
+#
+# It collides with Clever's on msg/engus/menu_dlc02.msgbnd.dcx — see [[merges]]
+# below. Its item_dlc02 and systemparam are byte-identical to the mod's own
+# baseline (it ships them untouched), and the item_dlc02 is a July-2024 vanilla
+# that would roll back item text, so both are pruned rather than merged.
+[[mods]]
+id = "boss-resurrection-lite"
+source = "nexus"
+nexus_id = 2790
+file_id = 24925                   # "Boss Resurrection - Lite" v2.0.1 (post-DLC)
+kind = "gameplay"
+install = "me3-package"
+requires_all_players = true
 
 # Clever's Moveset Modpack — new weapon movesets + animations. EDITS regulation.bin
 # + c0000.anibnd (the character animation bundle), so it claims the ONE regulation
@@ -29,3 +39,20 @@ requires_all_players = true
 # Loader (Game/mods/) but was useless in Seamless Co-op: summons couldn't be
 # dismissed and wouldn't follow past certain area transitions — a mod-behaviour
 # problem in co-op, not a loader/install issue. Was: install="mods".
+
+# Both mods ship this archive. me3 mounts one file per path and drops the other
+# silently, which is why boss resurrection's menu rendered as tofu before. The
+# two mods' text ids are disjoint, so a union keeps both; Clever's wins the one
+# id they share (it replaces a vanilla save-failure string with its own note).
+[[merges]]
+path = "msg/engus/menu_dlc02.msgbnd.dcx"
+strategy = "fmg-union"
+mods = ["clevers-moveset", "boss-resurrection-lite"]
+prefer = "clevers-moveset"
+
+[[prunes]]
+mod = "boss-resurrection-lite"
+paths = [
+    "msg/engus/item_dlc02.msgbnd.dcx",
+    "param/systemparam/systemparam.parambnd.dcx",
+]
