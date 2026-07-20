@@ -1284,6 +1284,67 @@ _MERGE_ONE_MOD_LEFT = (
 )
 
 
+def test_apply_detects_cross_profile_collision_without_switch_or_excludes(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """me3 mounts every me3-package recorded in state, not just the profile
+    that was last applied -- so a collision between a package this apply just
+    installed and one an EARLIER, unrelated apply left behind is exactly as
+    real as one inside a single profile. Scoping detection to the current
+    profile's own mod ids (the old behavior) would never see it: apply
+    'alpha' (mod-x ships msg/x.dcx), then apply 'beta' (mod-y ships the same
+    path, no shared profile, no excludes) must raise -- not exit 0 with me3
+    silently dropping one of them."""
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _write_profile(tmp_path / "profiles", "alpha",
+        '[[mods]]\n'
+        'id = "mod-x"\n'
+        'source = "nexus"\n'
+        'nexus_id = 1\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+    )
+    _write_profile(tmp_path / "profiles", "beta",
+        '[[mods]]\n'
+        'id = "mod-y"\n'
+        'source = "nexus"\n'
+        'nexus_id = 2\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
+    )
+    (tmp_path / "mods.lock.toml").write_text(
+        '[mod-x]\nversion = "1.0"\nasset = "mod-x.zip"\nsha256 = "a"\nsource = "nexus"\n\n'
+        '[mod-y]\nversion = "1.0"\nasset = "mod-y.zip"\nsha256 = "a"\nsource = "nexus"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "mod-x.zip", "w") as z:
+        z.writestr("msg/x.dcx", b"X")
+    with zipfile.ZipFile(vendor / "mod-y.zip", "w") as z:
+        z.writestr("msg/x.dcx", b"Y")
+
+    assert cli.cmd_apply(_apply_args("alpha")) == 0
+    capsys.readouterr()
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "mod-x" in state
+
+    from ermlib.conflicts import ConflictError
+    with pytest.raises(ConflictError) as excinfo:
+        cli.cmd_apply(_apply_args("beta"))
+    capsys.readouterr()
+    assert "msg/x.dcx" in str(excinfo.value)
+
+    # Neither the prior apply's mod nor this run's got silently dropped from
+    # state -- the raise aborts loudly rather than leaving installed.json
+    # implying the collision was resolved.
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "mod-x" in state
+    assert "mod-y" in state
+
+
 def test_apply_forgets_a_stale_merged_package_once_the_conflict_stops_recurring(
         tmp_path, monkeypatch, capsys, tmp_game):
     """A profile can drop a merge's declaration (or one of its contributing
@@ -1402,6 +1463,63 @@ def test_apply_forgets_merged_state_when_a_later_unrelated_conflict_aborts(
     state = json.loads((tmp_path / "installed.json").read_text())
     assert conflicts.MERGED_ID not in state          # not just the dir -- the record too
     assert not (tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID).exists()
+
+
+def test_apply_raises_when_a_merge_contributor_is_not_reinstalled_this_run(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """A successful merge strips the merged path out of every contributor, so
+    a contributor that ISN'T reinstalled this run -- its vendor archive went
+    missing, here -- keeps whatever the LAST merge left it with (nothing, for
+    the merged path). Recomputing the merge -- or silently skipping it because
+    the stale copy now looks like only one side is installed -- would both
+    lose mod-y's contribution without a trace. Apply must refuse instead."""
+    from ermlib import conflicts
+
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(conflicts.STRATEGIES, "concat-test", lambda base, other: base + other)
+
+    _write_profile(tmp_path / "profiles", "unit-merge-stale", _MERGE_TWO_MODS)
+    (tmp_path / "mods.lock.toml").write_text(
+        '[mod-x]\nversion = "1.0"\nasset = "mod-x.zip"\nsha256 = "a"\nsource = "nexus"\n\n'
+        '[mod-y]\nversion = "1.0"\nasset = "mod-y.zip"\nsha256 = "a"\nsource = "nexus"\n'
+    )
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "mod-x.zip", "w") as z:
+        z.writestr("msg/x.dcx", b"AAA")
+    with zipfile.ZipFile(vendor / "mod-y.zip", "w") as z:
+        z.writestr("msg/x.dcx", b"BBB")
+
+    # Apply #1: a clean merge -- both sources get msg/x.dcx stripped, _merged
+    # holds the combined output.
+    assert cli.cmd_apply(_apply_args("unit-merge-stale")) == 0
+    capsys.readouterr()
+    merged_dir = tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID
+    assert (merged_dir / "msg" / "x.dcx").exists()
+
+    # mod-y's vendor archive goes missing (offline, deleted, whatever). Its
+    # install this run hits the "archive missing" skip, so its on-disk
+    # package is left exactly as apply #1's merge stripped it -- no
+    # msg/x.dcx. mod-x's archive is still present and re-extracts fine,
+    # restoring ITS solo copy of msg/x.dcx.
+    (vendor / "mod-y.zip").unlink()
+
+    with pytest.raises(conflicts.ConflictError) as excinfo:
+        cli.cmd_apply(_apply_args("unit-merge-stale"))
+    capsys.readouterr()
+    msg = str(excinfo.value)
+    assert "msg/x.dcx" in msg
+    assert "mod-y" in msg
+    assert "mod-x" not in msg   # only the STALE contributor is named
+
+    # mod-x really was reinstalled this run (fresh, unstripped copy) --
+    # proves the guard fired because mod-y was stale, not because nothing
+    # happened at all.
+    assert (tmp_path / "tools" / "me3" / "mods" / "mod-x" / "msg" / "x.dcx").read_bytes() == b"AAA"
+    assert not (tmp_path / "tools" / "me3" / "mods" / "mod-y" / "msg" / "x.dcx").exists()
 
 
 def test_apply_clears_stale_merged_output_for_a_path_that_stops_colliding(

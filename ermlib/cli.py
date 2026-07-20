@@ -319,6 +319,12 @@ def cmd_apply(args):
             # (download_verified fails closed), so the loop just skips that mod.
             r.warn(f"auto-fetch incomplete ({exc}) — installing what's already present")
     installed_seamless = False
+    # Which me3-package ids actually got a fresh rmtree+re-extract THIS run --
+    # as opposed to one still sitting in state only because an earlier apply
+    # put it there. A merge's contributor needs to be in this set before we
+    # trust its on-disk copy as a faithful source; see the merge-resolution
+    # block below for why.
+    reinstalled_packages = set()
     for mod in profile["mods"]:
         mid = mod["id"]
         kind = mod.get("install", "game")
@@ -400,6 +406,7 @@ def cmd_apply(args):
                 r.warn(f"{mid}: install failed ({exc})")
                 continue
             state_mod.record_me3_package(state, mid, meta.get("version", "?"), asset, package)
+            reinstalled_packages.add(mid)
             if has_reg:
                 r.warn(f"{mid}: contains regulation.bin — that's a SHARED mod (every co-op "
                        f"player needs the identical file), not a client-side cosmetic")
@@ -431,8 +438,14 @@ def cmd_apply(args):
         r.ok(f"{mid} {meta.get('version', '')} → {subdir or 'Game/'}")
     # Resolve VFS collisions before recording state: every me3 package is on
     # disk by now, and me3 would otherwise mount one file per path and drop the
-    # rest silently. Runs on the profile's package ids, not on state, so a
-    # stale package from an earlier profile can't pull itself into the merge.
+    # rest silently. Scope this to what me3 will ACTUALLY mount -- everything
+    # in state, the same source me3profile.reconcile itself reads -- not just
+    # this profile's own mods. A profile applied earlier (and never switched
+    # away from or uninstalled) leaves its packages in state and in
+    # erm-coop.me3 regardless of what's being applied now, so a collision
+    # between one of those and this profile's own mods is exactly as real as
+    # one within a single profile; scoping to the current profile's ids alone
+    # would silently miss it.
     conflicts.clear_merged(ME3_DIR)
     # Forget any merged package from a PRIOR apply right away, in lockstep with
     # the physical dir clear_merged() just wiped — not after the resolve() call
@@ -441,13 +454,24 @@ def cmd_apply(args):
     # waited until after that try/except, this path would never reach it, and
     # installed.json would keep claiming _merged is installed even though its
     # directory is already gone. Re-recorded below only if this run's merge
-    # actually succeeds.
+    # actually succeeds. Excluded from package_ids below for the same reason:
+    # it's this function's own prior output, not a real collision provider.
     state_mod.forget(state, conflicts.MERGED_ID)
-    package_ids = [m["id"] for m in profile["mods"]
-                   if m.get("install") == "me3-package" and m["id"] in state]
+    package_ids = [mid for mid, _pkg in state_mod.me3_packages(state)
+                   if mid != conflicts.MERGED_ID]
     for pruned in conflicts.apply_prunes(ME3_DIR, profile.get("prunes", [])):
         r.info(f"pruned {pruned} (ships no content of its own)")
     try:
+        # A declared merge's sources must be faithful before we let resolve()
+        # near them: resolve() strips the merged path out of every contributor
+        # once a merge succeeds, so a mod that isn't in reinstalled_packages
+        # this run may already be missing that content from an earlier merge,
+        # with no way to tell that apart from "never collided" just by
+        # looking at what's on disk. Checked here, before resolve(), so a
+        # stale contributor never gets a chance to silently produce a
+        # merge (or a skipped one) built on missing content.
+        conflicts.require_faithful_merge_sources(
+            profile.get("merges", []), package_ids, reinstalled_packages)
         merged = conflicts.resolve(ME3_DIR, package_ids, profile.get("merges", []))
     except ConflictError:
         state_mod.write_state(Path("installed.json"), state)

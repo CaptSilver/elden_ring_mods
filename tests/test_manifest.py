@@ -319,6 +319,29 @@ def test_a_merge_declared_twice_is_deduplicated(tmp_path):
     assert len(prof["merges"]) == 1
 
 
+def test_a_merge_declared_twice_with_different_prefer_is_not_deduplicated(tmp_path):
+    """Two profiles in an include chain can name the same path and mods but
+    disagree on `prefer` (or strategy). Deduping on (path, mods) alone would
+    silently keep whichever loaded first and drop the other's `prefer` --
+    exactly the kind of silent override load_profile's own docstring promises
+    LATEST wins for. Both entries must survive so conflicts._declare_merges
+    gets the chance to raise on the disagreement."""
+    (tmp_path / "base.toml").write_text(
+        'name = "base"\n'
+        '[[merges]]\n'
+        'path = "msg/x.dcx"\nstrategy = "fmg-union"\nmods = ["mod-x", "mod-y"]\n'
+        'prefer = "mod-x"\n')
+    (tmp_path / "top.toml").write_text(
+        'name = "top"\nincludes = ["base"]\n'
+        '[[merges]]\n'
+        'path = "msg/x.dcx"\nstrategy = "fmg-union"\nmods = ["mod-x", "mod-y"]\n'
+        'prefer = "mod-y"\n')
+
+    prof = load_profile("top", base=tmp_path)
+    assert len(prof["merges"]) == 2
+    assert {m["prefer"] for m in prof["merges"]} == {"mod-x", "mod-y"}
+
+
 def test_profiles_without_merges_get_empty_lists(tmp_path):
     (tmp_path / "plain.toml").write_text('name = "plain"\n')
     prof = load_profile("plain", base=tmp_path)

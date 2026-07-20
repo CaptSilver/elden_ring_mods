@@ -107,6 +107,44 @@ def _check_no_case_only_collisions(index):
                 f"differ for real, or drop one of the mods")
 
 
+def require_faithful_merge_sources(merges, present_ids, reinstalled_ids):
+    """Refuse a merge whose contributors aren't known-faithful sources this run.
+
+    resolve() strips the merged path out of every contributor once a merge
+    succeeds, so a package that's only sitting in state because an EARLIER
+    apply put it there -- not because this run actually (re)installed it --
+    may already be missing that content. There's no way to tell that apart
+    from a package that's simply never collided before by looking at
+    index_paths()'s output alone, so the caller (apply) has to track which
+    ids it actually re-extracted this run and hand both sets in here, before
+    resolve() ever runs.
+
+    A merge with fewer than two of its declared mods currently present isn't
+    a real collision regardless -- it's the same "declared mod simply isn't
+    installed" case resolve() itself skips (see
+    test_merge_is_skipped_when_only_one_side_is_installed) -- so that's left
+    alone here too; only a merge that's actually about to run this time is
+    at risk.
+    """
+    present_ids = set(present_ids)
+    for entry in merges:
+        present = [mid for mid in entry["mods"] if mid in present_ids]
+        if len(present) < 2:
+            continue
+        stale = sorted(mid for mid in present if mid not in reinstalled_ids)
+        if stale:
+            raise ConflictError(
+                f"{entry['path']}: {', '.join(stale)} "
+                f"{'is' if len(stale) == 1 else 'are'} on disk only from an "
+                f"earlier apply, not freshly (re)installed this run -- likely "
+                f"a missing vendor archive or a failed install reported "
+                f"above. Recomputing this merge from a package that wasn't "
+                f"just re-extracted risks silently losing content an earlier "
+                f"merge already stripped out of it. Fix the install for "
+                f"{', '.join(stale)} (refetch it / restore its vendor "
+                f"archive) and re-run apply.")
+
+
 def resolve(me3_dir, mod_ids, merges):
     """Merge every declared conflict and refuse any undeclared one.
 

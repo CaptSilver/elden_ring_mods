@@ -4,6 +4,20 @@ from pathlib import Path
 from .errors import PathError
 
 
+def _entry_key(entry):
+    """Hashable, order-independent form of a [[merges]]/[[prunes]] TOML table.
+
+    tomllib hands back plain dicts, which aren't hashable, and a table can
+    hold a list (mods/paths) that isn't either -- so a raw `entry` can't be a
+    dict key. Sorting by field name makes the result independent of the
+    table's key order in the source TOML.
+    """
+    return tuple(sorted(
+        (k, tuple(v) if isinstance(v, list) else v)
+        for k, v in entry.items()
+    ))
+
+
 def load_profile(name, base=Path("profiles"), _seen=None):
     """Load a profile, resolving an optional `includes = ["other", ...]` list.
 
@@ -53,14 +67,19 @@ def load_profile(name, base=Path("profiles"), _seen=None):
 
     def add_merge(entry):
         # Two profiles in the include graph can declare the same merge; running
-        # it twice would merge an already-merged file into itself.
-        key = (entry["path"], tuple(entry["mods"]))
+        # it twice would merge an already-merged file into itself. Key on the
+        # WHOLE entry, not just (path, mods) -- two includes can name the same
+        # path and mods but disagree on strategy/prefer, and keying on a subset
+        # would silently keep whichever loaded first, discarding the other's
+        # disagreement before conflicts._declare_merges ever gets a chance to
+        # catch it.
+        key = _entry_key(entry)
         if key not in merge_seen:
             merge_seen.add(key)
             merges.append(entry)
 
     def add_prune(entry):
-        key = (entry["mod"], tuple(entry["paths"]))
+        key = _entry_key(entry)
         if key not in prune_seen:
             prune_seen.add(key)
             prunes.append(entry)
