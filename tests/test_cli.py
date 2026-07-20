@@ -97,18 +97,17 @@ def test_launch_option_keeps_steam_launch_options_framing(pinned_machine, capsys
 
 
 def test_launch_option_me3_command_is_a_steam_launch_option(pinned_machine, capsys):
-    # The me3 command belongs in Steam's Launch Options like the ersc wrapper.
-    # `# %command%` comments out the Proton chain Steam substitutes; without the
-    # token Steam appends the field as argv to the game exe and vanilla boots
-    # with no mods and no error. An earlier version of this command blamed that
-    # on me3 and told you to run it from a terminal instead.
+    # The me3 command belongs in Steam's Launch Options like the ersc wrapper, not
+    # a terminal. `# %command%` comments out the Proton chain Steam substitutes;
+    # without the token Steam appends the field as argv to the game exe and
+    # vanilla boots with no mods and no error.
     out = _launch_out(capsys)
     # The explanatory paragraph below also contains the literal text
     # "# %command%" (it's discussing the token), so a bare membership check
     # would pass even if the rendered command itself dropped it. Assert
     # against the actual plain me3 command line instead.
     plain_me3 = cli.launch.me3_command(pathlib.Path("/opt/me3"), pinned_machine / "erm-coop.me3")
-    assert plain_me3.endswith("# %command%")
+    assert plain_me3.endswith(" # %command%")
     assert f"  plain\n    {plain_me3}\n" in out
     assert "terminal" not in out.lower()
 
@@ -356,7 +355,7 @@ def test_launch_option_json_emits_the_variant_set(pinned_machine, capsys):
     assert data["ersc"]["plain"] == cli.LAUNCH_OPTION
     assert data["ersc"]["reshade"] == cli.RESHADE_ENV + cli.LAUNCH_OPTION
     assert data["validator"] == cli.LAUNCH_VALIDATOR
-    assert data["me3"]["plain"].endswith("# %command%")
+    assert data["me3"]["plain"].endswith(" # %command%")
     for key in ("reshade_installed", "me3_packages", "profile_exists"):
         assert isinstance(data[key], bool)
 

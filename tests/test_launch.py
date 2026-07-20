@@ -36,7 +36,7 @@ def test_me3_command_is_absolute_and_ends_with_command_token(tmp_path):
     cmd = launch.me3_command(Path("/opt/me3"), tmp_path / "p.me3")
     assert cmd.startswith("/opt/me3 launch -p /")
     # Steam appends this text as argv to the game exe unless %command% appears.
-    assert cmd.endswith("# %command%")
+    assert cmd.endswith(" # %command%")
 
 
 def test_me3_command_quotes_paths_containing_spaces(tmp_path):
@@ -129,7 +129,7 @@ def test_render_contains_every_command_in_one_output(tmp_path):
     # Same substring trap for me3's plain vs. ReShade forms, and the prose
     # below also contains the literal text "# %command%" — assert against
     # the real command rather than a bare token search.
-    assert v["me3"]["plain"].endswith("# %command%")
+    assert v["me3"]["plain"].endswith(" # %command%")
     assert f"  plain\n    {v['me3']['plain']}\n" in out
     assert "Dual GPU" in out
 
@@ -139,8 +139,11 @@ def test_render_annotates_me3_packages_without_hiding_commands(tmp_path):
     absent_v = _variants(tmp_path, packages=False)
     present = launch.render(present_v)
     absent = launch.render(absent_v)
-    assert "me3 packages present" in present
-    assert "no me3 packages" in absent
+    # The ersc heading also contains the bare phrase "no me3 packages"
+    # unconditionally, so a bare substring check here would pass no matter
+    # what the me3 annotation says. Anchor to the annotation's own framing.
+    assert "(this install: me3 packages present)" in present
+    assert "(this install: no me3 packages)" in absent
     for v, out in ((present_v, present), (absent_v, absent)):
         assert f"  plain\n    {launch.LAUNCH_OPTION}\n" in out
         assert f"  plain\n    {v['me3']['plain']}\n" in out
@@ -155,9 +158,11 @@ def test_render_annotates_reshade_without_hiding_variants(tmp_path):
     # was actually installed) — the guidance must say so, not just print them.
     assert "per-machine" in on.lower()
     # Both forms print either way — that's what makes the output copyable
-    # for a machine you're not on.
+    # for a machine you're not on. The plain line is the one most likely to
+    # go missing, so pin its own framing rather than just the ReShade form.
     for out in (on, off):
         assert launch.RESHADE_ENV + launch.LAUNCH_OPTION in out
+        assert f"  plain\n    {launch.LAUNCH_OPTION}\n" in out
 
 
 def test_render_warns_and_omits_commands_when_me3_missing(tmp_path):
