@@ -434,6 +434,15 @@ def cmd_apply(args):
     # rest silently. Runs on the profile's package ids, not on state, so a
     # stale package from an earlier profile can't pull itself into the merge.
     conflicts.clear_merged(ME3_DIR)
+    # Forget any merged package from a PRIOR apply right away, in lockstep with
+    # the physical dir clear_merged() just wiped — not after the resolve() call
+    # below. resolve() can raise ConflictError on a totally unrelated collision,
+    # and the except clause below writes state and re-raises; if forgetting
+    # waited until after that try/except, this path would never reach it, and
+    # installed.json would keep claiming _merged is installed even though its
+    # directory is already gone. Re-recorded below only if this run's merge
+    # actually succeeds.
+    state_mod.forget(state, conflicts.MERGED_ID)
     package_ids = [m["id"] for m in profile["mods"]
                    if m.get("install") == "me3-package" and m["id"] in state]
     for pruned in conflicts.apply_prunes(ME3_DIR, profile.get("prunes", [])):
@@ -443,13 +452,6 @@ def cmd_apply(args):
     except ConflictError:
         state_mod.write_state(Path("installed.json"), state)
         raise
-    # Forget any merged package from a PRIOR apply before conditionally
-    # re-recording it below. clear_merged() already wiped the physical dir
-    # unconditionally, so a state entry that survives only because THIS run
-    # had nothing to merge (the profile dropped a contributor, or dropped the
-    # [[merges]] entry) would leave erm-coop.me3 pointing at a directory that
-    # no longer exists.
-    state_mod.forget(state, conflicts.MERGED_ID)
     if merged:
         state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}")
         for rel in merged:
@@ -736,14 +738,26 @@ def cmd_uninstall(args):
     # Merged output is derived from packages that just changed, and the merge
     # stripped the merged path out of its sources — so a surviving _merged would
     # be the only provider of content whose source is gone. Drop it; the next
-    # apply rebuilds it. A removal failure here follows the same rule as every
-    # other rmtree above: warn and keep going rather than abort a run that
-    # already removed what it came here to remove.
-    try:
-        conflicts.clear_merged(ME3_DIR)
-    except OSError as exc:
-        r.warn(f"could not clear stale merged output ({exc}) — remove tools/me3/mods/_merged by hand")
-    state_mod.forget(state, conflicts.MERGED_ID)
+    # apply rebuilds it. Only warn/inform when there was actually something to
+    # clear: if the target we just uninstalled WAS _merged itself, the
+    # kind == "me3-package" branch in _uninstall_one already removed it and
+    # forgot its state entry above, so both checks below are already false and
+    # we stay quiet rather than reporting the same removal twice.
+    merged_dir = ME3_DIR / "mods" / conflicts.MERGED_ID
+    had_merged = merged_dir.is_dir() or conflicts.MERGED_ID in state
+    if had_merged:
+        try:
+            conflicts.clear_merged(ME3_DIR)
+        except OSError as exc:
+            # clear_merged's rmtree passes ignore_errors=True, so this can't
+            # actually raise in production -- the except only fires here
+            # because a test replaces shutil.rmtree wholesale. Warn and keep
+            # going rather than abort a run that already removed what it came
+            # here to remove.
+            r.warn(f"could not clear stale merged output ({exc}) — remove tools/me3/mods/_merged by hand")
+        else:
+            r.info("cleared merged output — run `erm apply` to rebuild it")
+        state_mod.forget(state, conflicts.MERGED_ID)
     state_mod.write_state(Path("installed.json"), state)
     try:
         me3profile.reconcile(state, ME3_DIR, game)

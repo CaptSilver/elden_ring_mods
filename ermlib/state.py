@@ -8,6 +8,7 @@ gitignored.
 import json
 from pathlib import Path
 
+from .conflicts import MERGED_ID
 from .errors import ErmError
 
 DEFAULT_PATH = Path("installed.json")
@@ -85,7 +86,6 @@ def record_merged(state, package):
     but flagged `derived` and given no archive: it's computed from the other
     packages, not fetched, so update/fetch must not try to resolve it.
     """
-    from .conflicts import MERGED_ID
     state[MERGED_ID] = {"version": "derived", "archive": None,
                         "kind": "me3-package", "package": package,
                         "derived": True}
