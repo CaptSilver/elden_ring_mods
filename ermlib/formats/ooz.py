@@ -79,7 +79,13 @@ def decompress(src, uncompressed_size):
     dst = ctypes.create_string_buffer(uncompressed_size + 65536)
     n = fn(src, len(src), dst, uncompressed_size)
     if n != uncompressed_size:
+        if n < 0:
+            reason = ("decode failed" if n == -1
+                      else "decode stalled" if n == -2
+                      else f"returned sentinel {n}")
+        else:
+            reason = f"produced {n} bytes"
         raise OozError(
-            f"Kraken decode produced {n} bytes, expected {uncompressed_size} "
+            f"Kraken decode {reason}, expected {uncompressed_size} "
             f"— the archive is truncated, or it isn't a Kraken stream")
     return dst.raw[:uncompressed_size]

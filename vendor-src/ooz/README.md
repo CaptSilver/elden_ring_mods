@@ -13,6 +13,10 @@ mean maintaining a fork of a dead repo or a build-time patch step that can fail.
 shims for `_BitScanReverse`, `_BitScanForward`, `__forceinline`, and several
 MSVC typedefs. GCC's `x86intrin.h` supplies `_rotl`.
 
+**`kraken.cpp`** — upstream's original, unmodified and deliberately not built.
+It exists so `diff kraken.cpp kraken_lib.cpp` shows exactly what we changed.
+Adding it to `SOURCES` produces duplicate-symbol link errors.
+
 **`kraken_lib.cpp`** — adds `ooz_decompress_seekchunked`, the entry point we
 actually call.
 
