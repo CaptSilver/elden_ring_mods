@@ -1,0 +1,11 @@
+erm bundles third-party source in vendor-src/.
+
+vendor-src/ooz/
+    Kraken/Mermaid/Selkie/Leviathan/LZNA/BitKnit decompressor.
+    Copyright (C) 2016 Powzix. Upstream: https://github.com/powzix/ooz
+    GPL-3.0-or-later.
+
+    Local modifications are described in vendor-src/ooz/README.md.
+
+Because ooz is GPL-3.0-or-later and erm is GPL-2.0-or-later, the combined
+work is distributed under GPL-3.0.

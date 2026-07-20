@@ -109,3 +109,12 @@ everyone's `regulation.bin` must match, or co-op won't connect or worlds will de
 `python3 -m pytest -q` runs the test suite (unit tests against a fixture copy of a real
 save, recorded GitHub API responses — no live network in tests, no touching the real save
 or game install).
+
+## License
+
+GPL-2.0-or-later. This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License as published by the
+Free Software Foundation; either version 2 of the License, or (at your option)
+any later version.
+
+Third-party components are listed in [NOTICE](NOTICE).
