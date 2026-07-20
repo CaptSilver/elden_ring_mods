@@ -134,3 +134,141 @@ def test_merge_naming_a_prefer_not_among_providers_raises(tmp_path):
     with pytest.raises(conflicts.ConflictError) as exc:
         conflicts.resolve(tmp_path, ["a", "b"], merges=spec)
     assert "c" in str(exc.value)
+
+
+def test_resolve_is_atomic_on_a_later_path_failure(tmp_path):
+    """If the second path's strategy raises, the first path's already-computed
+    merge must not have been committed -- otherwise a bare re-run has nothing
+    to recover the first path's already-migrated sources from."""
+    _package(tmp_path, "a", {"msg/a.dcx": b"A1", "msg/b.dcx": b"B1"})
+    _package(tmp_path, "c", {"msg/a.dcx": b"A2", "msg/b.dcx": b"B2"})
+
+    def boom(base, other):
+        raise RuntimeError("strategy blew up")
+
+    conflicts.STRATEGIES["concat-test"] = lambda base, other: base + other
+    conflicts.STRATEGIES["boom-test"] = boom
+    spec = [
+        {"path": "msg/a.dcx", "strategy": "concat-test", "mods": ["a", "c"], "prefer": "a"},
+        {"path": "msg/b.dcx", "strategy": "boom-test", "mods": ["a", "c"], "prefer": "a"},
+    ]
+    try:
+        with pytest.raises(RuntimeError):
+            conflicts.resolve(tmp_path, ["a", "c"], merges=spec)
+    finally:
+        del conflicts.STRATEGIES["concat-test"]
+        del conflicts.STRATEGIES["boom-test"]
+
+    assert (tmp_path / "mods" / "a" / "msg/a.dcx").exists()
+    assert (tmp_path / "mods" / "c" / "msg/a.dcx").exists()
+    assert not (tmp_path / "mods" / conflicts.MERGED_ID).exists()
+
+
+def test_clear_merged_after_a_failed_resolve_allows_a_clean_retry(tmp_path):
+    """Covers clear_merged, and specifically the interaction with a failed
+    resolve(): after a strategy blows up mid-run, clear_merged() must be safe
+    to call even though nothing was committed, and a corrected re-run must
+    succeed from the still-intact sources rather than a half-migrated tree."""
+    _package(tmp_path, "a", {"msg/a.dcx": b"A1", "msg/b.dcx": b"B1"})
+    _package(tmp_path, "c", {"msg/a.dcx": b"A2", "msg/b.dcx": b"B2"})
+
+    def boom(base, other):
+        raise RuntimeError("strategy blew up")
+
+    conflicts.STRATEGIES["concat-test"] = lambda base, other: base + other
+    conflicts.STRATEGIES["boom-test"] = boom
+    bad_spec = [
+        {"path": "msg/a.dcx", "strategy": "concat-test", "mods": ["a", "c"], "prefer": "a"},
+        {"path": "msg/b.dcx", "strategy": "boom-test", "mods": ["a", "c"], "prefer": "a"},
+    ]
+    try:
+        with pytest.raises(RuntimeError):
+            conflicts.resolve(tmp_path, ["a", "c"], merges=bad_spec)
+
+        conflicts.clear_merged(tmp_path)  # must not raise; nothing was ever written
+
+        good_spec = [
+            {"path": "msg/a.dcx", "strategy": "concat-test", "mods": ["a", "c"], "prefer": "a"},
+            {"path": "msg/b.dcx", "strategy": "concat-test", "mods": ["a", "c"], "prefer": "a"},
+        ]
+        merged = conflicts.resolve(tmp_path, ["a", "c"], merges=good_spec)
+    finally:
+        del conflicts.STRATEGIES["concat-test"]
+        del conflicts.STRATEGIES["boom-test"]
+
+    assert set(merged) == {"msg/a.dcx", "msg/b.dcx"}
+    assert (tmp_path / "mods" / conflicts.MERGED_ID / "msg/a.dcx").read_bytes() == b"A1A2"
+    assert (tmp_path / "mods" / conflicts.MERGED_ID / "msg/b.dcx").read_bytes() == b"B1B2"
+
+
+def test_merge_raises_when_an_undeclared_mod_also_provides_the_path(tmp_path):
+    """A merge declared for mods=[a, b] must not silently fold in content from
+    an unrelated mod c that happens to ship the same path -- that's unreviewed
+    content silently included, the same class of bug as content dropped."""
+    _package(tmp_path, "a", {"msg/x.dcx": b"AAA"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"BBB"})
+    _package(tmp_path, "c", {"msg/x.dcx": b"CCC"})
+    spec = [{"path": "msg/x.dcx", "strategy": "concat-test", "mods": ["a", "b"], "prefer": "a"}]
+    conflicts.STRATEGIES["concat-test"] = lambda base, other: base + other
+    try:
+        with pytest.raises(conflicts.ConflictError) as exc:
+            conflicts.resolve(tmp_path, ["a", "b", "c"], merges=spec)
+    finally:
+        del conflicts.STRATEGIES["concat-test"]
+    msg = str(exc.value)
+    assert "msg/x.dcx" in msg
+    assert "c" in msg
+
+
+def test_merge_proceeds_when_a_declared_mod_is_simply_not_installed(tmp_path):
+    """Profiles compose: a merge inherited into a stack can name a mod that
+    stack never installs. As long as every actual provider is among the
+    declared mods, that's still the collision the merge was written for --
+    just missing an optional participant, not an unreviewed stranger."""
+    _package(tmp_path, "a", {"msg/x.dcx": b"AAA"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"BBB"})
+    spec = [{"path": "msg/x.dcx", "strategy": "concat-test",
+             "mods": ["a", "b", "c"], "prefer": "a"}]
+    conflicts.STRATEGIES["concat-test"] = lambda base, other: base + other
+    try:
+        merged = conflicts.resolve(tmp_path, ["a", "b"], merges=spec)
+    finally:
+        del conflicts.STRATEGIES["concat-test"]
+    assert merged == ["msg/x.dcx"]
+    assert (tmp_path / "mods" / conflicts.MERGED_ID / "msg/x.dcx").read_bytes() == b"AAABBB"
+
+
+def test_case_only_path_collision_is_detected(tmp_path):
+    """me3's runtime case-sensitivity is unverified, so we don't normalize or
+    guess -- two paths that collide only under case-folding must raise and
+    name the ambiguity, since index_paths would otherwise file them as two
+    unrelated one-provider entries and the collision would never surface."""
+    _package(tmp_path, "a", {"msg/engus/x.dcx": b"1"})
+    _package(tmp_path, "b", {"MSG/ENGUS/X.dcx": b"2"})
+    with pytest.raises(conflicts.ConflictError) as exc:
+        conflicts.resolve(tmp_path, ["a", "b"], merges=[])
+    msg = str(exc.value)
+    assert "msg/engus/x.dcx" in msg
+    assert "MSG/ENGUS/X.dcx" in msg
+
+
+def test_conflicting_merge_declarations_for_the_same_path_raise(tmp_path):
+    """Two composed profiles can each declare a different merge for the same
+    path -- manifest.py's dedup key is (path, mods), so entries that differ in
+    `prefer` (or strategy, or mods) both survive and reach resolve(). Plain
+    dict-overwrite would silently keep one and drop the other's declaration
+    (and here would go on to actually complete a merge using it); it must
+    raise instead and name the path."""
+    _package(tmp_path, "a", {"msg/x.dcx": b"AAA"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"BBB"})
+    spec = [
+        {"path": "msg/x.dcx", "strategy": "concat-test", "mods": ["a", "b"], "prefer": "a"},
+        {"path": "msg/x.dcx", "strategy": "concat-test", "mods": ["a", "b"], "prefer": "b"},
+    ]
+    conflicts.STRATEGIES["concat-test"] = lambda base, other: base + other
+    try:
+        with pytest.raises(conflicts.ConflictError) as exc:
+            conflicts.resolve(tmp_path, ["a", "b"], merges=spec)
+    finally:
+        del conflicts.STRATEGIES["concat-test"]
+    assert "msg/x.dcx" in str(exc.value)

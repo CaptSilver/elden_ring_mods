@@ -60,18 +60,73 @@ def apply_prunes(me3_dir, prunes):
     return removed
 
 
+def _declare_merges(merges):
+    """Index merges by path, refusing to silently pick one of two conflicting
+    declarations for it.
+
+    Profiles compose, so the same path can arrive here with a merge declared
+    by two different included profiles. A plain `{m["path"]: m for m in
+    merges}` would keep whichever entry happens to be last and drop the
+    other's strategy/prefer/mods without telling anyone -- the exact kind of
+    silent surprise this module exists to catch.
+    """
+    declared = {}
+    for m in merges:
+        rel = m["path"]
+        prior = declared.get(rel)
+        if prior is not None and prior != m:
+            raise ConflictError(
+                f"{rel}: two [[merges]] entries disagree on how to resolve it "
+                f"-- {prior!r} vs {m!r}. Profiles compose, so this path picked "
+                f"up conflicting declarations from different includes; edit "
+                f"one so they agree.")
+        declared[rel] = m
+    return declared
+
+
+def _check_no_case_only_collisions(index):
+    """Refuse paths that collide only under case-folding.
+
+    Whether me3's runtime path resolution is case-sensitive is unverified, so
+    we don't normalize or guess which of two differently-cased paths it would
+    actually mount -- we refuse and make the profile author resolve it. This
+    also catches collisions the provider-count check below cannot see at all:
+    `msg/x.dcx` and `MSG/X.dcx` index as two *different* one-provider entries,
+    so nothing else in this module ever notices they name the same me3 slot.
+    """
+    by_fold = {}
+    for rel in index:
+        by_fold.setdefault(rel.casefold(), []).append(rel)
+    for variants in by_fold.values():
+        if len(variants) > 1:
+            detail = "; ".join(
+                f"{v!r} (from {', '.join(index[v])})" for v in sorted(variants))
+            raise ConflictError(
+                f"these paths differ only in case, so it's ambiguous which "
+                f"file me3 would mount: {detail} -- rename one so the paths "
+                f"differ for real, or drop one of the mods")
+
+
 def resolve(me3_dir, mod_ids, merges):
     """Merge every declared conflict and refuse any undeclared one.
 
     Merged output goes to a synthetic package and the path is removed from its
     sources, so the merged file is the only one providing it. That sidesteps
     me3's load order entirely rather than trusting it to break the tie our way.
+
+    Atomic across the whole call: every merge is computed and held in memory
+    first, and only once all of them succeed do we write `_merged` and unlink
+    the sources. A strategy raising partway through must leave every package
+    exactly as it was found -- otherwise a later path's failure would strand
+    an earlier path half-migrated, with its source already deleted and no
+    merged output to show for it either.
     """
     me3_dir = Path(me3_dir)
-    declared = {m["path"]: m for m in merges}
+    declared = _declare_merges(merges)
     index = index_paths(me3_dir, mod_ids)
+    _check_no_case_only_collisions(index)
 
-    merged_paths = []
+    planned = []
     for rel, providers in sorted(index.items()):
         if len(providers) < 2:
             continue
@@ -86,6 +141,20 @@ def resolve(me3_dir, mod_ids, merges):
             raise ConflictError(
                 f"{rel}: unknown merge strategy {spec['strategy']!r} "
                 f"(known: {', '.join(sorted(STRATEGIES))})")
+        # A mod outside the declared set folding into the merge is unreviewed
+        # content silently included -- same class of bug as content silently
+        # dropped. A declared mod simply not being *installed* is fine (profiles
+        # compose; test_merge_is_skipped_when_only_one_side_is_installed covers
+        # the case where that drops providers below 2 entirely) -- so we only
+        # object to providers absent from the declaration, never the reverse.
+        undeclared = set(providers) - set(spec["mods"])
+        if undeclared:
+            raise ConflictError(
+                f"{rel}: merge declares mods={sorted(spec['mods'])}, but the "
+                f"actual providers are {sorted(providers)} -- "
+                f"{', '.join(sorted(undeclared))} also ship this path and "
+                f"aren't declared. Update the [[merges]] entry to include "
+                f"them deliberately, or drop the extra mod.")
         prefer = spec["prefer"]
         if prefer not in providers:
             # A typo'd or stale `prefer` would otherwise reach read_bytes() below
@@ -100,16 +169,26 @@ def resolve(me3_dir, mod_ids, merges):
         out = blobs[0]
         for extra in blobs[1:]:
             out = strategy(out, extra)
+        planned.append((rel, out, providers))
 
+    # Every merge above succeeded in memory -- only now do we touch disk, so a
+    # raise anywhere in the loop above never gets here at all.
+    for rel, out, providers in planned:
         target = _package_dir(me3_dir, MERGED_ID) / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(out)
         for mod_id in providers:
             (_package_dir(me3_dir, mod_id) / rel).unlink()
-        merged_paths.append(rel)
-    return merged_paths
+    return [rel for rel, _, _ in planned]
 
 
 def clear_merged(me3_dir):
-    """Drop the synthetic package so a re-apply rebuilds it from scratch."""
+    """Delete the synthetic merged package.
+
+    This alone does not recover anything -- it just clears prior merged
+    output so the next resolve() rebuilds it from scratch. The reason that's
+    safe to do after a failed resolve() is resolve()'s own atomicity (it never
+    unlinks a source until every merge in the run has succeeded), not
+    anything this function does.
+    """
     shutil.rmtree(_package_dir(me3_dir, MERGED_ID), ignore_errors=True)
