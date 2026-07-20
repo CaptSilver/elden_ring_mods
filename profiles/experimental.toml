@@ -30,8 +30,9 @@ install = "mods"
 # scans mods/*.dll — it never recurses — so EML would load nothing and report
 # nothing. me3 chainloads it by explicit path instead, hence install =
 # "me3-native". Overlaps with quest-log (#3585) in seamless-full: both are quest
-# trackers with overlays. Running both is deliberate for now, to compare them;
-# each has an ini toggle and an in-game hotkey.
+# trackers, though they present differently: quest-log goes through the game's
+# own menu system, this one draws its own overlay. Running both is deliberate
+# for now, to compare them; each has an ini toggle and an in-game hotkey.
 [[mods]]
 id = "questpath"
 source = "nexus"

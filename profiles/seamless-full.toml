@@ -104,9 +104,10 @@ source = "nexus"
 nexus_id = 501
 kind = "qol"
 install = "mods"
-# Ships erquestlog.dll alongside an .ini and a questlog_lang/ dir, all at the
-# archive root — hence install = "mods" rather than "game". Reads quest flags
-# for its overlay; nothing written back, so it's per-player like the rest here.
+# Ships erquestlog.dll, an .ini and a questlog_lang/ dir inside a wrapper
+# folder, which the mods install strips. Presents through the game's own menu
+# system rather than drawing its own overlay — hence the translation files.
+# Reads quest flags, writes nothing back, so it's per-player like the rest here.
 [[mods]]
 id = "quest-log"
 source = "nexus"
