@@ -8,6 +8,26 @@ from ermlib.formats import bnd4, dcx
 CLEVERS_MENU = Path("tools/me3/mods/clevers-moveset/msg/engus/menu_dlc02.msgbnd.dcx")
 
 
+def _resolve_real_archive():
+    """Find the first available real BND4 archive for testing rebuild.
+
+    Archives move as mods merge and profiles are applied. This function checks
+    candidates in order of preference (survivors first, then merged output, then
+    originals), ensuring tests remain valid across profile applications.
+
+    Returns Path to the archive if found, else None.
+    """
+    candidates = [
+        Path("tools/me3/mods/clevers-moveset/msg/engus/item_dlc02.msgbnd.dcx"),
+        Path("tools/me3/mods/_merged/msg/engus/menu_dlc02.msgbnd.dcx"),
+        Path("tools/me3/mods/clevers-moveset/msg/engus/menu_dlc02.msgbnd.dcx"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _synthetic_bnd4(entries, hash_table=b"\xAB\xCD\xEF\x01" * 4):
     """Build a minimal BND4 for tests: header, entry headers, names, a stand-in
     hash table, then padded data. Mirrors the real layout closely enough to
@@ -331,9 +351,16 @@ def test_rebuild_rejects_a_first_entry_offset_before_the_data_section():
         bnd4.rebuild(bytes(raw), {10: b"different length entirely"})
 
 
-@pytest.mark.skipif(not CLEVERS_MENU.exists(), reason="Clever's Moveset not installed")
 def test_identity_rebuild_of_a_real_msgbnd():
     """A real archive exercises the populated hash table and the true entry
     layout, neither of which the synthetic fixture fully reproduces."""
-    raw = dcx.read(CLEVERS_MENU.read_bytes())
+    archive = _resolve_real_archive()
+    if not archive:
+        pytest.skip(
+            "No real archive found. Checked: "
+            "clevers-moveset/msg/engus/item_dlc02.msgbnd.dcx, "
+            "_merged/msg/engus/menu_dlc02.msgbnd.dcx, "
+            "clevers-moveset/msg/engus/menu_dlc02.msgbnd.dcx"
+        )
+    raw = dcx.read(archive.read_bytes())
     assert bnd4.rebuild(raw, {}) == raw
