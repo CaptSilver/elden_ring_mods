@@ -132,6 +132,12 @@ asset = "SkipTheIntro-421-4-0-1732388874.zip"
 sha256 = "c660891df61628a93632c8ccbf460ff473139f68acd4a5b0e97ac3733c215a75"
 source = "nexus"
 
+[starlight-shards-rune-arcs]
+version = "1.0.0"
+asset = "starlight_shards_as_rune_arcs-9030-1-0-0-1765712861.zip"
+sha256 = "828f4ea2d3d072a4ea5a4d772b81ac6ce9387f2e48225abe7d067c1022513f8e"
+source = "nexus"
+
 [texture-improvement]
 version = "4.0"
 asset = "Environment - Flora-2431-4-0-1692550959.zip"

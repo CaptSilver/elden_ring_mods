@@ -3,7 +3,7 @@
 # plus whatever's being tried out — switching to a standalone profile would
 # uninstall Seamless along with everything else.
 name = "experimental"
-description = "seamless-full plus whatever is currently on trial. Empty right now — both candidates were rejected, and the notes below record why so they don't get re-added. Applying this is identical to applying seamless-full until something new goes in. Nothing here is ever required by co-op partners."
+description = "seamless-full plus whatever is currently on trial. On trial now: Starlight Shards like Rune Arcs (#9030), pending an in-game check that its param scan matches 1.16.1. The notes below record earlier rejected candidates so they don't get re-added. Nothing here is ever required by co-op partners."
 
 includes = ["seamless-full"]
 
@@ -36,3 +36,27 @@ includes = ["seamless-full"]
 # me3-native rather than "mods" because its dll sits inside a QuestPath/ folder
 # and Elden Mod Loader only scans mods/*.dll — it never recurses. Try its ini's
 # overlay toggle first; the quest tracking may work with the overlay off.
+
+# --- on trial ---
+# Starlight Shards like Rune Arcs (#9030, krios2146) — makes the Starlight Shard
+# FP-regen buff last until you die instead of the vanilla ~90s, the way a Rune
+# Arc's Great Rune buff persists until death. Ships as a ModEngine2 external_dll;
+# loaded here through Elden Mod Loader from Game/mods/ like the other client DLLs.
+#
+# Ban-safe under Seamless the same way the rest of the stack is: it patches one
+# in-memory speffect duration (501290 → infinite) and toggles a save event flag,
+# adds no non-vanilla item (Starlight Shards are vanilla), and never touches the
+# network. Purely local — it only ever reads the main player, so it doesn't
+# desync and no co-op partner needs to run it. Not requires_all_players.
+#
+# On trial because its param scan keys off a hardcoded byte signature for one
+# game build; if that doesn't match 1.16.1 it panics in its worker thread and
+# no-ops silently — "it loaded" won't prove it works. Verify in-game (pop a
+# shard, watch the FP regen outlast its normal timer, survive a reload, and drop
+# on death) before promoting to seamless-full + single-full.
+[[mods]]
+id = "starlight-shards-rune-arcs"
+source = "nexus"
+nexus_id = 9030
+kind = "qol"
+install = "mods"
