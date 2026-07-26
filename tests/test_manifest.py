@@ -271,17 +271,24 @@ def test_seamless_full_excludes_randomizer_via_gameplay_extras_include():
 
 def test_experimental_composes_seamless_full_with_the_trial_overlays():
     prof = load_profile("experimental", base=Path("profiles"))
-    ids = [m["id"] for m in prof["mods"]]
-    assert len(ids) == len(set(ids))   # no duplicate mod ids
+    mods = {m["id"]: m for m in prof["mods"]}
+    ids = list(mods)
+    assert len(ids) == len([m["id"] for m in prof["mods"]])   # no duplicate mod ids
     # Composes the coop stack rather than replacing it — `erm switch` uninstalls
     # everything first, so a standalone profile would strip Seamless.
     assert prof["includes"] == ["seamless-full"]
     assert "seamless-coop" in ids and "clevers-moveset" in ids
-    # Nothing on trial right now — both candidates were rejected. questpath's
-    # render hooks killed the game at startup; map-for-goblins ran fine but its
-    # overlay takes no controller input.
+    # The overlays this profile exists to stage before they reach the real stack.
+    assert "starlight-shards-rune-arcs" in ids
+    assert "map-for-goblins" in ids
+    # map-for-goblins MUST stay me3-native, never "mods": under EML's load_delay
+    # the dll injects after the world map is built and no icons appear. And the
+    # file_id must stay pinned — the mod ships nine MAIN variants, one per
+    # overhaul, so an unpinned fetch would grab the wrong one.
+    assert mods["map-for-goblins"]["install"] == "me3-native"
+    assert mods["map-for-goblins"]["file_id"] == 48311
+    # questpath stays rejected — its render hooks killed the game at startup here.
     assert "questpath" not in ids
-    assert "map-for-goblins" not in ids
     # Inherits seamless-full's mutual exclusion with the randomizer.
     assert "randomizer" in prof["excludes"]
 

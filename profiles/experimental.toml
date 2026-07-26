@@ -3,25 +3,11 @@
 # plus whatever's being tried out — switching to a standalone profile would
 # uninstall Seamless along with everything else.
 name = "experimental"
-description = "seamless-full plus whatever is currently on trial. On trial now: Starlight Shards like Rune Arcs (#9030), pending an in-game check that its param scan matches 1.16.1. The notes below record earlier rejected candidates so they don't get re-added. Nothing here is ever required by co-op partners."
+description = "seamless-full plus whatever is currently on trial. On trial now: Starlight Shards like Rune Arcs (#9030) and Map for Goblins (#10062), both pending an in-game check. The note below records an earlier rejected candidate so it doesn't get re-added. Nothing here is ever required by co-op partners."
 
 includes = ["seamless-full"]
 
 # --- tried and rejected ---
-# map-for-goblins (#10062, DLL rebuild) DISABLED — loads and runs fine, but its
-# overlay takes no controller input, which makes it unusable for a controller
-# playthrough. The mod documents Y+R3 as the panel toggle; that didn't work
-# here. Nothing wrong with the install, so "it loads" is not the bar — don't
-# re-add it on that basis.
-#
-# To re-enable: nexus_id=10062, file_id=48311, kind="qol", install="mods".
-# The file_id matters: the mod publishes NINE files under MAIN at once, one per
-# overhaul (ERR, Convergence, ERTE, Graceborne…), all sharing a version, so
-# version alone can't pick between them — 48311 is "Vanilla or Randomizer".
-# Take the DLL rebuild, never the original (#3091): that one ships a
-# regulation.bin and would fight Clever's Moveset for the single slot, while
-# this one injects its map data at runtime.
-
 # questpath (#10363) DISABLED — it kills the game during startup on this box.
 # Every launch with it died ~10ms after its own log recorded "DXGI creation
 # hooks installed" and "NVIDIA NVAPI HDR observer installed", between me3's
@@ -60,3 +46,32 @@ source = "nexus"
 nexus_id = 9030
 kind = "qol"
 install = "mods"
+
+# Map for Goblins (#10062, DLL rebuild) — a world-map overlay that drops ~6900
+# loot/boss/grace icons onto the map, plus an in-game ImGui panel (F10, or Y+R3
+# on a pad) to toggle icon categories live. No regulation.bin; injects at runtime.
+# file_id 48311 is the "Vanilla or Randomizer" DLL build; the mod ships NINE MAIN
+# files at once (one per overhaul), so the id must be pinned. Never the original
+# #3091 — that one carries a regulation.bin and would fight Clever's for the slot.
+#
+# install = "me3-native", NOT "mods": Elden Mod Loader here runs load_delay=5000,
+# which injects DLLs ~5s in, AFTER the world map is built — so the icons never
+# attach and the mod silently shows nothing. me3 chainloads natives at launch,
+# early enough for the icons, and keeps MapForGoblins.ini beside the dll (the mod
+# reads its config from next to the binary). We launch through me3 anyway.
+#
+# The earlier rejection ("no controller input") was wrong — Y+R3 was never
+# actually tried. The real friction is that the config panel is mouse-driven, so
+# editing categories wants a mouse (Deck trackpad / Steam Input). The F10 overlay
+# and live category toggles are on by default in the shipped ini. Client-side
+# overlay that only reads item placement — it doesn't desync, no partner needs it.
+#
+# Verify in-game before promoting: icons actually appear on the world map and F10
+# opens the panel. Then move to seamless-full + single-full.
+[[mods]]
+id = "map-for-goblins"
+source = "nexus"
+nexus_id = 10062
+file_id = 48311
+kind = "qol"
+install = "me3-native"
