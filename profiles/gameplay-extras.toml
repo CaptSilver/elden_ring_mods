@@ -61,6 +61,61 @@ kind = "gameplay"
 install = "me3-package"
 requires_all_players = true
 
+# Forever Buffs / All Weapon Buffable (#8644, razibur) — the "Buffs last 3
+# minutes" build. Confirmed in game 2026-07-27: weapons that vanilla can't buff
+# now take a buff, and grease persists instead of expiring.
+#
+# 2,921 changed rows — 2,821 EquipParamWeapon making everything buffable, 67
+# SpEffect for the durations, 33 EquipParamGoods. It overlaps Clever's on 39
+# weapon rows and every one is a different FIELD: this mod sets one buffable flag
+# byte per row while Clever's rewrites moveset and attack fields elsewhere, so
+# param-rows composes them inside the row. Both mods' behaviour survives intact,
+# which is the in-game proof that the byte-granular merge is doing the right
+# thing at scale.
+#
+# file_id MUST stay pinned: the page ships TWO MAIN files. 39767 is this one;
+# 39807 is "Forever Buffs N all kinds of Buff included", different behaviour.
+#
+# `subdir` is required because auto-placement descends through a single wrapper
+# folder and this archive's Files/ holds two (mod/ and "CSV 4 Merge/").
+[[mods]]
+id = "forever-buffs"
+source = "nexus"
+nexus_id = 8644
+file_id = 39767                   # "Buffs last 3 minutes" — NOT 39807
+kind = "gameplay"
+install = "me3-package"
+subdir = "Files/mod"
+requires_all_players = true
+
+# 100 Percent Drop Rate (#9929, jaxkole522) — the Silver Scarab talisman gives a
+# 100% item drop rate. Two rows: ItemLotParam row 0 and SpEffect 311000, the
+# talisman's own effect. Clean against every other mod here.
+#
+# ACCEPTED WITHOUT THE IN-GAME CHECK, deliberately. The Silver Scarab sits far
+# enough into the game that David couldn't reach it to test; what's actually
+# confirmed is that the merged regulation loads and nothing else regressed. If
+# drop rates ever look wrong, this is the first thing to suspect — the check is
+# still: equip the Silver Scarab, kill something with a rare drop, confirm it
+# drops every time.
+#
+# It's here rather than in experimental because the merged regulation.bin is
+# built from whichever profile is applied: leaving a regulation mod out of the
+# shared profile gives partners a different file, which reads as a failure to
+# connect rather than a desync.
+#
+# Acquisition cheat, same class as ErdTools, which `erm doctor` warns about.
+# Fine under Seamless — separate .co2, EAC never runs — but never take that save
+# to vanilla online.
+[[mods]]
+id = "drop-rate-100"
+source = "nexus"
+nexus_id = 9929
+file_id = 46821
+kind = "gameplay"
+install = "me3-package"
+requires_all_players = true
+
 # --- Summon Ashes Anywhere REMOVED (co-op incompatible) ---
 # SummonAnywhere.dll (nexus 5434, file 23945, v1.12.1) loaded fine via Elden Mod
 # Loader (Game/mods/) but was useless in Seamless Co-op: summons couldn't be
@@ -112,6 +167,17 @@ strategy = "fmg-3way"
 mods = ["clevers-moveset", "nofalldead"]
 prefer = "clevers-moveset"
 vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/msg/engus/item_dlc02.msgbnd.dcx" }
+
+# Unedited editor artifact, same as the Boss Res systemparam below: byte-identical
+# to the .prev Smithbox wrote beside it, so it carries nothing of the author's.
+# Mounting it would override vanilla systemparam for no reason. The archive is the
+# author's whole workspace — 245 files, of which only regulation.bin is content.
+[[prunes]]
+mod = "forever-buffs"
+paths = [
+    "param/systemparam/systemparam.parambnd.dcx",
+    "param/systemparam/systemparam.parambnd.dcx.prev",
+]
 
 [[prunes]]
 mod = "boss-resurrection-lite"

@@ -453,3 +453,42 @@ def test_experimental_has_no_trials_left_but_keeps_its_rejections():
     for rejected in ("questpath", "starlight-shards-rune-arcs"):
         assert rejected not in [m["id"] for m in prof["mods"]]
         assert rejected in text
+
+
+def test_every_regulation_mod_lives_in_the_shared_profile():
+    """The merged regulation.bin is built from whichever profile is applied, so a
+    regulation mod left out of the shared set gives partners a different file --
+    which reads as a failure to connect, not a desync. Anything carrying params
+    therefore belongs in gameplay-extras, and the merge declaration has to name
+    every one of them or the apply aborts on an undeclared provider."""
+    shared = load_profile("gameplay-extras", base=Path("profiles"))
+    ids = [m["id"] for m in shared["mods"]]
+    regulation_mods = {"clevers-moveset", "nofalldead", "forever-buffs", "drop-rate-100"}
+    assert regulation_mods <= set(ids)
+    for m in shared["mods"]:
+        if m["id"] in regulation_mods:
+            assert m["requires_all_players"] is True, m["id"]
+
+    merge = next(x for x in shared["merges"] if x["path"] == "regulation.bin")
+    assert set(merge["mods"]) == regulation_mods
+    assert merge["prefer"] == "clevers-moveset"
+    assert merge["strategy"] == "param-rows"
+
+    # The trials are promoted, so nothing regulation-carrying is left on trial.
+    exp = load_profile("experimental", base=Path("profiles"))
+    assert not [m for m in exp["mods"] if m["id"] not in ids and m["id"] not in
+                {x["id"] for x in load_profile("seamless-full", base=Path("profiles"))["mods"]}]
+
+
+def test_forever_buffs_keeps_its_packaging_workarounds():
+    """Two things about this archive that a tidy-up would plausibly delete: the
+    subdir, without which auto-placement can't find the root, and the prune of an
+    editor artifact that would otherwise mount over vanilla systemparam."""
+    shared = load_profile("gameplay-extras", base=Path("profiles"))
+    fb = next(m for m in shared["mods"] if m["id"] == "forever-buffs")
+    # Files/ holds two folders, so the single-wrapper descent gives up.
+    assert fb["subdir"] == "Files/mod"
+    # Two MAIN files ship; 39807 is the permanent-buff build, not this one.
+    assert fb["file_id"] == 39767
+    prune = next(p for p in shared["prunes"] if p["mod"] == "forever-buffs")
+    assert "param/systemparam/systemparam.parambnd.dcx" in prune["paths"]

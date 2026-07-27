@@ -44,78 +44,15 @@ includes = ["seamless-full"]
 # loader works). Verify by popping a shard and watching the FP regen outlast its
 # normal timer — "it loaded" proves nothing here, that is exactly how it failed.
 
-
 # --- on trial ---
-# Add a [[mods]] entry here with the in-game check that would promote it, and the
-# profile it graduates to. Earned promotion so far: map-for-goblins (icons appear,
-# F10 panel opens) to seamless-full + single-full; nofalldead (talisman survives a
-# 20 m drop) to gameplay-extras with both of its merge declarations.
+# Empty. Add a [[mods]] entry here with the in-game check that would promote it,
+# and the profile it graduates to. Promoted so far: map-for-goblins (icons appear,
+# F10 panel opens) and nofalldead (talisman survives a 20 m drop), then
+# forever-buffs and drop-rate-100.
 #
-# NOTE for both mods below: they edit regulation.bin, so their rows are
-# transplanted onto Clever's by the [[merges]] entry in gameplay-extras. That
-# declaration has to name every provider, so it lists these two even though they
-# live here — a second declaration for the same path would be refused as a
-# disagreement, and a provider missing from the declaration aborts the apply.
+# Worth knowing before parking a regulation mod here: the merged regulation.bin
+# is built from whatever profile you apply, so playing on experimental with an
+# extra regulation mod gives you a DIFFERENT file than a partner running
+# seamless-full — which reads as a failure to connect, not a desync. A regulation
+# trial is a solo-testing state, not something to co-op on.
 
-# 100 Percent Drop Rate (#9929, jaxkole522) — the Silver Scarab talisman gives a
-# 100% item drop rate. Surgical: exactly two rows, ItemLotParam row 0 and
-# SpEffect 311000 (the talisman's effect). Clean against every other mod here.
-#
-# Acquisition cheat, in the same class as ErdTools, which `erm doctor` already
-# warns about. Fine under Seamless — separate .co2 save, EAC never runs — but
-# never take that save to vanilla online.
-#
-# Verify: kill something that drops a rare item with the Silver Scarab equipped
-# and confirm it drops every time. Works → gameplay-extras (it's a regulation
-# mod, so requires_all_players).
-[[mods]]
-id = "drop-rate-100"
-source = "nexus"
-nexus_id = 9929
-file_id = 46821
-kind = "gameplay"
-install = "me3-package"
-requires_all_players = true
-
-# Forever Buffs / All Weapon Buffable (#8644, razibur) — the "Buffs last 3
-# minutes" build. 2,921 changed rows: 2,821 EquipParamWeapon (making everything
-# buffable), 67 SpEffect (the 3-minute durations), 33 EquipParamGoods.
-#
-# file_id MUST stay pinned: the page ships TWO MAIN files. 39767 is this one;
-# 39807 is "Forever Buffs N all kinds of Buff included", a different behaviour.
-#
-# It overlaps Clever's on 39 weapon rows, and every one is a different FIELD —
-# this mod only sets one buffable flag byte per row while Clever's rewrites
-# moveset and attack fields elsewhere. param-rows merges within a row at byte
-# granularity, so those resolve rather than conflicting.
-#
-# The archive is the author's whole Smithbox workspace: 245 files, of which only
-# regulation.bin is content. Its systemparam is byte-identical to the .prev the
-# editor wrote beside it, so the author never touched it — pruned below rather
-# than mounted over vanilla. The .smithbox/ tree isn't a game path, so the game
-# never asks for it.
-#
-# Verify: buff a weapon that vanilla can't buff, and time a grease at ~3 minutes.
-# Works → gameplay-extras.
-[[mods]]
-id = "forever-buffs"
-source = "nexus"
-nexus_id = 8644
-file_id = 39767                   # "Buffs last 3 minutes" — NOT 39807
-kind = "gameplay"
-install = "me3-package"
-# Auto-placement can't find the root on its own: it descends through a single
-# wrapper folder, and Files/ holds two (mod/ and "CSV 4 Merge/"), so it stops.
-subdir = "Files/mod"
-requires_all_players = true
-
-# Unedited editor artifact, exactly like the Boss Res systemparam in
-# gameplay-extras: identical to the .prev Smithbox saved beside it, so it carries
-# nothing of the author's. Mounting it would override vanilla systemparam for no
-# reason.
-[[prunes]]
-mod = "forever-buffs"
-paths = [
-    "param/systemparam/systemparam.parambnd.dcx",
-    "param/systemparam/systemparam.parambnd.dcx.prev",
-]
