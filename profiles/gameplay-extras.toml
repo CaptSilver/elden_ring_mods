@@ -34,6 +34,30 @@ kind = "overhaul"
 install = "me3-package"
 requires_all_players = true
 
+# NoFallDead (Longtail Cat Talisman version) — makes the talisman prevent death
+# from a high fall, not just the damage. It ships its own regulation.bin, which
+# used to make it unusable alongside Clever's: only one can be mounted. The
+# regulation.bin merge below transplants its three SpEffect rows onto Clever's
+# instead, so Clever's stays the base and keeps every row it authored.
+#
+# file_id MUST stay pinned: the mod ships two MAIN files. 48339 is the always-on
+# variant, which hooks a resident speffect of the author's own; 48340 gates the
+# effect behind the talisman by editing the row vanilla already points at, so it
+# needs no EquipParamAccessory change and is the narrower edit.
+#
+# Its effect in-game is UNVERIFIED. The transplant is proven byte-exact, but
+# whether these rows actually stop fall death is not: the behaviour rides on
+# SpEffect stateInfo, no param encodes a fall-death height, and vanilla's own
+# fall-immune rows use different values. Test before trusting it.
+[[mods]]
+id = "nofalldead"
+source = "nexus"
+nexus_id = 10402
+file_id = 48340                   # "Longtail Cat Talisman Version" — NOT the always-on 48339
+kind = "gameplay"
+install = "me3-package"
+requires_all_players = true
+
 # --- Summon Ashes Anywhere REMOVED (co-op incompatible) ---
 # SummonAnywhere.dll (nexus 5434, file 23945, v1.12.1) loaded fine via Elden Mod
 # Loader (Game/mods/) but was useless in Seamless Co-op: summons couldn't be
@@ -49,6 +73,37 @@ path = "msg/engus/menu_dlc02.msgbnd.dcx"
 strategy = "fmg-union"
 mods = ["clevers-moveset", "boss-resurrection-lite"]
 prefer = "clevers-moveset"
+
+# Clever's keeps the regulation; NoFallDead's three changed SpEffect rows are
+# transplanted onto it. Which rows move is worked out from the data, so this
+# doesn't go stale if either mod updates — but a row they BOTH change stops the
+# apply rather than picking a winner.
+#
+# Both merges compare against the vanilla file the two mods branched from, which
+# comes out of the randomizer's bundled Vanilla/ directory. That archive is
+# pinned in mods.lock.toml and its copy of regulation.bin is byte-identical to
+# the game install's. Read from the vendor zip, not tools/, because tools/ only
+# exists while the randomizer profile is applied and this profile excludes it.
+# Applying gameplay-extras without that archive fetched fails with a message
+# saying so.
+[[merges]]
+path = "regulation.bin"
+strategy = "param-rows"
+mods = ["clevers-moveset", "nofalldead"]
+prefer = "clevers-moveset"
+vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/regulation.bin" }
+
+# The talisman's description text, in two places: the short info line and the
+# long caption both say it does NOT prevent death from a high fall. Clever's
+# ships this archive too, carrying vanilla text for those rows and its own edits
+# to 1,391 others, so a two-way union is wrong in both directions — see the
+# fmg-3way strategy. Three-way against vanilla keeps both sides.
+[[merges]]
+path = "msg/engus/item_dlc02.msgbnd.dcx"
+strategy = "fmg-3way"
+mods = ["clevers-moveset", "nofalldead"]
+prefer = "clevers-moveset"
+vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/msg/engus/item_dlc02.msgbnd.dcx" }
 
 [[prunes]]
 mod = "boss-resurrection-lite"

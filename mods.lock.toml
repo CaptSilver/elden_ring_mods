@@ -96,6 +96,12 @@ asset = "NoWeight-481-2-1-1681740990.zip"
 sha256 = "8992b80201a84bde963c625ffdbab1bdd4e54ca2dd7119b7984a998d8ac6e52c"
 source = "nexus"
 
+[nofalldead]
+version = "1"
+asset = "NoFallDead Longtail Cat Version 10402 1 2026-07-15T04-00Z HqR4yjEgC.zip"
+sha256 = "b5fd952ab267f43cc6ce066608a33d36a93215df1885ed057b3c63d6a16761be"
+source = "nexus"
+
 [quest-log]
 version = "v1.1.3"
 asset = "ERQuestLog v1.1.3 (DLL Version)-3585-v1-1-3-1772125971.rar"
