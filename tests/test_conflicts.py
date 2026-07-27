@@ -370,3 +370,43 @@ def test_a_two_way_strategy_still_takes_two_arguments(tmp_path):
         assert (tmp_path / "mods" / conflicts.MERGED_ID / "msg/x.dcx").read_bytes() == b"12"
     finally:
         del conflicts.STRATEGIES["concat"]
+
+
+def test_resolve_folds_a_merge_across_three_providers(tmp_path):
+    """Three mods claiming one path is one merge folded twice, not a special
+    case. Every contributor must also lose the path afterwards -- leaving one
+    behind would put the file back into collision on the next apply."""
+    _package(tmp_path, "a", {"msg/x.dcx": b"A"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"B"})
+    _package(tmp_path, "c", {"msg/x.dcx": b"C"})
+    spec = [{"path": "msg/x.dcx", "mods": ["a", "b", "c"], "prefer": "a",
+             "strategy": "concat"}]
+    conflicts.STRATEGIES["concat"] = lambda base, other: base + other
+    try:
+        assert conflicts.resolve(tmp_path, ["a", "b", "c"], spec) == ["msg/x.dcx"]
+    finally:
+        del conflicts.STRATEGIES["concat"]
+    # prefer first, then the rest -- the fold order the strategies assume
+    assert (tmp_path / "mods" / conflicts.MERGED_ID / "msg/x.dcx").read_bytes() == b"ABC"
+    for mod_id in ("a", "b", "c"):
+        assert not (tmp_path / "mods" / mod_id / "msg/x.dcx").exists()
+
+
+def test_a_three_way_strategy_gets_vanilla_on_every_fold_step(tmp_path, monkeypatch, fake_three_way):
+    """Vanilla is the fixed reference for all N-1 merges. Passing it only on the
+    first step would make every later contributor compare against the running
+    result instead, quietly turning a three-way merge into a two-way one."""
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"A"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"B"})
+    _package(tmp_path, "c", {"msg/x.dcx": b"C"})
+    lock = _vanilla_zip(tmp_path, "V/x.dcx", b"VAN")
+    seen = []
+    monkeypatch.setitem(conflicts.STRATEGIES, "fake-3way",
+                        lambda base, other, vanilla: seen.append((base, other, vanilla)) or base + other)
+    spec = [{"path": "msg/x.dcx", "mods": ["a", "b", "c"], "prefer": "a",
+             "strategy": "fake-3way", "vanilla": {"mod": "randomizer", "member": "V/x.dcx"}}]
+    conflicts.resolve(tmp_path, ["a", "b", "c"], spec, lock=lock)
+    assert [s[2] for s in seen] == [b"VAN", b"VAN"]
+    assert [s[1] for s in seen] == [b"B", b"C"]
+    assert seen[1][0] == b"AB"          # the running result feeds the next step

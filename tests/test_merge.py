@@ -270,3 +270,82 @@ def test_param_rows_skips_an_entry_both_mods_already_agree_on():
     out = merge.param_rows(base, other, van)
     before = {e.id: e.data for e in regulation.entries(base)}
     assert {e.id: e.data for e in regulation.entries(out)}[1] == before[1]
+
+
+# --- intra-row merging: two mods editing different fields of one row ---
+
+
+def test_param_rows_merges_two_mods_editing_different_fields_of_a_row():
+    """Row-granular merging calls this a conflict, but a field is a contiguous
+    byte range: disjoint byte edits are disjoint field edits. Clever's Moveset
+    and a weapon-buff mod hit 39 of the same EQUIP_PARAM_WEAPON rows and never
+    the same byte -- the buff mod only ever sets one flag byte."""
+    van = _regulation({1: (SP, {5: bytes(8)}, 8)})
+    base = _regulation({1: (SP, {5: b"\xaa" + bytes(7)}, 8)})          # byte 0
+    other = _regulation({1: (SP, {5: bytes(4) + b"\xbb" + bytes(3)}, 8)})  # byte 4
+    out = _rows(merge.param_rows(base, other, van), 1)[5]
+    assert out == b"\xaa" + bytes(3) + b"\xbb" + bytes(3)
+
+
+def test_param_rows_still_refuses_when_both_change_the_same_byte():
+    van = _regulation({1: (SP, {5: bytes(8)}, 8)})
+    base = _regulation({1: (SP, {5: b"\xaa" + bytes(7)}, 8)})
+    other = _regulation({1: (SP, {5: b"\xbb" + bytes(7)}, 8)})
+    with pytest.raises(merge.MergeError, match="row 5"):
+        merge.param_rows(base, other, van)
+
+
+def test_param_rows_accepts_both_sides_making_the_identical_field_edit():
+    van = _regulation({1: (SP, {5: bytes(8)}, 8)})
+    base = _regulation({1: (SP, {5: b"\xaa" + bytes(7)}, 8)})
+    other = _regulation({1: (SP, {5: b"\xaa" + bytes(7)}, 8)})
+    assert _rows(merge.param_rows(base, other, van), 1)[5] == b"\xaa" + bytes(7)
+
+
+def test_param_rows_keeps_an_untouched_field_from_vanilla():
+    # Neither side touches byte 2; it must stay vanilla's value, not drift.
+    van = _regulation({1: (SP, {5: b"\x00\x00\x77\x00" + bytes(4)}, 8)})
+    base = _regulation({1: (SP, {5: b"\xaa\x00\x77\x00" + bytes(4)}, 8)})
+    other = _regulation({1: (SP, {5: b"\x00\x00\x77\x00" + bytes(3) + b"\xbb"}, 8)})
+    out = _rows(merge.param_rows(base, other, van), 1)[5]
+    assert out == b"\xaa\x00\x77\x00" + bytes(3) + b"\xbb"
+
+
+# --- folding one merge across three or more contributors ---
+
+
+def test_param_rows_folds_across_three_mods_with_vanilla_constant():
+    """conflicts.resolve() folds pairwise, so N contributors means N-1 merges
+    with vanilla as the reference every time. Each mod's rows have to survive
+    the folds that come after it."""
+    van = _regulation({1: (SP, {1: bytes(8), 2: bytes(8), 3: bytes(8)}, 8)})
+    base = _regulation({1: (SP, {1: b"\xaa" * 8, 2: bytes(8), 3: bytes(8)}, 8)})
+    second = _regulation({1: (SP, {1: bytes(8), 2: b"\xbb" * 8, 3: bytes(8)}, 8)})
+    third = _regulation({1: (SP, {1: bytes(8), 2: bytes(8), 3: b"\xcc" * 8}, 8)})
+    out = _rows(merge.param_rows(merge.param_rows(base, second, van), third, van), 1)
+    assert out[1] == b"\xaa" * 8
+    assert out[2] == b"\xbb" * 8
+    assert out[3] == b"\xcc" * 8
+
+
+def test_param_rows_catches_a_clash_between_two_later_contributors():
+    """The base starts out agreeing with vanilla here, so this clash is between
+    the second and third mods. Folding is what makes it visible: the second
+    mod's edit becomes part of the base the third is compared against."""
+    van = _regulation({1: (SP, {5: bytes(8)}, 8)})
+    base = _regulation({1: (SP, {5: bytes(8)}, 8)})
+    second = _regulation({1: (SP, {5: b"\xbb" + bytes(7)}, 8)})
+    third = _regulation({1: (SP, {5: b"\xcc" + bytes(7)}, 8)})
+    with pytest.raises(merge.MergeError, match="byte 0"):
+        merge.param_rows(merge.param_rows(base, second, van), third, van)
+
+
+def test_param_rows_folds_three_mods_editing_different_fields_of_one_row():
+    """Three-way field-level composition: each mod owns a different byte of the
+    same row, and all three edits have to end up in the result."""
+    van = _regulation({1: (SP, {7: bytes(8)}, 8)})
+    base = _regulation({1: (SP, {7: b"\x01" + bytes(7)}, 8)})
+    second = _regulation({1: (SP, {7: bytes(3) + b"\x02" + bytes(4)}, 8)})
+    third = _regulation({1: (SP, {7: bytes(6) + b"\x03" + bytes(1)}, 8)})
+    out = _rows(merge.param_rows(merge.param_rows(base, second, van), third, van), 1)
+    assert out[7] == b"\x01\x00\x00\x02\x00\x00\x03\x00"

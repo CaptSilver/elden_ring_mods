@@ -132,6 +132,44 @@ def _content_equal(a, b):
     return a == b if len(a) == len(b) else a[:min(len(a), len(b))] == b[:min(len(a), len(b))]
 
 
+def _merge_row(base, other, vanilla, entry_id, rid):
+    """Three-way merge one row at byte granularity.
+
+    Two mods editing the same row is not automatically a conflict: a param field
+    is a contiguous byte range, so edits that touch disjoint bytes touched
+    disjoint fields. Clever's Moveset and a weapon-buff mod collide on 39
+    EQUIP_PARAM_WEAPON rows and never on a byte — the buff mod only ever sets one
+    flag byte, while Clever's rewrites moveset and attack fields elsewhere in the
+    row. Refusing those would mean giving up one mod entirely over a conflict
+    that isn't one.
+
+    Only a byte both sides changed, to different values, is a real conflict.
+
+    The blind spot is a multi-byte field that two mods change in ways that happen
+    not to share a byte — that would splice two values into one neither author
+    wrote. Closing it needs field boundaries, i.e. a paramdef, which the transplant
+    otherwise does not require. Merging at 4-byte granularity instead would be
+    safe against that but wrong here: the one same-word case in the real data is
+    byte 260 and byte 262 of a weapon row, which are two separate single-byte
+    fields (an enum and a bit-flag), not one integer.
+    """
+    if not (len(base) == len(other) == len(vanilla)):
+        raise MergeError(
+            f"entry {entry_id} row {rid}: both sides changed it and the rows are "
+            f"different widths ({len(base)}/{len(other)}/{len(vanilla)}), so the "
+            f"edits can't be located")
+    out = bytearray(base)
+    for i, (b, o, v) in enumerate(zip(base, other, vanilla)):
+        if o == v or o == b:
+            continue                       # the other side didn't move this byte
+        if b != v:
+            raise MergeError(
+                f"entry {entry_id} row {rid}: both sides changed byte {i} and "
+                f"disagree (vanilla {v:#04x}, base {b:#04x}, other {o:#04x})")
+        out[i] = o
+    return bytes(out)
+
+
 def _merge_param(base_blob, other_blob, van_blob, entry_id):
     """Three-way row merge of one param. Returns new bytes, or None if unchanged."""
     from .formats import param
@@ -152,8 +190,11 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id):
         if not same_bv:
             if bd is not None and od is not None and _content_equal(bd, od):
                 continue                   # both sides made the same edit
-            raise MergeError(
-                f"entry {entry_id} row {rid}: both sides changed it and differ")
+            merged = _merge_row(bd, od, vd, entry_id, rid)
+            if merged == bd:
+                continue                   # everything the other side did, base already had
+            overwrite[rid] = merged
+            continue
         # Only the other side moved, so its version wins — but a row can only be
         # transplanted between files that lay rows out identically.
         if od is not None and b.stride != o.stride:
