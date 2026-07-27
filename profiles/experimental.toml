@@ -3,7 +3,7 @@
 # plus whatever's being tried out — switching to a standalone profile would
 # uninstall Seamless along with everything else.
 name = "experimental"
-description = "seamless-full plus whatever is currently on trial. On trial now: Starlight Shards like Rune Arcs (#9030) and Map for Goblins (#10062), both pending an in-game check. The note below records an earlier rejected candidate so it doesn't get re-added. Nothing here is ever required by co-op partners."
+description = "seamless-full plus whatever is currently on trial. On trial now: Map for Goblins (#10062), pending an in-game check. The notes below record rejected candidates so they don't get re-added. Nothing here is ever required by co-op partners."
 
 includes = ["seamless-full"]
 
@@ -22,38 +22,29 @@ includes = ["seamless-full"]
 # me3-native rather than "mods" because its dll sits inside a QuestPath/ folder
 # and Elden Mod Loader only scans mods/*.dll — it never recurses. Try its ini's
 # overlay toggle first; the quest tracking may work with the overlay off.
+#
+# starlight-shards-rune-arcs (#9030, krios2146) DISABLED — it does not support
+# this game build. It was meant to make the Starlight Shard FP-regen buff last
+# until death instead of the vanilla ~90s, by patching speffect 501290 in memory.
+#
+# It loads fine and does nothing. Tested through BOTH loaders: Elden Mod Loader
+# from Game/mods/ (injects on a 5000 ms delay) and me3 as a chainloaded native
+# (injects at startup). Identical result, so it isn't a delivery or timing
+# problem — shards expired on their normal timer either way.
+#
+# The binary says why. It carries a hardcoded AOB signature scanned through
+# pelite, and the literal string "This game version or distribution is not
+# supported" beside Rust panic machinery: the scan misses on this build and its
+# worker thread dies without surfacing anything. Nothing fixable from outside;
+# it needs the author to re-sign for the current patch.
+#
+# Its mods.lock.toml pin is deliberately kept, like questpath's, so the vendor
+# archive stays hash-verified. To retry after an update: nexus_id=9030,
+# kind="qol", install="me3-native" (its MAIN archive is a bare .dll, so either
+# loader works). Verify by popping a shard and watching the FP regen outlast its
+# normal timer — "it loaded" proves nothing here, that is exactly how it failed.
 
 # --- on trial ---
-# Starlight Shards like Rune Arcs (#9030, krios2146) — makes the Starlight Shard
-# FP-regen buff last until you die instead of the vanilla ~90s, the way a Rune
-# Arc's Great Rune buff persists until death. Ships as a ModEngine2 external_dll,
-# which me3 chainloads directly as a native.
-#
-# Ban-safe under Seamless the same way the rest of the stack is: it patches one
-# in-memory speffect duration (501290 → infinite) and toggles a save event flag,
-# adds no non-vanilla item (Starlight Shards are vanilla), and never touches the
-# network. Purely local — it only ever reads the main player, so it doesn't
-# desync and no co-op partner needs to run it. Not requires_all_players.
-#
-# Its param scan keys off a hardcoded byte signature for one game build; if that
-# doesn't match, it panics in its worker thread and no-ops silently — "it loaded"
-# never proved it worked. It didn't: run through Elden Mod Loader it injected
-# cleanly (mod_loader_log.txt showed it loading, then "Loaded 14 .dll mods") and
-# had no effect in game.
-#
-# Now on me3-native to separate a stale signature from a timing problem. EML
-# injects on a 5000 ms delay, long after the game is up; me3 chainloads at
-# startup. If the scan was running against a process state it didn't expect
-# rather than against the wrong bytes, this is what fixes it. Same acceptance
-# test either way: pop a shard, watch the FP regen outlast its normal timer,
-# survive a reload, and drop on death. Still no-ops → record it as rejected.
-[[mods]]
-id = "starlight-shards-rune-arcs"
-source = "nexus"
-nexus_id = 9030
-kind = "qol"
-install = "me3-native"
-
 # Map for Goblins (#10062, DLL rebuild) — a world-map overlay that drops ~6900
 # loot/boss/grace icons onto the map, plus an in-game ImGui panel (F10, or Y+R3
 # on a pad) to toggle icon categories live. No regulation.bin; injects at runtime.

@@ -279,7 +279,6 @@ def test_experimental_composes_seamless_full_with_the_trial_overlays():
     assert prof["includes"] == ["seamless-full"]
     assert "seamless-coop" in ids and "clevers-moveset" in ids
     # The overlays this profile exists to stage before they reach the real stack.
-    assert "starlight-shards-rune-arcs" in ids
     assert "map-for-goblins" in ids
     # map-for-goblins MUST stay me3-native, never "mods": under EML's load_delay
     # the dll injects after the world map is built and no icons appear. And the
@@ -289,6 +288,10 @@ def test_experimental_composes_seamless_full_with_the_trial_overlays():
     assert mods["map-for-goblins"]["file_id"] == 48311
     # questpath stays rejected — its render hooks killed the game at startup here.
     assert "questpath" not in ids
+    # starlight-shards-rune-arcs stays rejected — it loads through either loader
+    # and no-ops, because its AOB scan doesn't match this game build. Re-adding it
+    # costs a launch to rediscover that, so the profile has to keep it out.
+    assert "starlight-shards-rune-arcs" not in ids
     # Inherits seamless-full's mutual exclusion with the randomizer.
     assert "randomizer" in prof["excludes"]
 
