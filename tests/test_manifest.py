@@ -358,3 +358,46 @@ def test_profiles_without_merges_get_empty_lists(tmp_path):
     assert prof["merges"] == []
     assert prof["prunes"] == []
 
+
+
+def test_a_merge_entry_with_a_nested_table_is_deduplicated(tmp_path):
+    """Three-way strategies declare `vanilla = { mod = ..., member = ... }`, a
+    nested TOML table. The dedup key handled lists but not dicts, so composing
+    two profiles that both declared such a merge crashed before any of the
+    disagreement checks could run."""
+    base = tmp_path / "profiles"
+    base.mkdir()
+    merge_toml = (
+        '[[merges]]\n'
+        'path = "regulation.bin"\n'
+        'strategy = "param-rows"\n'
+        'mods = ["a", "b"]\n'
+        'prefer = "a"\n'
+        'vanilla = { mod = "rando", member = "Vanilla/regulation.bin" }\n'
+    )
+    (base / "leaf.toml").write_text('name = "leaf"\ndescription = "d"\n\n' + merge_toml)
+    (base / "top.toml").write_text(
+        'name = "top"\ndescription = "d"\nincludes = ["leaf"]\n\n' + merge_toml)
+
+    prof = load_profile("top", base=base)
+    assert len(prof["merges"]) == 1
+    assert prof["merges"][0]["vanilla"]["member"] == "Vanilla/regulation.bin"
+
+
+def test_nested_tables_that_differ_are_kept_as_separate_entries(tmp_path):
+    # Two declarations for the same path that disagree must both survive here,
+    # so conflicts._declare_merges can refuse them by name rather than one
+    # being silently dropped at load time.
+    base = tmp_path / "profiles"
+    base.mkdir()
+    def merge_for(member):
+        return ('[[merges]]\n'
+                'path = "regulation.bin"\n'
+                'strategy = "param-rows"\n'
+                'mods = ["a", "b"]\n'
+                'prefer = "a"\n'
+                f'vanilla = {{ mod = "rando", member = "{member}" }}\n')
+    (base / "leaf.toml").write_text('name = "leaf"\ndescription = "d"\n\n' + merge_for("one.bin"))
+    (base / "top.toml").write_text(
+        'name = "top"\ndescription = "d"\nincludes = ["leaf"]\n\n' + merge_for("two.bin"))
+    assert len(load_profile("top", base=base)["merges"]) == 2

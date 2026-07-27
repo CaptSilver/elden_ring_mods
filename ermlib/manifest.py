@@ -12,10 +12,17 @@ def _entry_key(entry):
     dict key. Sorting by field name makes the result independent of the
     table's key order in the source TOML.
     """
-    return tuple(sorted(
-        (k, tuple(v) if isinstance(v, list) else v)
-        for k, v in entry.items()
-    ))
+    def freeze(v):
+        # Recursive because a table can nest one: three-way merges declare
+        # `vanilla = { mod = ..., member = ... }`, and a nested dict is no more
+        # hashable than the outer one.
+        if isinstance(v, dict):
+            return tuple(sorted((k, freeze(x)) for k, x in v.items()))
+        if isinstance(v, list):
+            return tuple(freeze(x) for x in v)
+        return v
+
+    return freeze(entry)
 
 
 def load_profile(name, base=Path("profiles"), _seen=None):

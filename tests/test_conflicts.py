@@ -272,3 +272,101 @@ def test_conflicting_merge_declarations_for_the_same_path_raise(tmp_path):
     finally:
         del conflicts.STRATEGIES["concat-test"]
     assert "msg/x.dcx" in str(exc.value)
+
+
+# --- vanilla sourcing for three-way strategies ---
+
+def _vanilla_zip(tmp_path, member, content, asset="van.zip"):
+    import zipfile
+    vendor = tmp_path / "vendor"
+    vendor.mkdir(exist_ok=True)
+    with zipfile.ZipFile(vendor / asset, "w") as z:
+        z.writestr(member, content)
+    return {"randomizer": {"asset": asset}}
+
+
+def _three_way_spec(member, strategy="fake-3way"):
+    return [{"path": "msg/x.dcx", "mods": ["a", "b"], "prefer": "a",
+             "strategy": strategy,
+             "vanilla": {"mod": "randomizer", "member": member}}]
+
+
+@pytest.fixture
+def fake_three_way(monkeypatch):
+    """A strategy that records the vanilla it was handed, so the plumbing can be
+    tested without dragging a real DCX/BND4 through it."""
+    seen = {}
+
+    def strategy(base, other, vanilla):
+        seen["args"] = (base, other, vanilla)
+        return b"merged"
+
+    monkeypatch.setitem(conflicts.STRATEGIES, "fake-3way", strategy)
+    monkeypatch.setattr(conflicts, "NEEDS_VANILLA",
+                        conflicts.NEEDS_VANILLA | {"fake-3way"})
+    return seen
+
+
+def test_a_three_way_strategy_receives_the_declared_vanilla(tmp_path, monkeypatch, fake_three_way):
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"base"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"other"})
+    lock = _vanilla_zip(tmp_path, "diste/Vanilla/msg/x.dcx", b"vanilla bytes")
+    conflicts.resolve(tmp_path, ["a", "b"],
+                      _three_way_spec("diste/Vanilla/msg/x.dcx"), lock=lock)
+    assert fake_three_way["args"] == (b"base", b"other", b"vanilla bytes")
+
+
+def test_a_three_way_merge_without_a_vanilla_declaration_raises(tmp_path, monkeypatch, fake_three_way):
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"base"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"other"})
+    spec = _three_way_spec("unused")
+    del spec[0]["vanilla"]
+    with pytest.raises(conflicts.ConflictError, match="vanilla"):
+        conflicts.resolve(tmp_path, ["a", "b"], spec, lock={})
+
+
+def test_a_missing_vanilla_member_names_the_archive(tmp_path, monkeypatch, fake_three_way):
+    """A typo'd member would otherwise surface as a bare KeyError from zipfile,
+    pointing at nothing the profile author can act on."""
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"base"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"other"})
+    lock = _vanilla_zip(tmp_path, "diste/Vanilla/msg/x.dcx", b"v")
+    with pytest.raises(conflicts.ConflictError, match="not in"):
+        conflicts.resolve(tmp_path, ["a", "b"],
+                          _three_way_spec("diste/Vanilla/typo.dcx"), lock=lock)
+
+
+def test_a_vanilla_mod_missing_from_the_lock_raises(tmp_path, monkeypatch, fake_three_way):
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"base"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"other"})
+    with pytest.raises(conflicts.ConflictError, match="randomizer"):
+        conflicts.resolve(tmp_path, ["a", "b"],
+                          _three_way_spec("diste/Vanilla/msg/x.dcx"), lock={})
+
+
+def test_an_unsafe_vanilla_member_is_refused(tmp_path, monkeypatch, fake_three_way):
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"base"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"other"})
+    lock = _vanilla_zip(tmp_path, "diste/Vanilla/msg/x.dcx", b"v")
+    with pytest.raises(conflicts.ConflictError, match="unsafe"):
+        conflicts.resolve(tmp_path, ["a", "b"],
+                          _three_way_spec("../../etc/passwd"), lock=lock)
+
+
+def test_a_two_way_strategy_still_takes_two_arguments(tmp_path):
+    """fmg-union predates vanilla sourcing and must keep working untouched."""
+    _package(tmp_path, "a", {"msg/x.dcx": b"1"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"2"})
+    spec = [{"path": "msg/x.dcx", "mods": ["a", "b"], "prefer": "a",
+             "strategy": "concat"}]
+    conflicts.STRATEGIES["concat"] = lambda base, other: base + other
+    try:
+        conflicts.resolve(tmp_path, ["a", "b"], spec)
+        assert (tmp_path / "mods" / conflicts.MERGED_ID / "msg/x.dcx").read_bytes() == b"12"
+    finally:
+        del conflicts.STRATEGIES["concat"]

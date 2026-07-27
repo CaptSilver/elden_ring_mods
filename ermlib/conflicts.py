@@ -7,10 +7,11 @@ notice missing text. Detecting that is the point of this module; merging is
 what we do about the one case we can resolve.
 """
 import shutil
+import zipfile
 from pathlib import Path
 
 from .errors import ErmError
-from .merge import STRATEGIES
+from .merge import NEEDS_VANILLA, STRATEGIES
 from .paths import is_safe_relpath
 
 MERGED_ID = "_merged"
@@ -145,7 +146,48 @@ def require_faithful_merge_sources(merges, present_ids, reinstalled_ids):
                 f"archive) and re-run apply.")
 
 
-def resolve(me3_dir, mod_ids, merges):
+def _load_vanilla(rel, spec, lock):
+    """Read the vanilla file a three-way merge compares against.
+
+    It comes out of a vendored archive rather than the game install: the game
+    keeps its text inside the DVDBND, which ermlib can't open, and a vendored
+    archive is already pinned by hash in mods.lock.toml. Reading the zip
+    directly rather than an extracted copy under tools/ matters because that
+    directory only exists while the owning profile is applied.
+    """
+    source = spec.get("vanilla")
+    if not source:
+        raise ConflictError(
+            f"{rel}: strategy {spec['strategy']!r} compares both mods against the "
+            f"vanilla file they branched from, but no `vanilla` is declared. Add "
+            f"vanilla = {{ mod = \"<id>\", member = \"<path inside its archive>\" }}")
+    mod_id, member = source.get("mod"), source.get("member")
+    if not (mod_id and member):
+        raise ConflictError(
+            f"{rel}: `vanilla` needs both `mod` and `member`, got {source!r}")
+    if not is_safe_relpath(member):
+        raise ConflictError(f"{rel}: unsafe vanilla member path {member!r}")
+    entry = (lock or {}).get(mod_id)
+    asset = entry.get("asset") if entry else None
+    if not asset:
+        raise ConflictError(
+            f"{rel}: vanilla comes from mod {mod_id!r}, which has no archive in "
+            f"mods.lock.toml — run `erm fetch` for the profile that pins it")
+    archive = Path("vendor") / asset
+    if not archive.exists():
+        raise ConflictError(f"{rel}: vanilla archive missing from vendor/ ({asset})")
+    try:
+        with zipfile.ZipFile(archive) as z:
+            return z.read(member)
+    except KeyError as exc:
+        raise ConflictError(
+            f"{rel}: {member!r} is not in {asset} — check the member path against "
+            f"the archive's actual layout") from exc
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ConflictError(f"{rel}: cannot read vanilla from {asset}: {exc}") from exc
+
+
+def resolve(me3_dir, mod_ids, merges, lock=None):
     """Merge every declared conflict and refuse any undeclared one.
 
     Merged output goes to a synthetic package and the path is removed from its
@@ -204,9 +246,13 @@ def resolve(me3_dir, mod_ids, merges):
         # `prefer` wins genuine collisions, so it's the base the strategy builds on.
         ordered = [prefer] + [m for m in providers if m != prefer]
         blobs = [(_package_dir(me3_dir, m) / rel).read_bytes() for m in ordered]
+        # Three-way strategies need the common ancestor as well. Resolved once
+        # per path, and only for strategies that ask for it, so a two-way
+        # declaration never has to name a vanilla it wouldn't look at.
+        vanilla = _load_vanilla(rel, spec, lock) if spec["strategy"] in NEEDS_VANILLA else None
         out = blobs[0]
         for extra in blobs[1:]:
-            out = strategy(out, extra)
+            out = strategy(out, extra, vanilla) if vanilla is not None else strategy(out, extra)
         planned.append((rel, out, providers))
 
     # Every merge above succeeded in memory -- only now do we touch disk, so a

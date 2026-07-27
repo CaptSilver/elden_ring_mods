@@ -478,7 +478,8 @@ def cmd_apply(args):
         # merge (or a skipped one) built on missing content.
         conflicts.require_faithful_merge_sources(
             profile.get("merges", []), package_ids, reinstalled_packages)
-        merged = conflicts.resolve(ME3_DIR, package_ids, profile.get("merges", []))
+        merged = conflicts.resolve(ME3_DIR, package_ids, profile.get("merges", []),
+                                   lock=lock)
     except ConflictError:
         state_mod.write_state(Path("installed.json"), state)
         raise

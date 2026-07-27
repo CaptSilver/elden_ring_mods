@@ -9,23 +9,30 @@ CLEVERS_MENU = Path("tools/me3/mods/clevers-moveset/msg/engus/menu_dlc02.msgbnd.
 
 
 def _resolve_real_archive():
-    """Find a real BND4 archive to test rebuild against.
+    """Find a real Kraken-compressed BND4 to test rebuild against.
 
-    The real archive moves between package directories when a merge runs, so
-    pinning one path would break the moment seamless-full gets re-applied.
-    Check likely locations in order -- survivor first, then merged output,
-    then the untouched original -- and use whichever one exists.
+    Existence alone is not enough to pick one. Declaring a merge for a path
+    moves that archive into the merged package and rewrites it as DFLT, so a
+    resolver that took the first file it found would silently hand back a
+    zlib archive erm wrote itself and turn this into a self-round-trip that
+    proves nothing. Select on the property the test actually needs.
+
+    Candidates lead with an archive no merge consumes; the msgbnd paths stay as
+    fallbacks for a checkout where Clever's chr/ isn't installed.
 
     Returns Path to the archive if found, else None.
     """
     candidates = [
+        Path("tools/me3/mods/clevers-moveset/chr/c0000.behbnd.dcx"),
         Path("tools/me3/mods/clevers-moveset/msg/engus/item_dlc02.msgbnd.dcx"),
-        Path("tools/me3/mods/_merged/msg/engus/menu_dlc02.msgbnd.dcx"),
         Path("tools/me3/mods/clevers-moveset/msg/engus/menu_dlc02.msgbnd.dcx"),
     ]
     for candidate in candidates:
-        if candidate.exists():
-            return candidate
+        try:
+            if candidate.read_bytes()[0x28:0x2C] == dcx.KRAK:
+                return candidate
+        except OSError:
+            continue
     return None
 
 

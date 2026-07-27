@@ -203,11 +203,19 @@ def _regulation_params(path):
 
 @pytest.fixture(scope="module")
 def clevers_regulation():
+    """A real regulation.bin to exercise the reader against.
+
+    Declaring a merge for regulation.bin moves it out of its own package and
+    into the merged one, so pinning the package path turns these into silent
+    skips the moment the merge is wired up. The merged output is just as real —
+    more so, since erm wrote it — so prefer whichever exists.
+    """
     from pathlib import Path
-    p = Path("tools/me3/mods/clevers-moveset/regulation.bin")
-    if not p.exists():
-        pytest.skip("Clever's Moveset not installed — run `erm apply gameplay-extras`")
-    return _regulation_params(p)
+    for p in (Path("tools/me3/mods/_merged/regulation.bin"),
+              Path("tools/me3/mods/clevers-moveset/regulation.bin")):
+        if p.exists():
+            return _regulation_params(p)
+    pytest.skip("no regulation.bin installed — run `erm apply gameplay-extras`")
 
 
 def test_every_readable_param_in_a_real_regulation_round_trips(clevers_regulation):
