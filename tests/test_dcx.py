@@ -190,7 +190,7 @@ def _without_zstd(monkeypatch):
     and none of the pip backends installed."""
     import importlib as _il
     real = _il.import_module
-    blocked = {name for name, _adapt in dcx._BACKENDS}
+    blocked = {name for name, _adapt in dcx._BACKENDS if name}
 
     def missing(name, *args, **kwargs):
         if name in blocked:
@@ -198,6 +198,15 @@ def _without_zstd(monkeypatch):
         return real(name, *args, **kwargs)
 
     monkeypatch.setattr(dcx.importlib, "import_module", missing)
+
+    # The ctypes backend has no module to hide -- it reaches the shared library
+    # directly, which is exactly why it works where nothing is installed.
+    def no_libzstd(_unused=None):
+        raise ImportError("libzstd not available")
+
+    monkeypatch.setattr(dcx, "_BACKENDS",
+                        tuple((n, no_libzstd if a is dcx._ctypes_libzstd else a)
+                              for n, a in dcx._BACKENDS))
 
 
 def test_the_other_codecs_still_work_without_the_zstd_module(monkeypatch):
@@ -222,7 +231,7 @@ def test_reading_zstd_without_the_module_fails_as_a_dcx_error(monkeypatch):
     ordinary 'this archive needs something you don't have' path callers handle."""
     blob = dcx.write_zstd(b"payload" * 100)
     _without_zstd(monkeypatch)
-    with pytest.raises(dcx.DcxError, match="no zstd available"):
+    with pytest.raises(dcx.DcxError, match="no zstd erm can reach"):
         dcx.read(blob)
 
 
@@ -230,7 +239,8 @@ def _available_backends():
     out = []
     for name, adapt in dcx._BACKENDS:
         try:
-            out.append((name, adapt(dcx.importlib.import_module(name))))
+            out.append((name or "ctypes-libzstd",
+                        adapt(dcx.importlib.import_module(name) if name else None)))
         except ImportError:
             pass
     return out

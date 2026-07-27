@@ -11,6 +11,8 @@ established for msgbnd, but a regulation.bin arrives as ZSTD and should leave as
 ZSTD: nothing has ever demonstrated the game accepting a DFLT regulation on a
 current build.
 """
+import ctypes
+import ctypes.util
 import importlib
 import platform
 import struct
@@ -87,13 +89,109 @@ def _zstandard(mod):
     return decompress, compress, mod.ZstdError
 
 
+class _LibZstdError(Exception):
+    """libzstd reported an error through its return code."""
+
+
+# ZSTD_cParameter and ZSTD_EndDirective values from zstd.h. Part of the stable
+# API since 1.4, so they're safe to hardcode against any libzstd worth using.
+_ZSTD_C_COMPRESSION_LEVEL = 100
+_ZSTD_C_WINDOW_LOG = 101
+_ZSTD_E_CONTINUE = 0
+_ZSTD_E_END = 2
+
+
+class _ZstdBuffer(ctypes.Structure):
+    _fields_ = [("buf", ctypes.c_void_p), ("size", ctypes.c_size_t),
+                ("pos", ctypes.c_size_t)]
+
+
+def _ctypes_libzstd(_unused=None):
+    """The system libzstd through ctypes — no Python package required.
+
+    This is the one backend that needs nothing installed: anything that ships
+    the zstd tool ships the shared library, which on SteamOS pacman itself
+    depends on. It follows the same shape as the vendored Kraken decoder, which
+    erm has always driven through ctypes.
+
+    Output is byte-identical to the Python bindings, which matters because a
+    regulation.bin is built on each machine and co-op compares the file.
+    """
+    name = ctypes.util.find_library("zstd") or "libzstd.so.1"
+    try:
+        lib = ctypes.CDLL(name)
+        lib.ZSTD_versionNumber()
+    except (OSError, AttributeError) as exc:
+        raise ImportError(f"libzstd not usable via ctypes ({exc})") from exc
+
+    lib.ZSTD_createCCtx.restype = ctypes.c_void_p
+    lib.ZSTD_freeCCtx.argtypes = [ctypes.c_void_p]
+    lib.ZSTD_compressBound.argtypes = [ctypes.c_size_t]
+    lib.ZSTD_compressBound.restype = ctypes.c_size_t
+    lib.ZSTD_CCtx_setParameter.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.ZSTD_CCtx_setParameter.restype = ctypes.c_size_t
+    lib.ZSTD_compressStream2.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ZstdBuffer),
+                                         ctypes.POINTER(_ZstdBuffer), ctypes.c_int]
+    lib.ZSTD_compressStream2.restype = ctypes.c_size_t
+    lib.ZSTD_decompress.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
+                                    ctypes.c_char_p, ctypes.c_size_t]
+    lib.ZSTD_decompress.restype = ctypes.c_size_t
+    lib.ZSTD_isError.argtypes = [ctypes.c_size_t]
+    lib.ZSTD_isError.restype = ctypes.c_uint
+    lib.ZSTD_getErrorName.argtypes = [ctypes.c_size_t]
+    lib.ZSTD_getErrorName.restype = ctypes.c_char_p
+
+    def check(code):
+        if lib.ZSTD_isError(code):
+            raise _LibZstdError(lib.ZSTD_getErrorName(code).decode())
+        return code
+
+    def decompress(body, size):
+        out = ctypes.create_string_buffer(size)
+        written = check(lib.ZSTD_decompress(ctypes.cast(out, ctypes.c_void_p), size,
+                                            body, len(body)))
+        return out.raw[:written]
+
+    def compress(payload, level, window_log):
+        cctx = lib.ZSTD_createCCtx()
+        if not cctx:
+            raise _LibZstdError("ZSTD_createCCtx returned NULL")
+        try:
+            check(lib.ZSTD_CCtx_setParameter(cctx, _ZSTD_C_COMPRESSION_LEVEL, level))
+            check(lib.ZSTD_CCtx_setParameter(cctx, _ZSTD_C_WINDOW_LOG, window_log))
+            src = ctypes.create_string_buffer(payload, len(payload))
+            dst = ctypes.create_string_buffer(lib.ZSTD_compressBound(len(payload)) + 64)
+            out = _ZstdBuffer(ctypes.cast(dst, ctypes.c_void_p), len(dst), 0)
+            inp = _ZstdBuffer(ctypes.cast(src, ctypes.c_void_p), len(payload), 0)
+            # Two phases, not one: handing libzstd the whole input with e_end
+            # lets it deduce the content size and write it into the frame
+            # header, which no shipped regulation does. Feeding the data and
+            # then flushing separately is what the Python bindings do, and it
+            # reproduces their bytes exactly.
+            while inp.pos < inp.size:
+                check(lib.ZSTD_compressStream2(cctx, ctypes.byref(out),
+                                               ctypes.byref(inp), _ZSTD_E_CONTINUE))
+            empty = _ZstdBuffer(None, 0, 0)
+            while check(lib.ZSTD_compressStream2(cctx, ctypes.byref(out),
+                                                 ctypes.byref(empty), _ZSTD_E_END)):
+                pass
+            return dst.raw[:out.pos]
+        finally:
+            lib.ZSTD_freeCCtx(ctypes.c_void_p(cctx))
+
+    return decompress, compress, _LibZstdError
+
+
 # Tried in order. The stdlib module is first because it needs no install; the
 # other two are ordinary pip packages and exist for interpreters older than 3.14,
 # which is what SteamOS ships. All three wrap libzstd and emit byte-identical
 # output for the same parameters, verified against the real payload — which
 # matters because co-op partners have to end up with the same regulation.bin.
-_BACKENDS = (("compression.zstd", _stdlib_zstd), ("pyzstd", _pyzstd),
-             ("zstandard", _zstandard))
+# other two are ordinary pip packages, and the ctypes one needs nothing at all
+# beyond the shared library any system with the zstd tool already has -- which is
+# what makes erm work on SteamOS, where there is no pip and no Python 3.14.
+_BACKENDS = (("compression.zstd", _stdlib_zstd), (None, _ctypes_libzstd),
+             ("pyzstd", _pyzstd), ("zstandard", _zstandard))
 
 
 def _zstd():
@@ -105,16 +203,16 @@ def _zstd():
     """
     for name, adapt in _BACKENDS:
         try:
-            module = importlib.import_module(name)
+            return adapt(importlib.import_module(name) if name else None)
         except ImportError:
             continue
-        return adapt(module)
     raise DcxError(
-        f"regulation.bin is ZSTD-compressed and this interpreter "
-        f"({platform.python_version()}) has no zstd available. Either run erm on "
-        f"Python 3.14+, which carries compression.zstd, or install one of "
-        f"`pyzstd` / `zstandard` (pip install --user pyzstd). Nothing else in erm "
-        f"needs it — only a regulation merge is blocked.")
+        f"regulation.bin is ZSTD-compressed and this machine has no zstd erm can "
+        f"reach. Python here is {platform.python_version()} (compression.zstd "
+        f"needs 3.14+), libzstd.so isn't loadable, and neither pyzstd nor "
+        f"zstandard is installed. Installing the `zstd` package is usually "
+        f"enough — erm uses its shared library directly. Nothing else in erm "
+        f"needs this; only a regulation merge is blocked.")
 
 
 def read(data):
