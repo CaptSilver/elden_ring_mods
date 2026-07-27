@@ -482,6 +482,16 @@ def cmd_apply(args):
                                    lock=lock)
     except ConflictError:
         state_mod.write_state(Path("installed.json"), state)
+        # The me3 profile is meant to be a pure function of state, and state has
+        # already forgotten the merged package whose directory clear_merged()
+        # wiped above. Regenerate here too, or the abort leaves erm-coop.me3
+        # naming a package that isn't on disk. Best-effort: the ConflictError is
+        # the thing the caller needs to see, so a profile-write failure must not
+        # replace it.
+        try:
+            me3profile.reconcile(state, ME3_DIR, game)
+        except OSError:
+            pass
         raise
     if merged:
         state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}")

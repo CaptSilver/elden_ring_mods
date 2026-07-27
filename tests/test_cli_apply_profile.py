@@ -1826,3 +1826,66 @@ def test_apply_writes_state_before_an_undeclared_conflict_aborts(
     assert "mod-a" in state             # plain install succeeded before the conflict check ran
     assert "mod-x" in state             # both me3 packages extracted fine -- the VFS
     assert "mod-y" in state             # collision is a separate, later concern
+
+
+def _two_package_profile(profiles_dir, name, merge=True):
+    body = (
+        '[[mods]]\n'
+        'id = "mod-x"\nsource = "nexus"\nnexus_id = 1\nkind = "cosmetic"\ninstall = "me3-package"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "mod-y"\nsource = "nexus"\nnexus_id = 2\nkind = "cosmetic"\ninstall = "me3-package"\n'
+    )
+    if merge:
+        body += (
+            '\n[[merges]]\n'
+            'path = "chr/c0000.anibnd.dcx"\n'
+            'strategy = "concat"\n'
+            'mods = ["mod-x", "mod-y"]\n'
+            'prefer = "mod-x"\n'
+        )
+    _write_profile(profiles_dir, name, body)
+
+
+def test_a_conflict_abort_regenerates_the_me3_profile(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """installed.json forgets the merged package the moment its directory is
+    wiped, but the generated me3 profile is only rewritten on the success path.
+    An abort therefore left erm-coop.me3 naming a package that no longer exists
+    on disk -- the profile is meant to be a pure function of state, and this is
+    the one path where it silently wasn't."""
+    from ermlib import conflicts
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(conflicts.STRATEGIES, "concat", lambda base, other: base + other)
+
+    (tmp_path / "mods.lock.toml").write_text(
+        '[mod-x]\nversion = "1.0"\nasset = "mod-x.zip"\nsha256 = "a"\nsource = "nexus"\n'
+        '\n[mod-y]\nversion = "1.0"\nasset = "mod-y.zip"\nsha256 = "a"\nsource = "nexus"\n')
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with zipfile.ZipFile(vendor / "mod-x.zip", "w") as z:
+        z.writestr("chr/c0000.anibnd.dcx", b"X")
+    with zipfile.ZipFile(vendor / "mod-y.zip", "w") as z:
+        z.writestr("chr/c0000.anibnd.dcx", b"Y")
+
+    profiles = tmp_path / "profiles"
+    _two_package_profile(profiles, "unit-abort", merge=True)
+    assert cli.cmd_apply(_apply_args("unit-abort")) == 0
+    capsys.readouterr()
+    me3_profile = tmp_path / "tools" / "me3" / "erm-coop.me3"
+    assert conflicts.MERGED_ID in me3_profile.read_text()
+
+    # Same two mods, merge declaration withdrawn: the collision is now undeclared.
+    _two_package_profile(profiles, "unit-abort", merge=False)
+    with pytest.raises(ErmError):
+        cli.cmd_apply(_apply_args("unit-abort"))
+    capsys.readouterr()
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert conflicts.MERGED_ID not in state
+    assert not (tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID).exists()
+    assert conflicts.MERGED_ID not in me3_profile.read_text(), (
+        "erm-coop.me3 still names a merged package whose directory was wiped")
