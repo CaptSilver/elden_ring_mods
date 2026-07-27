@@ -401,3 +401,27 @@ def test_nested_tables_that_differ_are_kept_as_separate_entries(tmp_path):
     (base / "top.toml").write_text(
         'name = "top"\ndescription = "d"\nincludes = ["leaf"]\n\n' + merge_for("two.bin"))
     assert len(load_profile("top", base=base)["merges"]) == 2
+
+
+def test_nofalldead_is_on_trial_and_not_in_the_shared_coop_profile():
+    """Its regulation edit is transplanted onto Clever's, but nothing has shown
+    the edit actually does anything in game. gameplay-extras is what the whole
+    party runs identically, so an unverified regulation change staying out of it
+    is the point -- promote it only once the in-game check passes."""
+    exp = load_profile("experimental", base=Path("profiles"))
+    shared = load_profile("gameplay-extras", base=Path("profiles"))
+    assert "nofalldead" in [m["id"] for m in exp["mods"]]
+    assert "nofalldead" not in [m["id"] for m in shared["mods"]]
+
+    # The merges have to travel with it, or applying experimental leaves two
+    # packages both shipping regulation.bin and the apply aborts.
+    exp_merges = {m["path"]: m for m in exp["merges"]}
+    assert exp_merges["regulation.bin"]["strategy"] == "param-rows"
+    assert exp_merges["msg/engus/item_dlc02.msgbnd.dcx"]["strategy"] == "fmg-3way"
+    for path in ("regulation.bin", "msg/engus/item_dlc02.msgbnd.dcx"):
+        assert exp_merges[path]["prefer"] == "clevers-moveset"
+        assert exp_merges[path]["vanilla"]["mod"] == "item-enemy-randomizer"
+        assert path not in {m["path"] for m in shared["merges"]}
+
+    # Still inherited from seamless-full, so the coop stack is unaffected.
+    assert "msg/engus/menu_dlc02.msgbnd.dcx" in exp_merges

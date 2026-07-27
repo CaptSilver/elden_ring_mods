@@ -45,6 +45,66 @@ includes = ["seamless-full"]
 # normal timer — "it loaded" proves nothing here, that is exactly how it failed.
 
 # --- on trial ---
+# NoFallDead (Longtail Cat Talisman version, #10402) — makes the talisman prevent
+# death from a high fall, not just the damage. It carries its own regulation.bin,
+# which used to make it unusable alongside Clever's since only one can be mounted;
+# the merge below transplants its three SpEffect rows onto Clever's instead, so
+# Clever's stays the base and keeps every row it authored.
+#
+# On trial, NOT in gameplay-extras, because nothing has shown it works. The
+# transplant is proven byte-exact against the mod's own output, but the behaviour
+# rides entirely on SpEffect stateInfo, no param encodes a fall-death height, and
+# vanilla's own fall-immune rows use different values. Keeping it here means the
+# shared co-op profile can't pick up an unverified regulation edit.
+#
+# Verify: equip the Longtail Cat Talisman, find a drop of 20 m or more, jump. The
+# talisman's description should also read "and does prevent death from a high
+# fall" — that much only proves the msgbnd merge landed, not the params.
+# Works → move the [[mods]] entry and both [[merges]] to gameplay-extras, which
+# is where a shared regulation mod belongs (requires_all_players).
+#
+# file_id MUST stay pinned: the mod ships two MAIN files. 48339 hooks a resident
+# speffect of the author's own and is always on; 48340 edits the row vanilla
+# already points the talisman at, needing no accessory-table change.
+[[mods]]
+id = "nofalldead"
+source = "nexus"
+nexus_id = 10402
+file_id = 48340                   # "Longtail Cat Talisman Version" — NOT the always-on 48339
+kind = "gameplay"
+install = "me3-package"
+requires_all_players = true
+
+# Clever's keeps the regulation; NoFallDead's three changed SpEffect rows are
+# transplanted onto it. Which rows move is worked out from the data, so this
+# doesn't go stale if either mod updates — but a row they BOTH change stops the
+# apply rather than picking a winner.
+#
+# Both merges compare against the vanilla file the two mods branched from, which
+# comes out of the randomizer's bundled Vanilla/ directory. That archive is
+# pinned in mods.lock.toml and its copy of regulation.bin is byte-identical to
+# the game install's. Read from the vendor zip, not tools/, because tools/ only
+# exists while the randomizer profile is applied and gameplay-extras excludes it.
+# Applying without that archive fetched fails with a message saying so.
+[[merges]]
+path = "regulation.bin"
+strategy = "param-rows"
+mods = ["clevers-moveset", "nofalldead"]
+prefer = "clevers-moveset"
+vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/regulation.bin" }
+
+# The talisman's description text, in two places: the short info line and the
+# long caption both say it does NOT prevent death from a high fall. Clever's
+# ships this archive too, carrying vanilla text for those rows and its own edits
+# to 1,391 others, so a two-way union is wrong in both directions — see the
+# fmg-3way strategy. Three-way against vanilla keeps both sides.
+[[merges]]
+path = "msg/engus/item_dlc02.msgbnd.dcx"
+strategy = "fmg-3way"
+mods = ["clevers-moveset", "nofalldead"]
+prefer = "clevers-moveset"
+vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/msg/engus/item_dlc02.msgbnd.dcx" }
+
 # Map for Goblins (#10062, DLL rebuild) — a world-map overlay that drops ~6900
 # loot/boss/grace icons onto the map, plus an in-game ImGui panel (F10, or Y+R3
 # on a pad) to toggle icon categories live. No regulation.bin; injects at runtime.
