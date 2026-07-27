@@ -129,3 +129,31 @@ source = "nexus"
 nexus_id = 216
 kind = "qol"
 install = "game"
+
+# Map for Goblins (#10062, DLL rebuild) — a world-map overlay that drops ~6900
+# loot/boss/grace icons onto the map, plus an in-game ImGui panel (F10, or Y+R3
+# on a pad) to toggle icon categories live. Confirmed working in game 2026-07-27.
+#
+# Client-side: it only reads item placement and draws over the map, so it can't
+# desync and no co-op partner needs it. That's why it sits here rather than in
+# gameplay-extras.
+#
+# install = "me3-native", NOT "mods": Elden Mod Loader runs load_delay=5000 here,
+# injecting DLLs ~5s in, AFTER the world map is built — the icons never attach
+# and the mod silently shows nothing. me3 chainloads natives at launch, early
+# enough, and keeps MapForGoblins.ini beside the dll (the mod reads its config
+# from next to the binary).
+#
+# file_id MUST stay pinned: the mod ships nine MAIN files at once, one per
+# overhaul. 48311 is the "Vanilla or Randomizer" DLL build. Never the original
+# #3091 — that one carries a regulation.bin and would fight Clever's for it.
+#
+# The config panel is mouse-driven, so editing categories wants a mouse (Deck
+# trackpad / Steam Input). F10 and the live toggles are on by default in the ini.
+[[mods]]
+id = "map-for-goblins"
+source = "nexus"
+nexus_id = 10062
+file_id = 48311
+kind = "qol"
+install = "me3-native"

@@ -403,25 +403,53 @@ def test_nested_tables_that_differ_are_kept_as_separate_entries(tmp_path):
     assert len(load_profile("top", base=base)["merges"]) == 2
 
 
-def test_nofalldead_is_on_trial_and_not_in_the_shared_coop_profile():
-    """Its regulation edit is transplanted onto Clever's, but nothing has shown
-    the edit actually does anything in game. gameplay-extras is what the whole
-    party runs identically, so an unverified regulation change staying out of it
-    is the point -- promote it only once the in-game check passes."""
-    exp = load_profile("experimental", base=Path("profiles"))
+def test_nofalldead_is_a_shared_mod_with_its_merges():
+    """Promoted out of experimental once the in-game check passed: the talisman
+    really does stop fall death. It edits regulation.bin, so every player in the
+    party needs the identical merged file -- which is why it belongs in
+    gameplay-extras with requires_all_players rather than a per-machine overlay."""
     shared = load_profile("gameplay-extras", base=Path("profiles"))
-    assert "nofalldead" in [m["id"] for m in exp["mods"]]
-    assert "nofalldead" not in [m["id"] for m in shared["mods"]]
+    nfd = next(m for m in shared["mods"] if m["id"] == "nofalldead")
+    assert nfd["requires_all_players"] is True
+    assert nfd["install"] == "me3-package"
+    # The mod ships two MAIN files; 48339 is the always-on variant, not this one.
+    assert nfd["file_id"] == 48340
 
-    # The merges have to travel with it, or applying experimental leaves two
-    # packages both shipping regulation.bin and the apply aborts.
-    exp_merges = {m["path"]: m for m in exp["merges"]}
-    assert exp_merges["regulation.bin"]["strategy"] == "param-rows"
-    assert exp_merges["msg/engus/item_dlc02.msgbnd.dcx"]["strategy"] == "fmg-3way"
+    # The merges have to live with it: without them two packages both ship
+    # regulation.bin and the apply aborts on an undeclared collision.
+    merges = {m["path"]: m for m in shared["merges"]}
+    assert merges["regulation.bin"]["strategy"] == "param-rows"
+    assert merges["msg/engus/item_dlc02.msgbnd.dcx"]["strategy"] == "fmg-3way"
     for path in ("regulation.bin", "msg/engus/item_dlc02.msgbnd.dcx"):
-        assert exp_merges[path]["prefer"] == "clevers-moveset"
-        assert exp_merges[path]["vanilla"]["mod"] == "item-enemy-randomizer"
-        assert path not in {m["path"] for m in shared["merges"]}
+        assert merges[path]["prefer"] == "clevers-moveset"
+        assert merges[path]["vanilla"]["mod"] == "item-enemy-randomizer"
 
-    # Still inherited from seamless-full, so the coop stack is unaffected.
-    assert "msg/engus/menu_dlc02.msgbnd.dcx" in exp_merges
+
+def test_map_for_goblins_is_client_side_in_both_full_profiles():
+    """Client-side overlay, so it is duplicated into the two standalone profiles
+    rather than put in gameplay-extras -- a partner who doesn't run it is
+    unaffected, and single-full doesn't compose the coop layer."""
+    for name in ("seamless-full", "single-full"):
+        prof = load_profile(name, base=Path("profiles"))
+        mg = next(m for m in prof["mods"] if m["id"] == "map-for-goblins")
+        # me3-native, never "mods": under EML's load_delay the dll injects after
+        # the world map is built and no icons appear.
+        assert mg["install"] == "me3-native"
+        # Nine MAIN files ship at once, one per overhaul -- an unpinned fetch
+        # would grab the wrong build.
+        assert mg["file_id"] == 48311
+        assert not mg.get("requires_all_players", False)
+    assert "map-for-goblins" not in [
+        m["id"] for m in load_profile("gameplay-extras", base=Path("profiles"))["mods"]]
+
+
+def test_experimental_has_no_trials_left_but_keeps_its_rejections():
+    """The testbed is empty by design right now. The rejected-candidate notes
+    have to stay -- they are what stops questpath and starlight-shards being
+    re-added by someone who doesn't know they were already tried."""
+    prof = load_profile("experimental", base=Path("profiles"))
+    text = Path("profiles/experimental.toml").read_text()
+    assert prof["includes"] == ["seamless-full"]
+    for rejected in ("questpath", "starlight-shards-rune-arcs"):
+        assert rejected not in [m["id"] for m in prof["mods"]]
+        assert rejected in text
