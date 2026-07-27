@@ -30,6 +30,12 @@ asset = "DisableRuneLoss-376-2-0-1670867876.zip"
 sha256 = "6d69b51cde189b8ebedcd858aa5b25bb394c49e8e1df79c207a28d46ce0ccf6b"
 source = "nexus"
 
+[drop-rate-100]
+version = "1"
+asset = "100 Percent Drop Rate Mod-9929-1-1779608568.zip"
+sha256 = "47fd4f92484e86ce6edb926bbf7c97d835a790ef19d63329e249c84e3fdbd154"
+source = "nexus"
+
 [elden-mod-loader]
 version = "3.2"
 asset = "EldenModLoader-117-3-2-1662569069.zip"
@@ -58,6 +64,12 @@ source = "nexus"
 version = "2.0"
 asset = "FasterRespawn-501-2-0-1676655598.zip"
 sha256 = "e6b7ca15063ddd5c7e1eca9410f28635f320a3a6b86c9e1764971a162a8c3ffd"
+source = "nexus"
+
+[forever-buffs]
+version = "v1.0"
+asset = "CSV Included to merge-8644-v1-0-1756694897.rar"
+sha256 = "790fdd776a7d8bf9dbfbfdfcb06dec112d187218d626aff5a006990f3894729c"
 source = "nexus"
 
 [glorious-merchant]

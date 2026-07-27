@@ -88,10 +88,16 @@ prefer = "clevers-moveset"
 # Read from the vendor zip, not tools/, because tools/ only exists while the
 # randomizer profile is applied and this profile excludes it. Applying without
 # that archive fetched fails with a message saying so.
+# `mods` names every regulation-carrying mod in any profile that composes this
+# one, not just the ones installed here. A provider missing from the list aborts
+# the apply, and a second declaration for the same path elsewhere would be
+# refused as a disagreement — so this is the one place it can live. Declared-but-
+# not-installed is fine, which is what lets the experimental trials list here
+# while applying gameplay-extras alone still merges just Clever's + NoFallDead.
 [[merges]]
 path = "regulation.bin"
 strategy = "param-rows"
-mods = ["clevers-moveset", "nofalldead"]
+mods = ["clevers-moveset", "nofalldead", "drop-rate-100", "forever-buffs"]
 prefer = "clevers-moveset"
 vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/regulation.bin" }
 
