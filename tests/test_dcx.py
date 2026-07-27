@@ -186,13 +186,15 @@ def test_zstd_window_matches_the_byte_shipped_regulations_carry():
 
 
 def _without_zstd(monkeypatch):
-    """Simulate an interpreter older than 3.14, where compression.zstd is absent."""
+    """Simulate a machine with no zstd at all: an interpreter older than 3.14
+    and none of the pip backends installed."""
     import importlib as _il
     real = _il.import_module
+    blocked = {name for name, _adapt in dcx._BACKENDS}
 
     def missing(name, *args, **kwargs):
-        if name == "compression.zstd":
-            raise ImportError("No module named 'compression'")
+        if name in blocked:
+            raise ImportError(f"No module named {name!r}")
         return real(name, *args, **kwargs)
 
     monkeypatch.setattr(dcx.importlib, "import_module", missing)
@@ -209,9 +211,9 @@ def test_the_other_codecs_still_work_without_the_zstd_module(monkeypatch):
     assert dcx.write_dflt(payload) == dflt
 
 
-def test_writing_zstd_without_the_module_says_which_python_is_needed(monkeypatch):
+def test_writing_zstd_with_no_backend_says_what_to_install(monkeypatch):
     _without_zstd(monkeypatch)
-    with pytest.raises(dcx.DcxError, match="3.14"):
+    with pytest.raises(dcx.DcxError, match="pyzstd"):
         dcx.write_zstd(b"payload" * 100)
 
 
@@ -220,5 +222,63 @@ def test_reading_zstd_without_the_module_fails_as_a_dcx_error(monkeypatch):
     ordinary 'this archive needs something you don't have' path callers handle."""
     blob = dcx.write_zstd(b"payload" * 100)
     _without_zstd(monkeypatch)
-    with pytest.raises(dcx.DcxError, match="compression.zstd"):
+    with pytest.raises(dcx.DcxError, match="no zstd available"):
         dcx.read(blob)
+
+
+def _available_backends():
+    out = []
+    for name, adapt in dcx._BACKENDS:
+        try:
+            out.append((name, adapt(dcx.importlib.import_module(name))))
+        except ImportError:
+            pass
+    return out
+
+
+# Deterministic and bigger than the 64 KiB window, so window_log actually shows
+# up in the frame rather than being elided.
+_PINNED_PAYLOAD = bytes((i * 7919 + (i >> 3)) & 0xFF for i in range(300000))
+_PINNED_FRAME_SHA256 = "2d587b5079b7baaf1353de00d78a38c0b86f4799a0104db1be1bce234b54f5c4"
+
+
+def test_the_stdlib_backend_is_preferred_when_present(monkeypatch):
+    """Order matters for reproducibility, not correctness: whichever backend is
+    first has to be the same one on every machine that has a choice."""
+    assert dcx._BACKENDS[0][0] == "compression.zstd"
+
+
+def test_every_installed_backend_agrees_byte_for_byte():
+    """Co-op partners must end up with the same regulation.bin, and it is built
+    on each machine rather than distributed. Two backends disagreeing here would
+    mean two players generating different files from identical inputs."""
+    backends = _available_backends()
+    if len(backends) < 2:
+        pytest.skip(f"only one zstd backend installed: {[n for n, _ in backends]}")
+    frames = {}
+    for name, (_decompress, compress, _err) in backends:
+        frames[name] = compress(_PINNED_PAYLOAD, dcx.ZSTD_LEVEL, dcx.ZSTD_WINDOW_LOG)
+    assert len(set(frames.values())) == 1, {n: len(f) for n, f in frames.items()}
+
+
+def test_every_installed_backend_reads_what_the_others_write():
+    for name, (decompress, compress, _err) in _available_backends():
+        frame = compress(_PINNED_PAYLOAD, dcx.ZSTD_LEVEL, dcx.ZSTD_WINDOW_LOG)
+        for other, (other_decompress, _c, _e) in _available_backends():
+            assert other_decompress(frame, len(_PINNED_PAYLOAD)) == _PINNED_PAYLOAD, (
+                f"{other} could not read {name}'s frame")
+
+
+def test_the_compressed_frame_matches_the_pinned_digest():
+    """A failure here is not a bug in erm — it means this machine's libzstd emits
+    different bytes than the one this digest was taken on. That matters because
+    a regulation.bin is built per machine and co-op compares the file: a partner
+    on a different libzstd would generate a regulation yours doesn't match, which
+    shows up as a failure to connect rather than anything diagnosable.
+
+    If it fires, the options are to match zstd versions across the party or to
+    distribute one built file instead of building it on each machine.
+    """
+    import hashlib
+    frame = dcx.write_zstd(_PINNED_PAYLOAD)[dcx.HEADER_SIZE:]
+    assert hashlib.sha256(frame).hexdigest() == _PINNED_FRAME_SHA256

@@ -44,24 +44,77 @@ class DcxError(ErmError):
     """A DCX container was malformed, or used a compression we can't read."""
 
 
-def _zstd():
-    """The stdlib zstd module, or a DcxError explaining why it isn't here.
+def _stdlib_zstd(mod):
+    """Python 3.14's compression.zstd."""
+    P = mod.CompressionParameter
 
-    Resolved on use, never at import. `compression.zstd` arrived in Python 3.14,
-    and SteamOS ships older — importing it at module scope took all of erm down
-    on the Deck, including every command that has nothing to do with ZSTD.
-    regulation.bin is the only ZSTD file in play, so everything else keeps
-    working on an older interpreter.
+    def compress(payload, level, window_log):
+        c = mod.ZstdCompressor(options={P.compression_level: level,
+                                        P.window_log: window_log})
+        return c.compress(payload) + c.flush()
+
+    return lambda body, _size: mod.decompress(body), compress, mod.ZstdError
+
+
+def _pyzstd(mod):
+    """pyzstd — closest to the stdlib module, which it was the basis for."""
+    def compress(payload, level, window_log):
+        c = mod.ZstdCompressor({mod.CParameter.compressionLevel: level,
+                                mod.CParameter.windowLog: window_log})
+        return c.compress(payload) + c.flush()
+
+    return lambda body, _size: mod.decompress(body), compress, mod.ZstdError
+
+
+def _zstandard(mod):
+    """python-zstandard, which needs more coaxing than the other two.
+
+    Its one-shot decompress refuses a frame that doesn't declare its content
+    size, and ours deliberately don't — so it gets the size from the DCX header,
+    which knew it all along. Its one-shot compress has the mirror problem: it
+    WRITES that size into the frame header, which no shipped file does, so
+    compression goes through the chunker instead.
     """
-    try:
-        return importlib.import_module("compression.zstd")
-    except ImportError as exc:
-        raise DcxError(
-            f"ZSTD DCX support needs Python 3.14's compression.zstd, and this "
-            f"interpreter is {platform.python_version()}. Only regulation.bin "
-            f"uses ZSTD — the rest of erm works without it, so this is a merge "
-            f"you can't run here rather than an install you can't do."
-        ) from exc
+    def decompress(body, size):
+        return mod.ZstdDecompressor().decompress(body, max_output_size=size)
+
+    def compress(payload, level, window_log):
+        params = mod.ZstdCompressionParameters(compression_level=level,
+                                               window_log=window_log)
+        chunker = mod.ZstdCompressor(compression_params=params).chunker()
+        return b"".join(chunker.compress(payload)) + b"".join(chunker.finish())
+
+    return decompress, compress, mod.ZstdError
+
+
+# Tried in order. The stdlib module is first because it needs no install; the
+# other two are ordinary pip packages and exist for interpreters older than 3.14,
+# which is what SteamOS ships. All three wrap libzstd and emit byte-identical
+# output for the same parameters, verified against the real payload — which
+# matters because co-op partners have to end up with the same regulation.bin.
+_BACKENDS = (("compression.zstd", _stdlib_zstd), ("pyzstd", _pyzstd),
+             ("zstandard", _zstandard))
+
+
+def _zstd():
+    """(decompress, compress, error_type) from the first available zstd backend.
+
+    Resolved on use, never at import. `compression.zstd` arrived in Python 3.14;
+    importing it at module scope took all of erm down on an older interpreter,
+    including every command that has nothing to do with ZSTD.
+    """
+    for name, adapt in _BACKENDS:
+        try:
+            module = importlib.import_module(name)
+        except ImportError:
+            continue
+        return adapt(module)
+    raise DcxError(
+        f"regulation.bin is ZSTD-compressed and this interpreter "
+        f"({platform.python_version()}) has no zstd available. Either run erm on "
+        f"Python 3.14+, which carries compression.zstd, or install one of "
+        f"`pyzstd` / `zstandard` (pip install --user pyzstd). Nothing else in erm "
+        f"needs it — only a regulation merge is blocked.")
 
 
 def read(data):
@@ -87,10 +140,10 @@ def read(data):
                 f"DFLT payload is {len(out)} bytes, header claims {uncompressed}")
         return out
     if method == ZSTD:
-        zstd = _zstd()
+        decompress, _compress, zstd_error = _zstd()
         try:
-            out = zstd.decompress(body)
-        except zstd.ZstdError as exc:
+            out = decompress(body, uncompressed)
+        except zstd_error as exc:
             # Keep the module's error contract: callers catch DcxError, and a
             # corrupt body is a malformed container, not a programming fault.
             raise DcxError(f"ZSTD body could not be decompressed: {exc}") from exc
@@ -139,12 +192,9 @@ def write_zstd(payload, level=ZSTD_LEVEL):
     The bytes still decompress either way, which is exactly why this is worth
     pinning down in code rather than leaving to whoever edits it next.
     """
-    zstd = _zstd()
-    compressor = zstd.ZstdCompressor(options={
-        zstd.CompressionParameter.compression_level: level,
-        # Not a compression-ratio knob: it is what the DECODER is required to
-        # allocate, and something on the override path refuses a large one.
-        zstd.CompressionParameter.window_log: ZSTD_WINDOW_LOG,
-    })
-    body = compressor.compress(payload) + compressor.flush()
+    # window_log is not a compression-ratio knob: it is what the DECODER is
+    # required to allocate, and something on the override path refuses a large
+    # one. See ZSTD_WINDOW_LOG.
+    _decompress, compress, _err = _zstd()
+    body = compress(payload, level, ZSTD_WINDOW_LOG)
     return _header(ZSTD, level, len(payload), len(body)) + body
