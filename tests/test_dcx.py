@@ -55,9 +55,12 @@ def test_read_rejects_a_truncated_header():
 
 
 def test_read_rejects_an_unknown_compression():
+    # Deliberately a method that is not a real DCX codec at all. This used to
+    # say ZSTD, which was accurate until ZSTD was implemented and then quietly
+    # started exercising the decompressor instead of the rejection path.
     blob = bytearray(dcx.write_dflt(b"payload"))
-    blob[0x28:0x2c] = b"ZSTD"
-    with pytest.raises(dcx.DcxError):
+    blob[0x28:0x2c] = b"ZZZZ"
+    with pytest.raises(dcx.DcxError, match="unsupported"):
         dcx.read(bytes(blob))
 
 
@@ -95,3 +98,57 @@ def test_read_rejects_a_compressed_size_that_overruns_the_buffer():
     truncated = bytes(blob[:dcx.HEADER_SIZE])  # header intact, body entirely gone
     with pytest.raises(dcx.DcxError):
         dcx.read(truncated)
+
+
+def test_zstd_round_trip():
+    payload = b"BND4" + bytes(range(256)) * 40
+    blob = dcx.write_zstd(payload)
+    assert blob[:4] == b"DCX\x00"
+    assert blob[0x28:0x2c] == b"ZSTD"
+    assert dcx.read(blob) == payload
+
+
+def test_zstd_frame_omits_the_content_size_flag():
+    """Real regulation.bin frames carry FHD 0x00. The stdlib's ONE-SHOT
+    compressor sets bit 7 (frame content size present), which no shipped file
+    does; only the streaming compressor matches. Guarding it here because the
+    one-shot call is the obvious way to write this and produces a frame that
+    differs structurally from every file the game has ever loaded."""
+    blob = dcx.write_zstd(b"x" * 4096)
+    frame = blob[dcx.HEADER_SIZE:]
+    assert frame[:4] == bytes.fromhex("28b52ffd")
+    assert frame[4] & 0x80 == 0, f"frame header descriptor {frame[4]:#04x} sets the content-size flag"
+
+
+def test_zstd_accepts_levels_the_dflt_path_rejects():
+    """The 1-9 clamp is a property of the game's *zlib* branch. Shipped ZSTD
+    regulations carry 15 (Clever's) and 21 (vanilla) in the level byte, so
+    applying the zlib guard here would refuse to write a normal file."""
+    blob = dcx.write_zstd(b"payload" * 100, level=15)
+    assert blob[0x30] == 15
+    assert dcx.read(blob) == b"payload" * 100
+
+
+def test_zstd_header_records_both_sizes():
+    payload = bytes(range(256)) * 100
+    blob = dcx.write_zstd(payload)
+    uncompressed, compressed = struct.unpack_from(">II", blob, 0x1c)
+    assert uncompressed == len(payload)
+    assert compressed == len(blob) - dcx.HEADER_SIZE
+
+
+def test_read_rejects_a_truncated_zstd_body():
+    blob = dcx.write_zstd(bytes(range(256)) * 100)
+    with pytest.raises(dcx.DcxError, match="truncated"):
+        dcx.read(blob[:-32])
+
+
+def test_read_rejects_a_zstd_size_mismatch():
+    """A frame that decompresses to a different length than the header claims
+    means the container and its body disagree — refuse rather than hand back a
+    payload that BND4 will then misparse."""
+    payload = bytes(range(256)) * 100
+    blob = bytearray(dcx.write_zstd(payload))
+    struct.pack_into(">I", blob, 0x1c, len(payload) + 1)
+    with pytest.raises(dcx.DcxError, match="ZSTD payload"):
+        dcx.read(bytes(blob))

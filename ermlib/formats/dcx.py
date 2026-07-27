@@ -1,12 +1,19 @@
 """DCX container: the compression wrapper around every packed game archive.
 
-Reading handles Oodle Kraken (via the vendored decompressor) and zlib DFLT.
-Writing only emits DFLT, and that is deliberate: there is no open-source Kraken
-encoder, and the game reads DFLT fine. Clever's Moveset ships 51 DFLT archives
-alongside 7 KRAK ones and loads correctly, which is the local proof.
+Reading handles Oodle Kraken (via the vendored decompressor), zlib DFLT, and
+Zstandard. Writing emits DFLT or ZSTD but never Kraken — there is no open-source
+Kraken encoder, and the game reads the other two fine. Clever's Moveset ships 51
+DFLT archives alongside 7 KRAK ones and loads correctly, which is the local
+proof for DFLT; regulation.bin is itself ZSTD, which is the proof for ZSTD.
+
+Pick the writer to match what the file already was. "Kraken in, zlib out" is
+established for msgbnd, but a regulation.bin arrives as ZSTD and should leave as
+ZSTD: nothing has ever demonstrated the game accepting a DFLT regulation on a
+current build.
 """
 import struct
 import zlib
+from compression import zstd
 
 from ..errors import ErmError
 from . import ooz
@@ -14,9 +21,14 @@ from . import ooz
 MAGIC = b"DCX\x00"
 KRAK = b"KRAK"
 DFLT = b"DFLT"
+ZSTD = b"ZSTD"
 HEADER_SIZE = 0x4C
-# The game validates this as 1-9 before dispatching to the zlib path.
+# The game validates this as 1-9 before dispatching to the *zlib* branch. It is
+# not a general DCX rule: shipped ZSTD regulations carry 15 (Clever's) and 21
+# (vanilla) in the same byte.
 MIN_LEVEL, MAX_LEVEL = 1, 9
+# Matches Clever's regulation.bin, which the game loads today.
+ZSTD_LEVEL = 15
 MAX_UNK04 = 0x11000
 
 
@@ -46,7 +58,33 @@ def read(data):
             raise DcxError(
                 f"DFLT payload is {len(out)} bytes, header claims {uncompressed}")
         return out
+    if method == ZSTD:
+        try:
+            out = zstd.decompress(body)
+        except zstd.ZstdError as exc:
+            # Keep the module's error contract: callers catch DcxError, and a
+            # corrupt body is a malformed container, not a programming fault.
+            raise DcxError(f"ZSTD body could not be decompressed: {exc}") from exc
+        if len(out) != uncompressed:
+            raise DcxError(
+                f"ZSTD payload is {len(out)} bytes, header claims {uncompressed}")
+        return out
     raise DcxError(f"unsupported DCX compression {method!r}")
+
+
+def _header(method, level, uncompressed, compressed):
+    """The 0x4C DCX header. Every field outside `method` and `level` is fixed,
+    and verified byte-for-byte against both a shipped DFLT archive and Clever's
+    ZSTD regulation.bin — the two containers differ only in those two places."""
+    header = bytearray()
+    header += MAGIC + struct.pack(">IIIII", MAX_UNK04, 0x18, 0x24, 0x44, HEADER_SIZE)
+    header += b"DCS\x00" + struct.pack(">II", uncompressed, compressed)
+    header += b"DCP\x00" + method + struct.pack(">I", 0x20)
+    header += bytes([level, 0, 0, 0]) + struct.pack(">III", 0, 0, 0)
+    header += struct.pack(">I", 0x00010100)  # fixed value; confirmed against real game archives
+    header += b"DCA\x00" + struct.pack(">I", 8)
+    assert len(header) == HEADER_SIZE, len(header)
+    return bytes(header)
 
 
 def write_dflt(payload, level=9):
@@ -60,12 +98,18 @@ def write_dflt(payload, level=9):
             f"zlib level {level} is outside 1-9; the game's DCX reader "
             f"rejects the container before decompressing it")
     body = zlib.compress(payload, level)
-    header = bytearray()
-    header += MAGIC + struct.pack(">IIIII", MAX_UNK04, 0x18, 0x24, 0x44, HEADER_SIZE)
-    header += b"DCS\x00" + struct.pack(">II", len(payload), len(body))
-    header += b"DCP\x00" + DFLT + struct.pack(">I", 0x20)
-    header += bytes([level, 0, 0, 0]) + struct.pack(">III", 0, 0, 0)
-    header += struct.pack(">I", 0x00010100)  # fixed value; confirmed against real game archives
-    header += b"DCA\x00" + struct.pack(">I", 8)
-    assert len(header) == HEADER_SIZE, len(header)
-    return bytes(header) + body
+    return _header(DFLT, level, len(payload), len(body)) + body
+
+
+def write_zstd(payload, level=ZSTD_LEVEL):
+    """Wrap `payload` in a Zstandard DCX container, the way regulation.bin ships.
+
+    Deliberately the STREAMING compressor. The one-shot `zstd.compress` sets the
+    frame-header content-size flag (FHD bit 7); every shipped file has FHD 0x00,
+    so the one-shot output is structurally unlike anything the game has loaded.
+    The bytes still decompress either way, which is exactly why this is worth
+    pinning down in code rather than leaving to whoever edits it next.
+    """
+    compressor = zstd.ZstdCompressor(level=level)
+    body = compressor.compress(payload) + compressor.flush()
+    return _header(ZSTD, level, len(payload), len(body)) + body
