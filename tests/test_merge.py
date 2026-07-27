@@ -143,3 +143,130 @@ def test_three_way_leaves_untouched_entries_byte_identical():
     after = {e.id: e.data for e in bnd4.read(dcx.read(out))}
     assert after[2] == before[2]
     assert after[1] != before[1]
+
+
+# --- param-rows: transplant one mod's param edits onto another's regulation ---
+
+from ermlib.formats import regulation                          # noqa: E402
+from tests.test_param import make_param                        # noqa: E402
+
+
+def _regulation(params):
+    """params: {entry_id: (param_type, {row_id: row_bytes}, stride)}"""
+    entries = []
+    for eid, (ptype, rows, stride) in sorted(params.items()):
+        blob = make_param(sorted(rows), stride=stride, param_type=ptype,
+                          fill=lambda rid, rows=rows: rows[rid])
+        entries.append((eid, f"{ptype.decode()}.param", blob))
+    return regulation.pack(_synthetic_bnd4(entries), bytes(16))
+
+
+def _rows(blob, eid):
+    from ermlib.formats import param
+    entry = next(e for e in regulation.entries(blob) if e.id == eid)
+    return {r.id: r.data for r in param.read(entry.data).rows}
+
+
+SP = b"SP_EFFECT_PARAM_ST"
+
+
+def test_param_rows_takes_the_other_sides_edit_when_base_matches_vanilla():
+    van = _regulation({1: (SP, {100: b"\x00" * 8}, 8)})
+    base = _regulation({1: (SP, {100: b"\x00" * 8}, 8)})
+    other = _regulation({1: (SP, {100: b"\xff" * 8}, 8)})
+    assert _rows(merge.param_rows(base, other, van), 1)[100] == b"\xff" * 8
+
+
+def test_param_rows_keeps_the_base_edit_when_other_matches_vanilla():
+    """Row 174 in the real data: Clever's changed effectEndurance, the other mod
+    still carries vanilla's value. A whole-param copy would revert Clever's."""
+    van = _regulation({1: (SP, {174: b"\x00" * 8}, 8)})
+    base = _regulation({1: (SP, {174: b"\xbb" * 8}, 8)})
+    other = _regulation({1: (SP, {174: b"\x00" * 8}, 8)})
+    assert _rows(merge.param_rows(base, other, van), 1)[174] == b"\xbb" * 8
+
+
+def test_param_rows_inserts_a_row_neither_base_nor_vanilla_has():
+    van = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x01" * 8, 360401: b"\xaa" * 8}, 8)})
+    out = _rows(merge.param_rows(base, other, van), 1)
+    assert out[360401] == b"\xaa" * 8
+    assert out[1] == b"\x01" * 8
+
+
+def test_param_rows_refuses_when_both_sides_changed_the_same_row():
+    van = _regulation({1: (SP, {5: b"\x00" * 8}, 8)})
+    base = _regulation({1: (SP, {5: b"\x11" * 8}, 8)})
+    other = _regulation({1: (SP, {5: b"\x22" * 8}, 8)})
+    with pytest.raises(merge.MergeError, match="row 5"):
+        merge.param_rows(base, other, van)
+
+
+def test_param_rows_leaves_an_untouched_param_byte_identical():
+    """A param the other side didn't change must be copied through, not
+    re-serialised: byte-comparing params over-reports differences roughly
+    threefold because tools disagree on the strings-offset rounding."""
+    van = _regulation({1: (SP, {1: b"\x01" * 8}, 8), 2: (b"OTHER_ST", {9: b"\x09" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x01" * 8}, 8), 2: (b"OTHER_ST", {9: b"\xcc" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x22" * 8}, 8), 2: (b"OTHER_ST", {9: b"\x09" * 8}, 8)})
+    out = merge.param_rows(base, other, van)
+    before = {e.id: e.data for e in regulation.entries(base)}
+    after = {e.id: e.data for e in regulation.entries(out)}
+    assert after[2] == before[2]
+    assert after[1] != before[1]
+
+
+def test_param_rows_tolerates_a_stride_that_only_differs_by_trailing_padding():
+    """Ten real params derive a different stride per file because vanilla's
+    writer emits trailing padding SoulsFormats does not. The content over the
+    shorter row is identical, so there is no change to merge."""
+    van = _regulation({1: (SP, {1: b"\xab" * 8 + b"\x00" * 4}, 12)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    out = merge.param_rows(base, other, van)
+    before = {e.id: e.data for e in regulation.entries(base)}
+    assert {e.id: e.data for e in regulation.entries(out)}[1] == before[1]
+
+
+def test_param_rows_transplants_when_only_vanilla_has_the_padding():
+    # Vanilla carries trailing padding both mods strip, and the other side made
+    # a real edit. Base and other agree on stride, so the row transplants fine —
+    # vanilla's width only affects the comparison, not what can be written.
+    van = _regulation({1: (SP, {1: b"\xab" * 8 + b"\x00" * 4}, 12)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x99" * 8}, 8)})
+    assert _rows(merge.param_rows(base, other, van), 1)[1] == b"\x99" * 8
+
+
+def test_param_rows_refuses_a_row_it_cannot_fit_into_the_base():
+    # Base and other genuinely disagree on row width, so the other side's bytes
+    # have no meaning in the base's layout. Writing them anyway would corrupt
+    # the row silently; a paramdef would be needed to reinterpret it.
+    van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x99" * 12}, 12)})
+    with pytest.raises(merge.MergeError, match="stride"):
+        merge.param_rows(base, other, van)
+
+
+def test_param_rows_output_is_a_loadable_regulation():
+    van = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x02" * 8}, 8)})
+    out = merge.param_rows(base, other, van)
+    assert regulation.unpack(out)[:4] == b"BND4"
+    assert len(regulation.entries(out)) == 1
+
+
+def test_param_rows_skips_an_entry_both_mods_already_agree_on():
+    """Three of vanilla's own entries are unreadable until a tool re-saves them
+    (FromSoft stores a strings offset past the end of the file). Both mods ship
+    the normalised copy, identical to each other, so there is nothing to merge
+    and nothing that needs parsing."""
+    van = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x02" * 8}, 8)})
+    other = base
+    out = merge.param_rows(base, other, van)
+    before = {e.id: e.data for e in regulation.entries(base)}
+    assert {e.id: e.data for e in regulation.entries(out)}[1] == before[1]

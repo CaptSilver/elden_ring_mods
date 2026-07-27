@@ -119,7 +119,122 @@ def fmg_three_way(base, other, vanilla):
     return dcx.write_dflt(bnd4.rebuild(base_raw, replacements))
 
 
-STRATEGIES = {"fmg-union": fmg_union, "fmg-3way": fmg_three_way}
+def _content_equal(a, b):
+    """Whether two rows hold the same content, tolerating a differing stride.
+
+    Ten shipped params derive a different row width per file: FromSoft's writer
+    emits trailing padding SoulsFormats does not, and the derived stride absorbs
+    it. Where the widths agree this is a plain byte comparison; where they don't,
+    only the overlap is content and the excess is container padding. That
+    tolerance is confined to the mismatched case on purpose — applying it
+    everywhere would hide a real edit that happens to sit in the tail.
+    """
+    return a == b if len(a) == len(b) else a[:min(len(a), len(b))] == b[:min(len(a), len(b))]
+
+
+def _merge_param(base_blob, other_blob, van_blob, entry_id):
+    """Three-way row merge of one param. Returns new bytes, or None if unchanged."""
+    from .formats import param
+    b, o, v = (param.read(x) for x in (base_blob, other_blob, van_blob))
+    br = {r.id: r.data for r in b.rows}
+    orr = {r.id: r.data for r in o.rows}
+    vr = {r.id: r.data for r in v.rows}
+
+    overwrite, insert, delete = {}, {}, []
+    for rid in sorted(orr.keys() | vr.keys() | br.keys()):
+        bd, od, vd = br.get(rid), orr.get(rid), vr.get(rid)
+        same_ov = (od is None and vd is None) or (
+            od is not None and vd is not None and _content_equal(od, vd))
+        if same_ov:
+            continue                       # the other side didn't touch this row
+        same_bv = (bd is None and vd is None) or (
+            bd is not None and vd is not None and _content_equal(bd, vd))
+        if not same_bv:
+            if bd is not None and od is not None and _content_equal(bd, od):
+                continue                   # both sides made the same edit
+            raise MergeError(
+                f"entry {entry_id} row {rid}: both sides changed it and differ")
+        # Only the other side moved, so its version wins — but a row can only be
+        # transplanted between files that lay rows out identically.
+        if od is not None and b.stride != o.stride:
+            raise MergeError(
+                f"entry {entry_id} row {rid} differs, but the two files disagree on "
+                f"row stride ({b.stride} vs {o.stride}) — the row can't be "
+                f"transplanted without a paramdef to reinterpret it")
+        if od is None:
+            delete.append(rid)
+        elif rid in br:
+            overwrite[rid] = od
+        else:
+            insert[rid] = od
+
+    if not (overwrite or insert or delete):
+        return None
+    patched = param.patch_rows(b, overwrite=overwrite, insert=insert)
+    if delete:
+        patched = param.replace_rows(patched, [r for r in patched.rows if r.id not in set(delete)])
+    return param.write(patched)
+
+
+def param_rows(base, other, vanilla):
+    """Transplant `other`'s param-row edits onto `base`'s regulation.bin.
+
+    Which rows to move is derived from the data, never configured: a row the
+    other side changed relative to vanilla is an edit, and everything else is
+    left alone. That is what keeps a narrow patch narrow — copying a whole param
+    across would revert every row the base authored in it, which is measurably
+    what happens with Clever's Moveset and its one-field edit to SpEffectParam
+    row 174.
+
+    Only params that actually change are re-serialised. Byte-comparing params to
+    decide that would over-report roughly threefold, because tools disagree on
+    whether the strings offset is rounded up to a 16-byte boundary.
+    """
+    from .formats import regulation
+    base_entries = {e.id: e.data for e in regulation.entries(base)}
+    other_entries = {e.id: e.data for e in regulation.entries(other)}
+    van_entries = {e.id: e.data for e in regulation.entries(vanilla)}
+
+    if not (set(base_entries) == set(other_entries) == set(van_entries)):
+        raise MergeError(
+            f"the three regulations hold different BND4 entries (base "
+            f"{len(base_entries)}, other {len(other_entries)}, vanilla "
+            f"{len(van_entries)})")
+
+    from .formats.param import ParamError
+    replacements = {}
+    for eid, base_blob in base_entries.items():
+        other_blob, van_blob = other_entries[eid], van_entries[eid]
+        # Cheap exits that hold whatever the layout is, so a param neither side
+        # touched never has to be parseable. Three of vanilla's own entries are
+        # only readable after a tool has re-saved them: FromSoft stores a strings
+        # offset past the end of the file, which SoulsFormats normalises. Both
+        # mods carry the normalised copy, byte-identical to each other.
+        if base_blob == other_blob or other_blob == van_blob:
+            continue
+        try:
+            merged = _merge_param(base_blob, other_blob, van_blob, eid)
+        except ParamError:
+            # A layout the reader refuses. If the other side is byte-identical to
+            # vanilla it has no edit to lose and base wins by default; if base is
+            # the identical one, the other side's whole entry is the only change
+            # there is. Anything else is a real edit we cannot read, so refuse
+            # rather than quietly picking a side.
+            if other_blob == van_blob:
+                continue
+            if base_blob == van_blob:
+                replacements[eid] = other_blob
+                continue
+            raise MergeError(
+                f"entry {eid} can't be parsed as a PARAM and both sides differ "
+                f"from vanilla — refusing to guess which edit to keep")
+        if merged is not None:
+            replacements[eid] = merged
+    return regulation.repack(base, replacements)
+
+
+STRATEGIES = {"fmg-union": fmg_union, "fmg-3way": fmg_three_way,
+              "param-rows": param_rows}
 # Strategies that need the vanilla file the mods branched from. conflicts.py
 # resolves it from the merge declaration and refuses if it isn't declared.
-NEEDS_VANILLA = frozenset({"fmg-3way"})
+NEEDS_VANILLA = frozenset({"fmg-3way", "param-rows"})
