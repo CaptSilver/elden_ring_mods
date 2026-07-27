@@ -24,8 +24,21 @@ def load_state(path=DEFAULT_PATH):
         raise ErmError(f"installed.json is corrupted ({exc}) — delete it and re-apply") from exc
 
 
-def record_install(state, mod_id, version, archive, files):
-    state[mod_id] = {"version": version, "archive": archive, "files": list(files)}
+def record_install(state, mod_id, version, archive, files, install=None):
+    """Record a mod installed as loose files under Game/.
+
+    `install` is the profile's install mode ("game"/"mods"). It's stored so a
+    later apply can tell that the mode CHANGED and clean up the old copy first —
+    without it, every mode records a different entry shape and the recorders
+    overwrite each other, stranding the previous mode's files on disk with
+    nothing tracking them. Optional because entries written before this existed
+    (and by `_install_ersc`) simply don't carry it; those fall back to the
+    coarser kind-level comparison in cli._recorded_install_mode.
+    """
+    entry = {"version": version, "archive": archive, "files": list(files)}
+    if install is not None:
+        entry["install"] = install
+    state[mod_id] = entry
 
 
 def write_state(path, state):

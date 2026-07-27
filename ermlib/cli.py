@@ -340,6 +340,11 @@ def cmd_apply(args):
         if not vpath.exists():
             r.warn(f"{mid}: archive missing from vendor/ ({asset})")
             continue
+        # Only once the archive is confirmed present: this deletes the previous
+        # install, so doing it before the checks above would strip a working mod
+        # on a run that then had nothing to put back.
+        if not _drop_stale_install(game, mid, kind, state, r):
+            continue
         # randomizer/me3 are tools, not Game/ mods: extract to tools/<mid>/
         # instead of Game/ and never touch installed.json — `erm uninstall`
         # only knows how to clean up files it put inside the game dir.
@@ -434,7 +439,8 @@ def cmd_apply(args):
             continue
         if mid == "seamless-coop":
             installed_seamless = True
-        state_mod.record_install(state, mid, meta.get("version", "?"), asset, files)
+        state_mod.record_install(state, mid, meta.get("version", "?"), asset, files,
+                                 install=kind)
         r.ok(f"{mid} {meta.get('version', '')} → {subdir or 'Game/'}")
     # Resolve VFS collisions before recording state: every me3 package is on
     # disk by now, and me3 would otherwise mount one file per path and drop the
@@ -721,6 +727,74 @@ def _uninstall_one(game, mod_id, state, r):
     state_mod.forget(state, mod_id)
     r.ok(f"removed {removed} file(s) for {mod_id} (from {source})")
     return removed
+
+
+# Install modes that leave something behind, mapped to the `kind` their recorder
+# writes. Modes absent here ("me3" extracts to tools/ and is never recorded,
+# "manual" never installs) have nothing to reconcile.
+_RECORDED_KIND_FOR_INSTALL = {
+    "mods": "files",
+    "game": "files",
+    "me3-native": "me3-native",
+    "me3-package": "me3-package",
+    "randomizer": "randomizer",
+}
+
+
+def _recorded_kind(entry):
+    """Which recorder wrote `entry`, or None if it holds nothing to go on.
+
+    Readable from any entry, including ones written before record_install grew
+    its `install` argument: a plain file list is a files-based install whoever
+    wrote it, and the other recorders each stamp their own `kind`.
+    """
+    kind = entry.get("kind")
+    if kind in ("me3-native", "me3-package", "randomizer"):
+        return kind
+    if entry.get("files") is not None:
+        return "files"
+    return None
+
+
+def _drop_stale_install(game, mod_id, install_kind, state, r):
+    """Remove a mod's previous install when its profile `install` mode changed.
+
+    Every mode records a different entry shape and the recorders overwrite
+    state[mod_id] wholesale, so without this the old mode's files stay on disk
+    tracked by nothing. For a DLL moving from "mods" to "me3-native" that means
+    Elden Mod Loader keeps loading Game/mods/<x>.dll while me3 chainloads the
+    native copy — the same mod injected twice, which `erm tidy` won't clean up
+    either (it treats .dll as content, not cruft).
+
+    Returns True if the mod is safe to install.
+    """
+    entry = state.get(mod_id)
+    if not entry:
+        return True
+    want = _RECORDED_KIND_FOR_INSTALL.get(install_kind)
+    if want is None:
+        return True
+    got = _recorded_kind(entry)
+    if got is None:
+        return True
+    was = entry.get("install") or got
+    if got == want and (was == install_kind or not entry.get("install")):
+        # Same recorder, and either the same mode or an entry too old to name
+        # its mode. The only pair this lets through is game <-> mods on a
+        # pre-`install` entry, and those both extract into Game/ — the new
+        # install lands on top of the old files rather than beside them.
+        return True
+    try:
+        _uninstall_one(game, mod_id, state, r)
+    except ErmError as exc:
+        # Installing the new mode anyway would leave the old copy live and
+        # untracked, which is the exact double-load this guard exists to stop.
+        r.warn(f"{mod_id}: install mode changed {was} → {install_kind} but the previous "
+               f"copy couldn't be removed ({exc}) — skipping. Uninstall it by hand, "
+               f"then re-apply.")
+        return False
+    r.info(f"{mod_id}: install mode changed {was} → {install_kind} — removed the previous copy")
+    return True
 
 
 def cmd_uninstall(args):

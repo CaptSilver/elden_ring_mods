@@ -1230,6 +1230,137 @@ def test_apply_me3_native_honours_an_explicit_dll_field(
     assert state["twodll"]["native"].endswith("beta.dll")
 
 
+def _mode_switch_profile(profiles_dir, mode):
+    _write_profile(profiles_dir, "unit-mode",
+        '[[mods]]\n'
+        'id = "shards"\n'
+        'source = "nexus"\n'
+        'nexus_id = 9030\n'
+        'kind = "qol"\n'
+        f'install = "{mode}"\n'
+    )
+
+
+def test_apply_switching_install_mode_removes_the_previous_copy(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # Each install mode records a different shape in installed.json, and the
+    # recorder overwrites the entry wholesale — so the file list from the old
+    # mode is forgotten while its files stay on disk, tracked by nothing.
+    # For a DLL that means Elden Mod Loader keeps loading Game/mods/<x>.dll
+    # while me3 chainloads the native copy: the same mod injected twice.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "shards.zip", "shards.dll", b"MZ")
+    _seed_lock(tmp_path / "mods.lock.toml", {"shards": ("1.0.0", "shards.zip")})
+
+    _mode_switch_profile(tmp_path / "profiles", "mods")
+    assert cli.cmd_apply(_apply_args("unit-mode")) == 0
+    eml_copy = game_dir / "mods" / "shards.dll"
+    assert eml_copy.exists()
+
+    _mode_switch_profile(tmp_path / "profiles", "me3-native")
+    assert cli.cmd_apply(_apply_args("unit-mode")) == 0
+    capsys.readouterr()
+
+    assert (tmp_path / "tools" / "me3" / "natives" / "shards" / "shards.dll").exists()
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert state["shards"]["kind"] == "me3-native"
+    assert not eml_copy.exists(), "the old mode's DLL survived — it will load twice"
+
+
+def test_apply_mode_switch_back_to_mods_removes_the_native(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # The reverse direction has to hold too, or reverting a trial leaves a
+    # [[natives]] entry pointing at a DLL me3 still chainloads.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "shards.zip", "shards.dll", b"MZ")
+    _seed_lock(tmp_path / "mods.lock.toml", {"shards": ("1.0.0", "shards.zip")})
+
+    _mode_switch_profile(tmp_path / "profiles", "me3-native")
+    assert cli.cmd_apply(_apply_args("unit-mode")) == 0
+    native_dir = tmp_path / "tools" / "me3" / "natives" / "shards"
+    assert native_dir.is_dir()
+
+    _mode_switch_profile(tmp_path / "profiles", "mods")
+    assert cli.cmd_apply(_apply_args("unit-mode")) == 0
+    capsys.readouterr()
+
+    assert (game_dir / "mods" / "shards.dll").exists()
+    assert not native_dir.exists(), "the native copy survived — me3 still chainloads it"
+    prof_text = (tmp_path / "tools" / "me3" / "erm-coop.me3").read_text()
+    assert "shards.dll" not in prof_text
+
+
+def test_apply_mode_switch_cleans_up_an_entry_that_predates_mode_tracking(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # Entries written before record_install tracked the install mode carry only
+    # a file list. That is still enough to prove a files-based install became a
+    # native — and it is the shape every already-installed mod has the first
+    # time this runs, so it has to clean up rather than shrug.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "shards.zip", "shards.dll", b"MZ")
+    _seed_lock(tmp_path / "mods.lock.toml", {"shards": ("1.0.0", "shards.zip")})
+
+    eml_copy = game_dir / "mods" / "shards.dll"
+    eml_copy.parent.mkdir()
+    eml_copy.write_bytes(b"MZ")
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "shards": {"version": "1.0.0", "archive": "shards.zip",
+                   "files": ["mods/shards.dll"]},
+    }))
+
+    _mode_switch_profile(tmp_path / "profiles", "me3-native")
+    assert cli.cmd_apply(_apply_args("unit-mode")) == 0
+    capsys.readouterr()
+
+    assert (tmp_path / "tools" / "me3" / "natives" / "shards" / "shards.dll").exists()
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert state["shards"]["kind"] == "me3-native"
+    assert not eml_copy.exists(), "the pre-tracking copy survived — it will load twice"
+
+
+def test_apply_same_mode_twice_does_not_reinstall_from_scratch(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # The guard must fire only on a real mode change. A plain repeat apply of an
+    # unchanged profile has to leave the recorded install alone — a spurious
+    # uninstall/reinstall cycle would churn every mod on every apply.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "shards.zip", "shards.dll", b"MZ")
+    _seed_lock(tmp_path / "mods.lock.toml", {"shards": ("1.0.0", "shards.zip")})
+
+    _mode_switch_profile(tmp_path / "profiles", "mods")
+    assert cli.cmd_apply(_apply_args("unit-mode")) == 0
+    capsys.readouterr()
+    assert cli.cmd_apply(_apply_args("unit-mode")) == 0
+    out = capsys.readouterr().out
+
+    assert "install mode changed" not in out
+    assert (game_dir / "mods" / "shards.dll").exists()
+
+
 def test_apply_records_the_merged_package_in_state(tmp_path, monkeypatch):
     """The merged package has to reach installed.json, or reconcile won't emit
     it and me3 will never mount the merged file."""
