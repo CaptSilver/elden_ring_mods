@@ -26,8 +26,8 @@ includes = ["seamless-full"]
 # --- on trial ---
 # Starlight Shards like Rune Arcs (#9030, krios2146) — makes the Starlight Shard
 # FP-regen buff last until you die instead of the vanilla ~90s, the way a Rune
-# Arc's Great Rune buff persists until death. Ships as a ModEngine2 external_dll;
-# loaded here through Elden Mod Loader from Game/mods/ like the other client DLLs.
+# Arc's Great Rune buff persists until death. Ships as a ModEngine2 external_dll,
+# which me3 chainloads directly as a native.
 #
 # Ban-safe under Seamless the same way the rest of the stack is: it patches one
 # in-memory speffect duration (501290 → infinite) and toggles a save event flag,
@@ -35,17 +35,24 @@ includes = ["seamless-full"]
 # network. Purely local — it only ever reads the main player, so it doesn't
 # desync and no co-op partner needs to run it. Not requires_all_players.
 #
-# On trial because its param scan keys off a hardcoded byte signature for one
-# game build; if that doesn't match 1.16.1 it panics in its worker thread and
-# no-ops silently — "it loaded" won't prove it works. Verify in-game (pop a
-# shard, watch the FP regen outlast its normal timer, survive a reload, and drop
-# on death) before promoting to seamless-full + single-full.
+# Its param scan keys off a hardcoded byte signature for one game build; if that
+# doesn't match, it panics in its worker thread and no-ops silently — "it loaded"
+# never proved it worked. It didn't: run through Elden Mod Loader it injected
+# cleanly (mod_loader_log.txt showed it loading, then "Loaded 14 .dll mods") and
+# had no effect in game.
+#
+# Now on me3-native to separate a stale signature from a timing problem. EML
+# injects on a 5000 ms delay, long after the game is up; me3 chainloads at
+# startup. If the scan was running against a process state it didn't expect
+# rather than against the wrong bytes, this is what fixes it. Same acceptance
+# test either way: pop a shard, watch the FP regen outlast its normal timer,
+# survive a reload, and drop on death. Still no-ops → record it as rejected.
 [[mods]]
 id = "starlight-shards-rune-arcs"
 source = "nexus"
 nexus_id = 9030
 kind = "qol"
-install = "mods"
+install = "me3-native"
 
 # Map for Goblins (#10062, DLL rebuild) — a world-map overlay that drops ~6900
 # loot/boss/grace icons onto the map, plus an in-game ImGui panel (F10, or Y+R3
