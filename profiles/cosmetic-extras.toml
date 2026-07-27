@@ -34,3 +34,21 @@ kind = "cosmetic"
 install = "me3-package"
 # Alternative — swap for this, don't run both (both touch weapon assets):
 #   id = "golems-glow-arsenal"  / nexus_id = 4307  (weapons replaced with glowing enemy variants)
+
+# Weapons Animated Glow and Clever's Moveset both ship wp_a_0556 — the only two
+# files the two packages have in common, out of 47 and 57. me3 mounts one file
+# per path and picks silently, so this has to be settled explicitly.
+#
+# Clever's keeps it. It's a shared mod every co-op player runs, and its copy of a
+# weapon bundle is likely paired with the moveset it adds; overriding it would
+# diverge this machine from partners for a purely visual gain. The cost is the
+# animated glow on that one weapon — the other 45 files still apply.
+#
+# This is a deliberate content drop, not a file that "ships nothing of its own"
+# like the pruned Boss Res duplicates in gameplay-extras.
+[[prunes]]
+mod = "weapons-animated-glow"
+paths = [
+    "parts/wp_a_0556.partsbnd.dcx",
+    "parts/wp_a_0556_l.partsbnd.dcx",
+]

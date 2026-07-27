@@ -493,7 +493,12 @@ def cmd_apply(args):
     package_ids = [mid for mid, _pkg in state_mod.me3_packages(state)
                    if mid != conflicts.MERGED_ID]
     for pruned in conflicts.apply_prunes(ME3_DIR, profile.get("prunes", [])):
-        r.info(f"pruned {pruned} (ships no content of its own)")
+        # No reason attached: a prune drops a path because the profile says so,
+        # and the profile's comment carries why. The old wording asserted the
+        # file "ships no content of its own", which is true of the vanilla
+        # copies it was written for and false of a prune that deliberately
+        # gives up real content to settle a collision.
+        r.info(f"pruned {pruned}")
     try:
         # A declared merge's sources must be faithful before we let resolve()
         # near them: resolve() strips the merged path out of every contributor
