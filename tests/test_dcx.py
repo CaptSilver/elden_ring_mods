@@ -183,3 +183,42 @@ def test_zstd_window_matches_the_byte_shipped_regulations_carry():
     safe -- nothing here can verify it against the game."""
     blob = dcx.write_zstd(b"".join(bytes([i % 251]) * 97 for i in range(4000)))
     assert blob[dcx.HEADER_SIZE + 5] == 0x30
+
+
+def _without_zstd(monkeypatch):
+    """Simulate an interpreter older than 3.14, where compression.zstd is absent."""
+    import importlib as _il
+    real = _il.import_module
+
+    def missing(name, *args, **kwargs):
+        if name == "compression.zstd":
+            raise ImportError("No module named 'compression'")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(dcx.importlib, "import_module", missing)
+
+
+def test_the_other_codecs_still_work_without_the_zstd_module(monkeypatch):
+    """compression.zstd arrived in Python 3.14 and SteamOS ships older. Importing
+    it at module scope took EVERY erm command down there — not just merging, but
+    anything that touches ermlib.formats at all. Only regulation.bin is ZSTD."""
+    payload = b"BND4" + bytes(range(256)) * 10
+    dflt = dcx.write_dflt(payload)
+    _without_zstd(monkeypatch)
+    assert dcx.read(dflt) == payload
+    assert dcx.write_dflt(payload) == dflt
+
+
+def test_writing_zstd_without_the_module_says_which_python_is_needed(monkeypatch):
+    _without_zstd(monkeypatch)
+    with pytest.raises(dcx.DcxError, match="3.14"):
+        dcx.write_zstd(b"payload" * 100)
+
+
+def test_reading_zstd_without_the_module_fails_as_a_dcx_error(monkeypatch):
+    """An ImportError escaping here would surface as a crash rather than the
+    ordinary 'this archive needs something you don't have' path callers handle."""
+    blob = dcx.write_zstd(b"payload" * 100)
+    _without_zstd(monkeypatch)
+    with pytest.raises(dcx.DcxError, match="compression.zstd"):
+        dcx.read(blob)

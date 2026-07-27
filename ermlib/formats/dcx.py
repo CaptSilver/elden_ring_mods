@@ -11,9 +11,10 @@ established for msgbnd, but a regulation.bin arrives as ZSTD and should leave as
 ZSTD: nothing has ever demonstrated the game accepting a DFLT regulation on a
 current build.
 """
+import importlib
+import platform
 import struct
 import zlib
-from compression import zstd
 
 from ..errors import ErmError
 from . import ooz
@@ -43,6 +44,26 @@ class DcxError(ErmError):
     """A DCX container was malformed, or used a compression we can't read."""
 
 
+def _zstd():
+    """The stdlib zstd module, or a DcxError explaining why it isn't here.
+
+    Resolved on use, never at import. `compression.zstd` arrived in Python 3.14,
+    and SteamOS ships older — importing it at module scope took all of erm down
+    on the Deck, including every command that has nothing to do with ZSTD.
+    regulation.bin is the only ZSTD file in play, so everything else keeps
+    working on an older interpreter.
+    """
+    try:
+        return importlib.import_module("compression.zstd")
+    except ImportError as exc:
+        raise DcxError(
+            f"ZSTD DCX support needs Python 3.14's compression.zstd, and this "
+            f"interpreter is {platform.python_version()}. Only regulation.bin "
+            f"uses ZSTD — the rest of erm works without it, so this is a merge "
+            f"you can't run here rather than an install you can't do."
+        ) from exc
+
+
 def read(data):
     """Decompress a DCX container and return its payload."""
     if data[:4] != MAGIC:
@@ -66,6 +87,7 @@ def read(data):
                 f"DFLT payload is {len(out)} bytes, header claims {uncompressed}")
         return out
     if method == ZSTD:
+        zstd = _zstd()
         try:
             out = zstd.decompress(body)
         except zstd.ZstdError as exc:
@@ -117,6 +139,7 @@ def write_zstd(payload, level=ZSTD_LEVEL):
     The bytes still decompress either way, which is exactly why this is worth
     pinning down in code rather than leaving to whoever edits it next.
     """
+    zstd = _zstd()
     compressor = zstd.ZstdCompressor(options={
         zstd.CompressionParameter.compression_level: level,
         # Not a compression-ratio knob: it is what the DECODER is required to
