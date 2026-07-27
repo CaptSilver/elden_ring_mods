@@ -266,13 +266,34 @@ def resolve(me3_dir, mod_ids, merges, lock=None):
     return [rel for rel, _, _ in planned]
 
 
-def clear_merged(me3_dir):
-    """Delete the synthetic merged package.
+def clear_merged(me3_dir, keep=()):
+    """Delete the synthetic merged package, except for `keep`.
 
     This alone does not recover anything -- it just clears prior merged
     output so the next resolve() rebuilds it from scratch. The reason that's
     safe to do after a failed resolve() is resolve()'s own atomicity (it never
     unlinks a source until every merge in the run has succeeded), not
     anything this function does.
+
+    `keep` is for merged output the caller is NOT going to rebuild this run.
+    A successful merge strips the path from every contributor, so that output
+    is the only remaining copy -- wiping it when nothing will regenerate it
+    leaves no package providing the file at all, which is silent content loss
+    of exactly the kind this module exists to prevent.
     """
-    shutil.rmtree(_package_dir(me3_dir, MERGED_ID), ignore_errors=True)
+    root = _package_dir(me3_dir, MERGED_ID)
+    keep = {str(k) for k in keep}
+    if not keep:
+        shutil.rmtree(root, ignore_errors=True)
+        return
+    for path in sorted((p for p in root.rglob("*") if p.is_file()), reverse=True):
+        if path.relative_to(root).as_posix() not in keep:
+            path.unlink()
+    # Prune directories the removals emptied, deepest first, but never the
+    # package root -- an empty root still means "this package exists".
+    for d in sorted((p for p in root.rglob("*") if p.is_dir()),
+                    key=lambda p: len(p.parts), reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass

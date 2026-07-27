@@ -452,7 +452,33 @@ def cmd_apply(args):
     # between one of those and this profile's own mods is exactly as real as
     # one within a single profile; scoping to the current profile's ids alone
     # would silently miss it.
-    conflicts.clear_merged(ME3_DIR)
+    # Merged output belongs to the mods that produced it, not to whichever
+    # profile happens to be applied next. An overlay profile (cosmetic-extras on
+    # top of a coop base) declares no merges and shares no mods with the base's
+    # contributors, so it has no say over their merged files -- and it must not
+    # wipe them, because a successful merge leaves the ONLY remaining copy: the
+    # path has already been stripped from every contributor. Carrying them
+    # across is what keeps `apply base` then `apply overlay` from silently
+    # ending up with no regulation.bin at all.
+    #
+    # Anything this profile does own still gets cleared, so withdrawing a merge
+    # declaration and re-applying still drops the stale output.
+    profile_mod_ids = {m["id"] for m in profile["mods"]}
+    installed_packages = {mid for mid, _pkg in state_mod.me3_packages(state)
+                          if mid != conflicts.MERGED_ID}
+    prior_merged = (state.get(conflicts.MERGED_ID) or {}).get("paths") or {}
+    carried = {rel: mods for rel, mods in prior_merged.items()
+               # Not this profile's business...
+               if not (set(mods) & profile_mod_ids)
+               # ...and still backed by installed mods, so merged output can't
+               # outlive the sources it was built from.
+               and set(mods) <= installed_packages}
+    conflicts.clear_merged(ME3_DIR, keep=carried)
+    if carried:
+        # Whatever survived the clear is still on disk, so state has to keep
+        # saying so -- including down the abort path below, which writes state
+        # and re-raises without ever reaching the success-path record.
+        state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}", carried)
     # Forget any merged package from a PRIOR apply right away, in lockstep with
     # the physical dir clear_merged() just wiped — not after the resolve() call
     # below. resolve() can raise ConflictError on a totally unrelated collision,
@@ -462,7 +488,8 @@ def cmd_apply(args):
     # directory is already gone. Re-recorded below only if this run's merge
     # actually succeeds. Excluded from package_ids below for the same reason:
     # it's this function's own prior output, not a real collision provider.
-    state_mod.forget(state, conflicts.MERGED_ID)
+    if not carried:
+        state_mod.forget(state, conflicts.MERGED_ID)
     package_ids = [mid for mid, _pkg in state_mod.me3_packages(state)
                    if mid != conflicts.MERGED_ID]
     for pruned in conflicts.apply_prunes(ME3_DIR, profile.get("prunes", [])):
@@ -493,10 +520,16 @@ def cmd_apply(args):
         except OSError:
             pass
         raise
-    if merged:
-        state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}")
+    declared_mods = {m["path"]: list(m["mods"]) for m in profile.get("merges", [])}
+    merged_paths = dict(carried)
+    merged_paths.update({rel: declared_mods.get(rel, []) for rel in merged})
+    if merged_paths:
+        state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}",
+                                merged_paths)
         for rel in merged:
             r.ok(f"merged {rel} (both mods' content kept)")
+        for rel in carried:
+            r.info(f"kept merged {rel} (declared by another profile)")
     state_mod.write_state(Path("installed.json"), state)
     try:
         me3profile.reconcile(state, ME3_DIR, game)

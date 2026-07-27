@@ -1591,9 +1591,20 @@ def test_apply_forgets_merged_state_when_a_later_unrelated_conflict_aborts(
         cli.cmd_apply(_apply_args("unit-undeclared-only"))
     capsys.readouterr()
 
+    # The mod-x/mod-y merge survives, and state keeps saying so. This profile
+    # contains neither of them, so it has no standing to discard their merged
+    # output -- and that output is the only remaining copy, since merging strips
+    # the path from both contributors. Wiping it here used to leave no package
+    # providing msg/x.dcx at all.
+    #
+    # What the abort must still guarantee is that state and disk agree, so
+    # reconcile() never points erm-coop.me3 at a directory that isn't there.
     state = json.loads((tmp_path / "installed.json").read_text())
-    assert conflicts.MERGED_ID not in state          # not just the dir -- the record too
-    assert not (tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID).exists()
+    merged_dir = tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID
+    assert (merged_dir / "msg" / "x.dcx").read_bytes() == b"AAABBB"
+    assert conflicts.MERGED_ID in state
+    assert state[conflicts.MERGED_ID]["paths"] == {"msg/x.dcx": ["mod-x", "mod-y"]}
+    assert conflicts.MERGED_ID in (tmp_path / "tools/me3/erm-coop.me3").read_text()
 
 
 def test_apply_raises_when_a_merge_contributor_is_not_reinstalled_this_run(
@@ -1889,3 +1900,90 @@ def test_a_conflict_abort_regenerates_the_me3_profile(
     assert not (tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID).exists()
     assert conflicts.MERGED_ID not in me3_profile.read_text(), (
         "erm-coop.me3 still names a merged package whose directory was wiped")
+
+
+def _seed_package_zip(tmp_path, mod_id, member, content):
+    lock = tmp_path / "mods.lock.toml"
+    prior = lock.read_text() if lock.exists() else ""
+    lock.write_text(prior +
+        f'\n[{mod_id}]\nversion = "1.0"\nasset = "{mod_id}.zip"\nsha256 = "a"\nsource = "nexus"\n')
+    vendor = tmp_path / "vendor"
+    vendor.mkdir(exist_ok=True)
+    with zipfile.ZipFile(vendor / f"{mod_id}.zip", "w") as z:
+        z.writestr(member, content)
+
+
+def _overlay_profile(profiles_dir, name, mod_id):
+    _write_profile(profiles_dir, name,
+        '[[mods]]\n'
+        f'id = "{mod_id}"\nsource = "nexus"\nnexus_id = 9\nkind = "cosmetic"\n'
+        'install = "me3-package"\n')
+
+
+def test_an_overlay_apply_keeps_a_merge_it_has_no_say_over(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """Overlay profiles are applied on top of a base one, which is the documented
+    workflow. The overlay declares no merges, so nothing rebuilds the base's --
+    and the contributors no longer hold the merged path, because a successful
+    merge strips it from them. Wiping it therefore left NO package providing the
+    file at all, silently, with the apply reporting success."""
+    from ermlib import conflicts
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(conflicts.STRATEGIES, "concat", lambda base, other: base + other)
+
+    _seed_package_zip(tmp_path, "mod-x", "chr/c0000.anibnd.dcx", b"X")
+    _seed_package_zip(tmp_path, "mod-y", "chr/c0000.anibnd.dcx", b"Y")
+    _seed_package_zip(tmp_path, "mod-z", "menu/tex.dcx", b"Z")
+
+    profiles = tmp_path / "profiles"
+    _two_package_profile(profiles, "unit-base", merge=True)
+    assert cli.cmd_apply(_apply_args("unit-base")) == 0
+    merged_file = tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID / "chr/c0000.anibnd.dcx"
+    assert merged_file.read_bytes() == b"XY"
+
+    _overlay_profile(profiles, "unit-overlay", "mod-z")
+    assert cli.cmd_apply(_apply_args("unit-overlay")) == 0
+    capsys.readouterr()
+
+    assert merged_file.exists(), "the overlay wiped a merge it never declared"
+    assert merged_file.read_bytes() == b"XY"
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert conflicts.MERGED_ID in state
+    assert conflicts.MERGED_ID in (tmp_path / "tools/me3/erm-coop.me3").read_text()
+
+
+def test_a_carried_merge_is_dropped_once_a_contributor_is_uninstalled(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """Carrying merged output across an unrelated apply must not outlive its
+    sources: with a contributor gone the merged file is content nobody asked
+    for any more."""
+    from ermlib import conflicts, state as state_mod
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(conflicts.STRATEGIES, "concat", lambda base, other: base + other)
+
+    _seed_package_zip(tmp_path, "mod-x", "chr/c0000.anibnd.dcx", b"X")
+    _seed_package_zip(tmp_path, "mod-y", "chr/c0000.anibnd.dcx", b"Y")
+    _seed_package_zip(tmp_path, "mod-z", "menu/tex.dcx", b"Z")
+
+    profiles = tmp_path / "profiles"
+    _two_package_profile(profiles, "unit-base2", merge=True)
+    assert cli.cmd_apply(_apply_args("unit-base2")) == 0
+    capsys.readouterr()
+
+    # mod-y disappears from state, as an uninstall would leave it
+    state = state_mod.load_state(tmp_path / "installed.json")
+    state_mod.forget(state, "mod-y")
+    state_mod.write_state(tmp_path / "installed.json", state)
+
+    _overlay_profile(profiles, "unit-overlay2", "mod-z")
+    assert cli.cmd_apply(_apply_args("unit-overlay2")) == 0
+    capsys.readouterr()
+
+    merged_file = tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID / "chr/c0000.anibnd.dcx"
+    assert not merged_file.exists()

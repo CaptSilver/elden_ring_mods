@@ -92,7 +92,7 @@ def has_me3_packages(state):
     return any(e.get("kind") == "me3-package" for e in state.values())
 
 
-def record_merged(state, package):
+def record_merged(state, package, paths=None):
     """Record the synthetic package holding merged conflict output.
 
     Recorded as a me3-package so me3profile.reconcile emits it like any other,
@@ -102,7 +102,13 @@ def record_merged(state, package):
     What actually keeps update/fetch from trying to resolve MERGED_ID as a
     real mod is that it never appears in a profile or in mods.lock.toml, so
     those commands never even iterate over it.
+
+    `paths` maps each merged game-relative path to the mod ids that contributed
+    it. Without that, an apply can't tell which merged output belongs to the
+    profile it's applying and which was produced by a different one, and the
+    only safe-looking option -- rebuild everything from scratch -- quietly
+    destroys merges the current profile knows nothing about.
     """
     state[MERGED_ID] = {"version": "derived", "archive": None,
                         "kind": "me3-package", "package": package,
-                        "derived": True}
+                        "derived": True, "paths": dict(paths or {})}
