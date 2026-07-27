@@ -152,3 +152,34 @@ def test_read_rejects_a_zstd_size_mismatch():
     struct.pack_into(">I", blob, 0x1c, len(payload) + 1)
     with pytest.raises(dcx.DcxError, match="ZSTD payload"):
         dcx.read(bytes(blob))
+
+
+ZSTD_MOD_WINDOW_LOG = 16
+
+
+def _frame_window_log(blob):
+    frame = blob[dcx.HEADER_SIZE:]
+    assert frame[:4] == bytes.fromhex("28b52ffd")
+    assert frame[4] & 0x20 == 0, "single-segment frames encode the window differently"
+    return 10 + (frame[5] >> 3)
+
+
+def test_zstd_frame_window_stays_within_what_the_game_loads():
+    """A regulation.bin whose frame demands a large window crashes the game on
+    load, even with byte-identical content to one that works. Every regulation
+    shipped by a mod tool declares windowLog 16; only vanilla's own file goes
+    higher, and that one is never served through the loader's file override.
+
+    The payload has to exceed the window for the encoder to record a real one,
+    so a small test string would pass this vacuously.
+    """
+    blob = dcx.write_zstd(b"".join(bytes([i % 251]) * 97 for i in range(4000)))
+    assert _frame_window_log(blob) <= ZSTD_MOD_WINDOW_LOG
+
+
+def test_zstd_window_matches_the_byte_shipped_regulations_carry():
+    """Pinned to the exact descriptor byte rather than just the bound, because
+    matching what shipped files do is the whole basis for believing this is
+    safe -- nothing here can verify it against the game."""
+    blob = dcx.write_zstd(b"".join(bytes([i % 251]) * 97 for i in range(4000)))
+    assert blob[dcx.HEADER_SIZE + 5] == 0x30

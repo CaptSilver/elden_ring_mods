@@ -29,6 +29,13 @@ HEADER_SIZE = 0x4C
 MIN_LEVEL, MAX_LEVEL = 1, 9
 # Matches Clever's regulation.bin, which the game loads today.
 ZSTD_LEVEL = 15
+# Cap the decoder's window requirement at 64 KiB. Both mod-authored regulations
+# on this machine declare exactly this (descriptor byte 0x30) and both load; a
+# frame asking for 4 MiB crashed the game a few seconds into startup, with byte-
+# identical content to one that worked. Vanilla's own regulation asks for 64 MiB
+# and is fine, but it is the one file never served through the loader's file
+# override -- so it is not evidence about this path.
+ZSTD_WINDOW_LOG = 16
 MAX_UNK04 = 0x11000
 
 
@@ -110,6 +117,11 @@ def write_zstd(payload, level=ZSTD_LEVEL):
     The bytes still decompress either way, which is exactly why this is worth
     pinning down in code rather than leaving to whoever edits it next.
     """
-    compressor = zstd.ZstdCompressor(level=level)
+    compressor = zstd.ZstdCompressor(options={
+        zstd.CompressionParameter.compression_level: level,
+        # Not a compression-ratio knob: it is what the DECODER is required to
+        # allocate, and something on the override path refuses a large one.
+        zstd.CompressionParameter.window_log: ZSTD_WINDOW_LOG,
+    })
     body = compressor.compress(payload) + compressor.flush()
     return _header(ZSTD, level, len(payload), len(body)) + body
