@@ -70,22 +70,29 @@ def _synthetic(groups, name="t000001000"):
     for (gid, first, n), (_gid, state_specs) in zip(group_records, groups):
         off = states_off + first * esd.STATE_SIZE
         out += struct.pack("<qqqq", gid, off, n, off)
+    # A state's own condition-pool offset is a bump-allocator cursor, not a
+    # sentinel: real ESDs (verified against bossres/melina, byte for byte)
+    # give a zero-condition state wherever the cursor happens to stand, never
+    # -1. Harmless either way for the reader -- it gates condition reads on
+    # the count, never the offset, for exactly this reason -- but write() has
+    # to reproduce it to round-trip a real file, so this fixture has to match.
     cond_i = 0
     for gid, state_specs in groups:
-        for sid, target in state_specs:
+        first_co_off = None
+        for j, (sid, target) in enumerate(state_specs):
+            co_off = pool_off + cond_i * 8
+            if j == 0:
+                first_co_off = co_off
             if target is None:
-                out += struct.pack("<qqqqqqqqq", sid, -1, 0, -1, 0, -1, 0, -1, 0)
+                out += struct.pack("<qqqqqqqqq", sid, co_off, 0, -1, 0, -1, 0, -1, 0)
             else:
-                out += struct.pack("<qqqqqqqqq", sid, pool_off + cond_i * 8, 1,
-                                   -1, 0, -1, 0, -1, 0)
+                out += struct.pack("<qqqqqqqqq", sid, co_off, 1, -1, 0, -1, 0, -1, 0)
                 cond_i += 1
         if len(state_specs) > 1:
             first_sid, first_target = state_specs[0]
-            if first_target is None:
-                out += struct.pack("<qqqqqqqqq", first_sid, -1, 0, -1, 0, -1, 0, -1, 0)
-            else:
-                out += struct.pack("<qqqqqqqqq", first_sid, pool_off, 1,
-                                   -1, 0, -1, 0, -1, 0)
+            first_count = 0 if first_target is None else 1
+            out += struct.pack("<qqqqqqqqq", first_sid, first_co_off, first_count,
+                               -1, 0, -1, 0, -1, 0)
     for i, (gid, target) in enumerate(conditions):
         target_off = states_off + index_of[(gid, target)] * esd.STATE_SIZE
         out += struct.pack("<qqqqqqq", target_off, -1, 0, -1, 0,
@@ -201,3 +208,46 @@ def test_reads_the_real_files_with_the_counts_the_header_declares(which):
     seen_calls = list({cc.order: cc for cc in seen_calls_raw}.values())
     assert len(seen_calls) == calls
     assert sum(len(cc.args) for cc in seen_calls) == args
+
+
+def test_write_round_trips_a_synthetic_file():
+    raw = _synthetic([(1, [(0, 1), (1, None)]), (2, [(0, None), (1, 0)])])
+    assert esd.write(esd.read(raw)) == raw
+
+
+@pytest.mark.parametrize("which", ["bossres", "melina"])
+def test_write_round_trips_the_mod_files_byte_for_byte(which):
+    """The faithfulness gate, and the same bar bnd4 and tpf are held to. These two
+    are the class of file the merge actually produces."""
+    raw = real_esd(which)
+    assert esd.write(esd.read(raw)) == raw
+
+
+def test_write_round_trips_vanilla_semantically():
+    """Not byte-exact, deliberately. Vanilla over-declares its condition-offset pool
+    by 128 slots -- runs written for the dummy states and then orphaned -- and erm
+    never writes vanilla, only reads it as the merge base. Parsing what we wrote must
+    still give back the same graph."""
+    raw = real_esd("vanilla")
+    once = esd.read(raw)
+    twice = esd.read(esd.write(once))
+    assert [g.id for g in twice.groups] == [g.id for g in once.groups]
+    for a, b in zip(once.groups, twice.groups):
+        assert [s.id for s in a.states] == [s.id for s in b.states]
+        for sa, sb in zip(a.states, b.states):
+            assert [c.target for c in sa.conditions] == [c.target for c in sb.conditions]
+            assert [c.evaluator for c in sa.conditions] == [c.evaluator for c in sb.conditions]
+
+
+def test_write_appends_a_new_state_and_keeps_every_target_resolvable():
+    """Inserting a state shifts the whole state table, so every jump target moves.
+    A writer that patched offsets rather than re-deriving them would corrupt these."""
+    raw = _synthetic([(1, [(0, 1), (1, None)])])
+    parsed = esd.read(raw)
+    group = parsed.groups[0]
+    grown = group._replace(states=group.states + (
+        esd.State(id=7, conditions=(esd.Condition(target=0, evaluator=b"\xa1"),)),))
+    out = esd.read(esd.write(parsed._replace(groups=(grown,))))
+    assert [s.id for s in out.groups[0].states] == [0, 1, 7]
+    assert out.groups[0].states[2].conditions[0].target == 0
+    assert out.groups[0].states[0].conditions[0].target == 1

@@ -231,3 +231,224 @@ def read(data):
             s._replace(conditions=resolve(g.id, s.conditions)) for s in g.states))
         for g in groups)
     return Esd(groups, name, unk, pool_count)
+
+
+def _ordered(records):
+    """Source order first, then anything a merge created, in the order it was added.
+
+    Reproducing a file's own layout is what makes a byte-exact round-trip possible
+    without knowing how the original writer chose to lay things out -- FromSoft's
+    rule for interleaving bytecode blobs has never been recovered, and this sidesteps
+    needing it.
+    """
+    known = [r for r in records if r.order is not None]
+    fresh = [r for r in records if r.order is None]
+    return sorted(known, key=lambda r: r.order) + fresh
+
+
+def _dedupe(records):
+    """Collapse repeated references to one physically-shared record to a single
+    representative.
+
+    Conditions can be shared: several states' condition-pool entries -- or several
+    conditions' subcondition pools -- pointing at the identical table row. The
+    reader has no way to notice this and re-reads the row fresh every time it is
+    referenced, so it hands back a distinct object per reference, all stamped with
+    the shared row's `.order`. The same thing happens one level down: a shared
+    condition's pass_commands (and their args) get re-read fresh at each
+    reference too, so command calls and args need the same treatment. `order` (the
+    row's fixed table index) is what tells a genuine duplicate reference apart
+    from two distinct records -- `id()` gives every duplicate its own slot and
+    fans a shared row out into copies on write.
+
+    Records with `order is None` were created after the file was read (by a
+    merge) and are never coalesced with each other -- each occurrence is a
+    distinct new record.
+    """
+    seen, out = set(), []
+    for r in records:
+        key = r.order if r.order is not None else id(r)
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def _slots(occurrences, deduped):
+    """Map every occurrence -- including duplicate references to a shared record
+    -- to the table slot its representative ends up in within `deduped`."""
+    index = {}
+    for i, r in enumerate(deduped):
+        index[r.order if r.order is not None else id(r)] = i
+    return {id(r): index[r.order if r.order is not None else id(r)] for r in occurrences}
+
+
+def write(archive):
+    """Serialise an Esd. Reproduces a file the reader read, byte for byte."""
+    groups = _ordered(archive.groups)
+
+    # Flatten, keeping every reference encountered -- including duplicates of a
+    # shared record -- so `_dedupe` sees the full picture and `_slots` can answer
+    # for any occurrence a nested walk hands it. `cond_group` records which
+    # top-level group a condition belongs to as it is visited, which is the only
+    # way to answer that cheaply later: a condition's own fields don't say, and
+    # a shared condition's target must in any case lie in the group of every
+    # state that references it (the reader rejects cross-group jumps), so one
+    # answer per condition is enough regardless of how many states share it.
+    all_states, all_conditions, all_calls, all_args = [], [], [], []
+    cond_group = {}
+
+    def collect_calls(calls):
+        for call in calls:
+            all_calls.append(call)
+            all_args.extend(call.args)
+
+    def collect_conditions(conditions, group_id):
+        for cond in conditions:
+            all_conditions.append(cond)
+            cond_group[id(cond)] = group_id
+            collect_calls(cond.pass_commands)
+            collect_conditions(cond.subconditions, group_id)
+
+    for group in groups:
+        for state in _ordered(group.states):
+            all_states.append(state)
+            collect_conditions(state.conditions, group.id)
+            collect_calls(state.entry)
+            collect_calls(state.exit)
+            collect_calls(state.while_)
+
+    calls = _ordered(_dedupe(all_calls))
+    args = _ordered(_dedupe(all_args))
+    conditions = _ordered(_dedupe(all_conditions))
+    call_slot = _slots(all_calls, calls)
+    cond_slot = _slots(all_conditions, conditions)
+
+    # State table: each group's states, then one dummy copy of state 0 when the group
+    # holds more than one. Position is what a jump target names, so this is fixed
+    # before anything that references a state is emitted.
+    state_slot, state_rows, slot = {}, [], 0
+    for group in groups:
+        ordered_states = _ordered(group.states)
+        for state in ordered_states:
+            state_slot[(group.id, state.id)] = slot
+            state_rows.append((group.id, state))
+            slot += 1
+        if len(ordered_states) > 1:
+            state_rows.append((group.id, ordered_states[0]))    # dummy
+            slot += 1
+    state_count = slot
+
+    group_count = len(groups)
+    groups_at = INTERNAL_HEADER_SIZE
+    states_at = groups_at + group_count * GROUP_SIZE
+    conds_at = states_at + state_count * STATE_SIZE
+    calls_at = conds_at + len(conditions) * CONDITION_SIZE
+    args_at = calls_at + len(calls) * COMMAND_CALL_SIZE
+    pool_at = args_at + len(args) * COMMAND_ARG_SIZE
+
+    # The pool holds one slot per state->condition and per condition->subcondition
+    # link, in the order the graph is walked. A state whose conditions are shared
+    # with another state still gets its own reservation here -- only the *value*
+    # written into it (the condition's slot, via cond_slot) is shared.
+    pool, pool_start = [], {}
+
+    def reserve(conds, key):
+        pool_start[key] = pool_at + len(pool) * 8
+        for cond in conds:
+            pool.append(conds_at + cond_slot[id(cond)] * CONDITION_SIZE)
+
+    for group in groups:
+        for state in _ordered(group.states):
+            reserve(state.conditions, ("state", group.id, state.id))
+    for cond in conditions:
+        if cond.subconditions:
+            reserve(cond.subconditions, ("cond", id(cond)))
+    blobs_at = pool_at + len(pool) * 8
+
+    # Blobs, in source order so an untouched file's region comes back identical.
+    # `conditions` and `args` are already deduplicated, so a shared record's
+    # payload is written once, not once per reference.
+    blob_records = [(c.blob_order, c.evaluator, ("cond", id(c))) for c in conditions
+                    if c.evaluator] + \
+                   [(a.blob_order, a.bytecode, ("arg", id(a))) for a in args
+                    if a.bytecode]
+    known = sorted((b for b in blob_records if b[0] is not None), key=lambda b: b[0])
+    fresh = [b for b in blob_records if b[0] is None]
+    blob_at, blob_bytes = {}, bytearray()
+    for _order, payload, key in known + fresh:
+        blob_at[key] = blobs_at + len(blob_bytes)
+        blob_bytes += payload
+    name_at = blobs_at + len(blob_bytes)
+    name_len = len(archive.name) + 1 if archive.name else 0
+    data_end = name_at + name_len * 2
+
+    out = bytearray()
+    out += struct.pack("<4sIIIII", MAGIC, 1, 3, 3, 0x54, data_end)
+    out += struct.pack("<I", 6)
+    for size, count in ((INTERNAL_HEADER_SIZE, 1), (GROUP_SIZE, group_count),
+                        (STATE_SIZE, state_count), (CONDITION_SIZE, len(conditions)),
+                        (COMMAND_CALL_SIZE, len(calls)), (COMMAND_ARG_SIZE, len(args))):
+        out += struct.pack("<II", size, count)
+    out += struct.pack("<IIII", pool_at, len(pool), name_at, name_len)
+    out += struct.pack("<IIII", data_end, 0, data_end, 0)
+
+    out += struct.pack("<I", 1) + struct.pack("<IIII", *archive.unk) + struct.pack("<I", 0)
+    out += struct.pack("<qqqqqq", groups_at, group_count,
+                       name_at if name_len else -1, name_len, -1, -1)
+
+    for group in groups:
+        first = state_slot[(group.id, _ordered(group.states)[0].id)]
+        at = states_at + first * STATE_SIZE
+        out += struct.pack("<qqqq", group.id, at, len(group.states), at)
+
+    def call_span(items):
+        if not items:
+            return -1, 0
+        return calls_at + call_slot[id(items[0])] * COMMAND_CALL_SIZE, len(items)
+
+    for group_id, state in state_rows:
+        # Unlike every other empty-list field in this format, a state's own
+        # condition-pool reservation is unconditional: `reserve` above already
+        # ran for every state, so a state with zero conditions still has a
+        # `pool_start` entry -- it just points at wherever the cursor stood
+        # at the time, never appended to. Real bossres/melina bytes confirm
+        # this (co_off is never -1 for a zero-condition state, unlike vanilla,
+        # which does use -1 there); using -1 instead breaks byte-exactness.
+        co_off = pool_start[("state", group_id, state.id)]
+        en_off, en_n = call_span(state.entry)
+        ex_off, ex_n = call_span(state.exit)
+        wh_off, wh_n = call_span(state.while_)
+        out += struct.pack("<qqqqqqqqq", state.id, co_off, len(state.conditions),
+                           en_off, en_n, ex_off, ex_n, wh_off, wh_n)
+
+    for cond in conditions:
+        target = -1
+        if cond.target is not None:
+            owner = cond_group[id(cond)]
+            target = states_at + state_slot[(owner, cond.target)] * STATE_SIZE
+        pc_off, pc_n = call_span(cond.pass_commands)
+        sc_off = pool_start.get(("cond", id(cond)), -1) if cond.subconditions else -1
+        ev_off = blob_at.get(("cond", id(cond)), -1) if cond.evaluator else -1
+        out += struct.pack("<qqqqqqq", target, pc_off, pc_n, sc_off,
+                           len(cond.subconditions), ev_off, len(cond.evaluator))
+
+    # A call's own arg-table reservation is unconditional too, the same way a
+    # state's condition-pool reservation is: the args table is one flat run
+    # per call, back to back in call order, so a zero-arg call still gets an
+    # offset -- wherever the cursor stood -- rather than -1 (confirmed against
+    # bossres/melina; vanilla is the one that uses -1 there).
+    args_cursor = 0
+    for call in calls:
+        a_off = args_at + args_cursor * COMMAND_ARG_SIZE
+        args_cursor += len(call.args)
+        out += struct.pack("<iiqq", call.bank, call.id, a_off, len(call.args))
+    for arg in args:
+        b_off = blob_at.get(("arg", id(arg)), -1) if arg.bytecode else -1
+        out += struct.pack("<qq", b_off, len(arg.bytecode))
+    for slot_value in pool:
+        out += struct.pack("<q", slot_value)
+    out += blob_bytes
+    if name_len:
+        out += archive.name.encode("utf-16-le") + b"\0\0"
+    return bytes(out)
