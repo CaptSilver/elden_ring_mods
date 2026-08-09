@@ -9,6 +9,7 @@ possible: three encoders wrote these files and they spell the same machine three
 different ways.
 """
 import struct
+from typing import NamedTuple
 
 from .errors import ErmError
 from .formats import esd
@@ -307,34 +308,123 @@ def _canonical_call(call, slots):
                   for a in call.args))
 
 
-def align(left, right):
-    """Map `left`'s state ids onto `right`'s, by content.
+_UNSETTLED = ("unsettled",)     # a jump whose far end has not been paired yet
 
-    Ids are matched first where the content also agrees, because that is both
-    the common case and the cheapest. Everything left over is matched on
-    canonical content, which is what survives a renumbering.
+
+class Alignment(NamedTuple):
+    """How one group's states line up with another's.
+
+    `pairs` is the answer. The rest is why a state is not in it, and the two
+    reasons are not the same: `left_only`/`right_only` are states with no
+    counterpart left to have -- a real delete, a real add -- while `unresolved`
+    is this function admitting defeat, with candidates it could not tell apart.
+    A caller replaying a delta has to treat those differently, so a state never
+    just goes missing from the dict.
+
+    The right-hand states behind `unresolved` are the ones in neither
+    `pairs.values()` nor `right_only`.
     """
-    right_by_id = {s.id: s for s in right.states}
-    mapping, taken = {}, set()
-    for state in left.states:
-        twin = right_by_id.get(state.id)
-        if twin is not None and _content(state) == _content(twin):
-            mapping[state.id] = twin.id
-            taken.add(twin.id)
-    by_content = {}
-    for state in right.states:
-        if state.id not in taken:
-            by_content.setdefault(_content(state), []).append(state)
-    for state in left.states:
-        if state.id in mapping:
+    pairs: dict
+    left_only: tuple
+    right_only: tuple
+    unresolved: tuple
+
+
+def align(left, right):
+    """Line `left`'s states up with `right`'s, by content rather than by id.
+
+    Boss Res deletes states from the group both mods edit and renumbers the
+    survivors densely, so the same id means different things on the two sides
+    and matching on it pairs unrelated machines.
+
+    Content on its own is not enough either, because a state's content includes
+    where its conditions jump and those are exactly the ids a renumbering
+    moves. Vanilla state 3 is `IF 1 -> 32`; Boss Res renumbered 32 to 30, so
+    the two stop matching and a different trampoline still pointing at 32 wins
+    the state instead. Identity depends on the targets and the targets' identity
+    depends on the mapping, which makes it a fixed point: seed on the part of a
+    state a renumbering cannot touch, then re-read the jump targets through
+    whatever is settled and go round again until a round settles nothing new.
+    """
+    left_shape = {s.id: canonical(s) for s in left.states}
+    right_shape = {s.id: canonical(s) for s in right.states}
+    pairs, taken = {}, set()
+
+    def settle(from_left, from_right, by_id=False):
+        """Add every pair this round can justify; answer how many that was."""
+        added = 0
+        if by_id:
+            for sid in sorted(left_shape):
+                if (sid not in pairs and sid in right_shape and sid not in taken
+                        and _retargeted(left_shape[sid], from_left)
+                        == _retargeted(right_shape[sid], from_right)):
+                    pairs[sid] = sid
+                    taken.add(sid)
+                    added += 1
+        # Only a candidate that is alone on both sides is safe to take: two
+        # states with the same content are interchangeable until something
+        # downstream of them settles and tells them apart.
+        lefts, rights = {}, {}
+        for sid in sorted(left_shape):
+            if sid not in pairs:
+                lefts.setdefault(_retargeted(left_shape[sid], from_left), []).append(sid)
+        for sid in sorted(right_shape):
+            if sid not in taken:
+                rights.setdefault(_retargeted(right_shape[sid], from_right), []).append(sid)
+        for shape, candidates in lefts.items():
+            twins = rights.get(shape, ())
+            if len(candidates) == 1 and len(twins) == 1:
+                pairs[candidates[0]] = twins[0]
+                taken.add(twins[0])
+                added += 1
+        return added
+
+    settle(_target_masked, _target_masked, by_id=True)
+    through_pairs = lambda t: None if t is None else pairs.get(t, _UNSETTLED)
+    already_taken = lambda t: None if t is None else (t if t in taken else _UNSETTLED)
+    while settle(through_pairs, already_taken):
+        pass
+
+    return Alignment(pairs, *_leftovers(left_shape, right_shape, pairs, taken))
+
+
+def _leftovers(left_shape, right_shape, pairs, taken):
+    """Split what went unpaired into "nothing it could have been" and "could
+    not choose", measured against the states still going spare."""
+    free = lambda shapes, used: {_retargeted(s, _target_masked)
+                                 for i, s in shapes.items() if i not in used}
+    spare_right, spare_left = free(right_shape, taken), free(left_shape, pairs)
+    left_only, unresolved = [], []
+    for sid in sorted(left_shape):
+        if sid in pairs:
             continue
-        bucket = by_content.get(_content(state))
-        if bucket:
-            mapping[state.id] = bucket.pop(0).id
-    return mapping
+        possible = _retargeted(left_shape[sid], _target_masked) in spare_right
+        (unresolved if possible else left_only).append(sid)
+    right_only = tuple(
+        sid for sid in sorted(right_shape)
+        if sid not in taken
+        and _retargeted(right_shape[sid], _target_masked) not in spare_left)
+    return tuple(left_only), right_only, tuple(unresolved)
 
 
-def _content(state):
-    """canonical() minus the state id -- identity has to come from content
-    alone when the whole question is whether the id moved."""
-    return canonical(state)[1:]
+def _target_masked(target):
+    """Every jump looks the same -- the seed round has no mapping to read them
+    through yet, and their raw ids are the thing that moved."""
+    return None if target is None else _UNSETTLED
+
+
+def _retargeted(shape, translate):
+    """A state's canonical form minus its own id, with jump targets rewritten.
+
+    Dropping the id is what lets a renumbered state match at all; rewriting the
+    targets is what stops the ids buried inside it doing the same damage.
+    """
+    _sid, conditions, entry, exit_, while_ = shape
+    return (_conditions_retargeted(conditions, translate), entry, exit_, while_)
+
+
+def _conditions_retargeted(conditions, translate):
+    return tuple(
+        (translate(target), evaluator, passes,
+         _conditions_retargeted(subconditions, translate))
+        for target, evaluator, passes, subconditions in conditions)

@@ -376,7 +376,9 @@ def test_canonical_refuses_bytecode_it_cannot_decode():
 def test_align_matches_states_by_id_when_content_agrees():
     left = esd.StateGroup(24, (_state(0, [_cond(1)]), _state(1, [])))
     right = esd.StateGroup(24, (_state(0, [_cond(1)]), _state(1, [])))
-    assert esdmerge.align(left, right) == {0: 0, 1: 1}
+    aligned = esdmerge.align(left, right)
+    assert aligned.pairs == {0: 0, 1: 1}
+    assert (aligned.left_only, aligned.right_only, aligned.unresolved) == ((), (), ())
 
 
 def test_align_follows_content_when_ids_were_renumbered():
@@ -387,10 +389,11 @@ def test_align_follows_content_when_ids_were_renumbered():
                                _state(28, [_cond(16, OTHER)]),
                                _state(29, [])))
     right = esd.StateGroup(24, (_state(26, [_cond(16, OTHER)]), _state(27, [])))
-    mapping = esdmerge.align(left, right)
-    assert mapping[28] == 26        # same content, renumbered
-    assert mapping[29] == 27
-    assert 26 not in mapping        # left's 26 was deleted, not renamed
+    aligned = esdmerge.align(left, right)
+    assert aligned.pairs[28] == 26        # same content, renumbered
+    assert aligned.pairs[29] == 27
+    assert 26 not in aligned.pairs        # left's 26 was deleted, not renamed
+    assert aligned.left_only == (26,)
 
 
 def test_canonicaliser_finds_exactly_the_groups_the_mods_edited():
@@ -432,5 +435,74 @@ def test_align_pairs_every_state_of_a_group_both_mods_left_alone():
     untouched = 2147483573        # trivial-wrapper nesting, edited by nobody
     vg = next(g for g in v.groups if g.id == untouched)
     bg = next(g for g in b.groups if g.id == untouched)
-    mapping = esdmerge.align(vg, bg)
-    assert mapping == {s.id: s.id for s in vg.states}
+    aligned = esdmerge.align(vg, bg)
+    assert aligned.pairs == {s.id: s.id for s in vg.states}
+    assert (aligned.left_only, aligned.right_only, aligned.unresolved) == ((), (), ())
+
+
+def test_align_follows_a_renumbering_through_the_jump_targets():
+    """The group both mods edited, which is the one a merge has to align.
+
+    Boss Res deletes states from x24 and renumbers the survivors down, so a
+    state's content stops matching the moment it jumps at one of them. Matching
+    on content alone hands vanilla state 3 (`IF 1 -> 32`) to Boss Res state 16,
+    an unrelated trampoline that still points at 32, while the real counterpart
+    -- Boss Res state 3, retargeted to 30 -- goes unused. The targets have to be
+    read through the mapping, which means resolving it is a fixed point.
+    """
+    v, b = (esd.read(real_esd(w)) for w in ("vanilla", "bossres"))
+    group = lambda a: next(g for g in a.groups if g.id == 2147483624)
+    vg, bg = group(v), group(b)
+    aligned = esdmerge.align(vg, bg)
+
+    assert aligned.pairs[3] == 3
+    assert aligned.pairs[1] == 1
+    # Every pair is either an identity or the small downward shift a dense
+    # renumbering produces -- no state jumps forward past its neighbours.
+    shifts = {left - right for left, right in aligned.pairs.items()}
+    assert shifts <= {0, 1, 2, 3}, sorted(shifts)
+    assert aligned.pairs[29] == 27 and aligned.pairs[42] == 39
+
+    # Nothing may go missing quietly: every state is accounted for on both sides.
+    assert set(aligned.pairs) | set(aligned.left_only) | set(aligned.unresolved) == \
+        {s.id for s in vg.states}
+    assert set(aligned.pairs.values()) | set(aligned.right_only) <= {s.id for s in bg.states}
+
+
+def test_align_separates_a_deleted_state_from_one_it_could_not_place():
+    """A caller replaying a delta has to tell "this state is gone" from "the
+    alignment gave up", and a state missing from the pairs looks the same
+    either way."""
+    left = esd.StateGroup(24, (_state(0, [_cond(9, GUARD)]),     # nothing like it
+                               _state(1, [_cond(2, OTHER)]),     # two identical
+                               _state(2, [_cond(2, OTHER)])))    # candidates
+    right = esd.StateGroup(24, (_state(5, [_cond(2, OTHER)]),
+                                _state(6, [_cond(2, OTHER)])))
+    aligned = esdmerge.align(left, right)
+    assert aligned.left_only == (0,)
+    assert aligned.unresolved == (1, 2)
+    assert aligned.pairs == {}
+
+
+def test_align_resolves_look_alike_states_by_iterating_on_the_targets():
+    """Renumbered on both sides, with nothing but the jump targets to tell
+    three look-alike states apart.
+
+    One pass cannot do it. States 2, 3 and 4 are identical until their targets
+    are known, and each one's target is only known once the next is paired, so
+    the answer arrives one state per round working back from the anchor. The id
+    ranges are disjoint, so a left id read as a right id resolves to nothing.
+    """
+    left = esd.StateGroup(24, (_state(1, [_cond(2, GUARD)]),
+                               _state(2, [_cond(3, OTHER)]),
+                               _state(3, [_cond(4, OTHER)]),
+                               _state(4, [_cond(5, OTHER)]),
+                               _state(5, [])))
+    right = esd.StateGroup(24, (_state(11, [_cond(12, GUARD)]),
+                                _state(12, [_cond(13, OTHER)]),
+                                _state(13, [_cond(14, OTHER)]),
+                                _state(14, [_cond(15, OTHER)]),
+                                _state(15, [])))
+    aligned = esdmerge.align(left, right)
+    assert aligned.pairs == {1: 11, 2: 12, 3: 13, 4: 14, 5: 15}
+    assert (aligned.left_only, aligned.right_only, aligned.unresolved) == ((), (), ())
