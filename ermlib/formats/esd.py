@@ -264,13 +264,30 @@ def _dedupe(records):
     Records with `order is None` were created after the file was read (by a
     merge) and are never coalesced with each other -- each occurrence is a
     distinct new record.
+
+    `order` is only unique within the file it came from. Merging two files
+    means two condition (or call, or arg) records that were never the same
+    physical row can carry the same `order`, purely by coincidence of table
+    position in their own separate files. Genuinely shared records are
+    content-identical by construction (they are re-reads of one physical
+    row), so two records at the same `order` that differ in any other field
+    are exactly that collision -- silently keeping one and dropping the
+    other would produce a graph that looks fine and is quietly wrong. A
+    merge is expected to head this off by stamping grafted records with
+    `order=None` before they ever reach here; this is the backstop for when
+    that is missed, not the primary fix.
     """
-    seen, out = set(), []
+    seen, out = {}, []
     for r in records:
         key = r.order if r.order is not None else id(r)
         if key not in seen:
-            seen.add(key)
+            seen[key] = r
             out.append(r)
+        elif seen[key] != r:
+            raise EsdError(
+                f"two different records share table index {key} -- likely a "
+                f"merge of two files whose `.order` numbering collided; "
+                f"grafted records must carry order=None")
     return out
 
 
@@ -322,6 +339,7 @@ def write(archive):
     args = _ordered(_dedupe(all_args))
     conditions = _ordered(_dedupe(all_conditions))
     call_slot = _slots(all_calls, calls)
+    arg_slot = _slots(all_args, args)
     cond_slot = _slots(all_conditions, conditions)
 
     # State table: each group's states, then one dummy copy of state 0 when the group
@@ -402,10 +420,30 @@ def write(archive):
         at = states_at + first * STATE_SIZE
         out += struct.pack("<qqqq", group.id, at, len(group.states), at)
 
-    def call_span(items):
+    def call_span(items, owner):
+        # A run is addressed as (first slot, count) -- the reader recovers the
+        # rest by walking forward from `first`, the same way `read_calls` does.
+        # That only works if the run is genuinely contiguous in the rewritten
+        # table. Every call here starts out that way (source order is
+        # preserved, and a wholly-fresh owner's calls land together at the
+        # tail), but a merge that appends one call to an *existing* owner's
+        # list -- without relaying out the whole table -- breaks it: the new
+        # call lands at the tail with the other fresh records, not next to
+        # its owner. Silently trusting `first` then would hand back whatever
+        # call happens to occupy the neighbouring slot (or, if the run runs
+        # off the front of the table, blow up as a raw struct.error deep in a
+        # read). Refuse instead of guessing.
         if not items:
             return -1, 0
-        return calls_at + call_slot[id(items[0])] * COMMAND_CALL_SIZE, len(items)
+        first = call_slot[id(items[0])]
+        for i, item in enumerate(items):
+            if call_slot[id(item)] != first + i:
+                raise EsdError(
+                    f"{owner} does not occupy a contiguous run in the "
+                    f"rewritten call table -- inserting into an existing "
+                    f"owner's list without relaying out the whole table is "
+                    f"not supported")
+        return calls_at + first * COMMAND_CALL_SIZE, len(items)
 
     for group_id, state in state_rows:
         # Unlike every other empty-list field in this format, a state's own
@@ -416,9 +454,9 @@ def write(archive):
         # this (co_off is never -1 for a zero-condition state, unlike vanilla,
         # which does use -1 there); using -1 instead breaks byte-exactness.
         co_off = pool_start[("state", group_id, state.id)]
-        en_off, en_n = call_span(state.entry)
-        ex_off, ex_n = call_span(state.exit)
-        wh_off, wh_n = call_span(state.while_)
+        en_off, en_n = call_span(state.entry, f"state {group_id}/{state.id} entry")
+        ex_off, ex_n = call_span(state.exit, f"state {group_id}/{state.id} exit")
+        wh_off, wh_n = call_span(state.while_, f"state {group_id}/{state.id} while")
         out += struct.pack("<qqqqqqqqq", state.id, co_off, len(state.conditions),
                            en_off, en_n, ex_off, ex_n, wh_off, wh_n)
 
@@ -427,7 +465,8 @@ def write(archive):
         if cond.target is not None:
             owner = cond_group[id(cond)]
             target = states_at + state_slot[(owner, cond.target)] * STATE_SIZE
-        pc_off, pc_n = call_span(cond.pass_commands)
+        pc_off, pc_n = call_span(cond.pass_commands,
+                                  f"condition (order={cond.order}) pass_commands")
         sc_off = pool_start.get(("cond", id(cond)), -1) if cond.subconditions else -1
         ev_off = blob_at.get(("cond", id(cond)), -1) if cond.evaluator else -1
         out += struct.pack("<qqqqqqq", target, pc_off, pc_n, sc_off,
@@ -437,9 +476,24 @@ def write(archive):
     # state's condition-pool reservation is: the args table is one flat run
     # per call, back to back in call order, so a zero-arg call still gets an
     # offset -- wherever the cursor stood -- rather than -1 (confirmed against
-    # bossres/melina; vanilla is the one that uses -1 there).
+    # bossres/melina; vanilla is the one that uses -1 there). That means the
+    # offset is a running cursor, not a lookup, so unlike `call_span` this
+    # can't fall back on the args' own slot to find where a run starts -- it
+    # has to check the args actually landed where the cursor says they did.
+    # A merge that adds one arg to an existing call's list without relaying
+    # out the whole table breaks that (the new arg lands at the tail with
+    # the other fresh records, not next to its call) and must be refused
+    # rather than silently pointing at whatever landed in the gap.
     args_cursor = 0
     for call in calls:
+        for i, arg in enumerate(call.args):
+            if arg_slot[id(arg)] != args_cursor + i:
+                raise EsdError(
+                    f"command call (bank={call.bank}, id={call.id}, "
+                    f"order={call.order}) does not occupy a contiguous run "
+                    f"in the rewritten arg table -- inserting into an "
+                    f"existing call's arg list without relaying out the "
+                    f"whole table is not supported")
         a_off = args_at + args_cursor * COMMAND_ARG_SIZE
         args_cursor += len(call.args)
         out += struct.pack("<iiqq", call.bank, call.id, a_off, len(call.args))

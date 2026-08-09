@@ -6,6 +6,20 @@ from ermlib.formats import esd
 from tests.esd_fixtures import EXPECTED, real_esd
 
 
+def _walk_conditions(conditions):
+    """Depth-first through a condition list and its nested subconditions."""
+    for c in conditions:
+        yield c
+        yield from _walk_conditions(c.subconditions)
+
+
+def _condition_count(raw):
+    """The condition-table row count an ESD header declares -- descriptor slot 3
+    of the six (size, count) pairs at INTERNAL_HEADER+0x1C, the same field
+    esd.read() checks the table layout against."""
+    return struct.unpack_from("<I", raw, 0x38)[0]
+
+
 def _synthetic(groups, name="t000001000"):
     """Build a minimal valid ESD. groups: [(group_id, [(state_id, target_or_None)])].
 
@@ -187,11 +201,6 @@ def test_reads_the_real_files_with_the_counts_the_header_declares(which):
     assert len(parsed.groups) == groups
     assert sum(len(g.states) for g in parsed.groups) + len(parsed.groups) == states
 
-    def walk_conditions(cs):
-        for c in cs:
-            yield c
-            yield from walk_conditions(c.subconditions)
-
     # Vanilla's compiler pools identical condition subtrees: the same physical
     # Condition record can be pointed at from several states' pointer-pool
     # entries (verified directly against the bytes -- e.g. states 10-13 of one
@@ -199,7 +208,7 @@ def test_reads_the_real_files_with_the_counts_the_header_declares(which):
     # pointer, so identity (`order`, the record's fixed table index) is what
     # tells a genuine revisit apart from a misparse that invents extra nodes.
     seen_conds_raw = [c for g in parsed.groups for s in g.states
-                      for c in walk_conditions(s.conditions)]
+                      for c in _walk_conditions(s.conditions)]
     seen_conds = list({c.order: c for c in seen_conds_raw}.values())
     assert len(seen_conds) == conds
     seen_calls_raw = [cc for g in parsed.groups for s in g.states
@@ -230,13 +239,26 @@ def test_write_round_trips_vanilla_semantically():
     still give back the same graph."""
     raw = real_esd("vanilla")
     once = esd.read(raw)
-    twice = esd.read(esd.write(once))
+    rewritten = esd.write(once)
+
+    # Vanilla shares 120 condition records across 2+ states each, and the sharing
+    # nests -- 38 of those shared rows only show up inside a subcondition. Dedupe
+    # keyed on object identity (or no dedupe at all) gives every duplicate
+    # reference its own physical row: the table inflates (1092 -> 1398 on this
+    # file) while every value stays semantically correct, since the duplicated
+    # rows carry identical content. The state/target/evaluator checks below
+    # can't see that -- pin the declared row count directly.
+    assert _condition_count(rewritten) == _condition_count(raw)
+
+    twice = esd.read(rewritten)
     assert [g.id for g in twice.groups] == [g.id for g in once.groups]
     for a, b in zip(once.groups, twice.groups):
         assert [s.id for s in a.states] == [s.id for s in b.states]
         for sa, sb in zip(a.states, b.states):
-            assert [c.target for c in sa.conditions] == [c.target for c in sb.conditions]
-            assert [c.evaluator for c in sa.conditions] == [c.evaluator for c in sb.conditions]
+            wa = list(_walk_conditions(sa.conditions))
+            wb = list(_walk_conditions(sb.conditions))
+            assert [c.target for c in wa] == [c.target for c in wb]
+            assert [c.evaluator for c in wa] == [c.evaluator for c in wb]
 
 
 def test_write_appends_a_new_state_and_keeps_every_target_resolvable():
@@ -251,3 +273,100 @@ def test_write_appends_a_new_state_and_keeps_every_target_resolvable():
     assert [s.id for s in out.groups[0].states] == [0, 1, 7]
     assert out.groups[0].states[2].conditions[0].target == 0
     assert out.groups[0].states[0].conditions[0].target == 1
+
+
+def test_write_refuses_a_fresh_call_appended_to_an_existing_states_entry():
+    """A merge that appends a call to a state whose entry already holds a
+    source call, without relaying out the whole call table, produces a run
+    that is not contiguous: the fresh call lands at the tail of the table
+    with every other grafted record, not next to the state it belongs to.
+    `read_calls` recovers a run by walking forward from its first slot, so a
+    writer that trusted the first slot here would hand back whichever call
+    happens to occupy the neighbouring row instead of the real one -- silently.
+    """
+    call_a = esd.CommandCall(bank=1, id=100, order=0)
+    call_b = esd.CommandCall(bank=1, id=200, order=1)
+    fresh = esd.CommandCall(bank=1, id=300)                  # order=None
+    state_a = esd.State(id=0, entry=(call_a, fresh), order=0)
+    state_b = esd.State(id=1, entry=(call_b,), order=1)
+    group = esd.StateGroup(id=1, states=(state_a, state_b), order=0)
+    archive = esd.Esd(groups=(group,), name="", unk=(0, 0, 0, 0), pool_count=0)
+    with pytest.raises(esd.EsdError):
+        esd.write(archive)
+
+
+def test_write_refuses_a_fresh_arg_appended_to_an_existing_calls_args():
+    """Same hazard, one level down: a call's own args are a flat run in the
+    arg table, addressed by a running cursor rather than a lookup. Appending
+    a fresh arg to a call that already has a source arg puts the fresh one at
+    the tail of the table instead of next to its call."""
+    arg_a = esd.CommandArg(bytecode=b"\x01", order=0)
+    arg_b = esd.CommandArg(bytecode=b"\x02", order=1)
+    fresh_arg = esd.CommandArg(bytecode=b"\x03")             # order=None
+    call_a = esd.CommandCall(bank=1, id=100, args=(arg_a, fresh_arg), order=0)
+    call_b = esd.CommandCall(bank=1, id=200, args=(arg_b,), order=1)
+    state = esd.State(id=0, entry=(call_a, call_b), order=0)
+    group = esd.StateGroup(id=1, states=(state,), order=0)
+    archive = esd.Esd(groups=(group,), name="", unk=(0, 0, 0, 0), pool_count=0)
+    with pytest.raises(esd.EsdError):
+        esd.write(archive)
+
+
+def test_write_keeps_working_for_a_fresh_condition_on_an_existing_state():
+    """Conditions don't share the calls/args hazard: the condition pool is an
+    indirection table, and a state's own reservation covers its whole
+    condition list in one shot regardless of how many of those conditions are
+    freshly created, so appending one to an existing state's list needs no
+    relayout and must not be refused."""
+    raw = _synthetic([(1, [(0, 1), (1, None)])])
+    parsed = esd.read(raw)
+    group = parsed.groups[0]
+    state0 = group.states[0]
+    grown_state0 = state0._replace(
+        conditions=state0.conditions + (esd.Condition(target=1, evaluator=b"\xa2"),))
+    grown_group = group._replace(states=(grown_state0,) + group.states[1:])
+    out = esd.read(esd.write(parsed._replace(groups=(grown_group,))))
+    assert [c.target for c in out.groups[0].states[0].conditions] == [1, 1]
+
+
+def test_write_keeps_working_for_a_wholly_fresh_state_with_calls_and_args():
+    """A brand new state with its own brand new calls and args has nothing to
+    be non-contiguous with -- everything about it is fresh and lands together
+    at the tail of every table."""
+    raw = _synthetic([(1, [(0, 1), (1, None)])])
+    parsed = esd.read(raw)
+    group = parsed.groups[0]
+    fresh_arg = esd.CommandArg(bytecode=b"\x09")
+    fresh_call = esd.CommandCall(bank=1, id=42, args=(fresh_arg,))
+    fresh_state = esd.State(id=7, entry=(fresh_call,))
+    grown = group._replace(states=group.states + (fresh_state,))
+    out = esd.read(esd.write(parsed._replace(groups=(grown,))))
+    new_state = out.groups[0].states[-1]
+    assert new_state.id == 7
+    assert (new_state.entry[0].bank, new_state.entry[0].id) == (1, 42)
+    assert new_state.entry[0].args[0].bytecode == b"\x09"
+
+
+def test_write_refuses_two_different_conditions_sharing_an_order():
+    """`.order` is only unique within the file it came from. If a merge ever
+    forwards a grafted record's original `.order` instead of stamping it
+    order=None, two conditions from different source files can collide on
+    the same table index while being genuinely different records -- and
+    silently keeping one and dropping the other produces a graph that looks
+    fine and is quietly wrong."""
+    cond_a = esd.Condition(target=None, evaluator=b"\xa1", order=5)
+    cond_b = esd.Condition(target=None, evaluator=b"\xa2", order=5)
+    state = esd.State(id=0, conditions=(cond_a, cond_b), order=0)
+    group = esd.StateGroup(id=1, states=(state,), order=0)
+    archive = esd.Esd(groups=(group,), name="", unk=(0, 0, 0, 0), pool_count=0)
+    with pytest.raises(esd.EsdError):
+        esd.write(archive)
+
+
+@pytest.mark.parametrize("which", ["vanilla", "bossres", "melina"])
+def test_write_does_not_mistake_genuine_sharing_for_an_order_collision(which):
+    """The collision guard in `_dedupe` must never fire on an actual file: a
+    genuinely shared record is content-identical at every reference by
+    construction (it's the same physical row, re-read fresh each time), so a
+    plain read-then-write of any real file has to pass with no EsdError."""
+    esd.write(esd.read(real_esd(which)))
