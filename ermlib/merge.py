@@ -274,8 +274,34 @@ def param_rows(base, other, vanilla):
     return regulation.repack(base, replacements)
 
 
+def tpf_union(base, other):
+    """Add `other`'s new textures to `base`'s menu atlas set.
+
+    Two-way rather than three-way, because there is no vanilla side to be had:
+    01_common.tpf.dcx exists only inside the game's .bdt archives, which erm
+    can't read. That's tolerable here in a way it wasn't for FMG text — a
+    texture is keyed by name, and a mod adding icons ships them under a name of
+    its own (SB_Status_GRO_00), so "new name" identifies the contribution
+    without needing to know what vanilla held.
+
+    Where both sides ship the same name, base wins. Both mods carry the whole
+    ~204 MB vanilla set, so the shared names are overwhelmingly identical
+    copies; where they differ, the preferred mod's is the one with its own icons
+    layered in and the other's is untouched vanilla.
+    """
+    from .formats import tpf
+    base_archive = tpf.read(dcx.read(base))
+    other_archive = tpf.read(dcx.read(other))
+    have = {t.name for t in base_archive.textures}
+    extra = tuple(t for t in other_archive.textures if t.name not in have)
+    if not extra:
+        return base
+    return dcx.write_dflt(
+        tpf.write(base_archive.with_textures(base_archive.textures + extra)))
+
+
 STRATEGIES = {"fmg-union": fmg_union, "fmg-3way": fmg_three_way,
-              "param-rows": param_rows}
+              "param-rows": param_rows, "tpf-union": tpf_union}
 # Strategies that need the vanilla file the mods branched from. conflicts.py
 # resolves it from the merge declaration and refuses if it isn't declared.
 NEEDS_VANILLA = frozenset({"fmg-3way", "param-rows"})

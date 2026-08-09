@@ -124,6 +124,70 @@ def test_prune_with_a_traversal_path_raises_instead_of_deleting(tmp_path):
     assert outside.exists()
 
 
+def test_rename_moves_a_declared_path(tmp_path):
+    """Mod authors disagree about the case of the localisation directory. me3
+    mounts one file per path, so a mod shipping `msg/engUS/x` claims a different
+    slot from one shipping `msg/engus/x` and neither merges with the other."""
+    _package(tmp_path, "b", {"msg/engUS/item.dcx": b"text"})
+    moved = conflicts.apply_renames(
+        tmp_path, [{"mod": "b", "paths": {"msg/engUS/item.dcx": "msg/engus/item.dcx"}}])
+    assert moved == ["b:msg/engUS/item.dcx -> msg/engus/item.dcx"]
+    assert (tmp_path / "mods" / "b" / "msg/engus/item.dcx").read_bytes() == b"text"
+    assert not (tmp_path / "mods" / "b" / "msg/engUS/item.dcx").exists()
+
+
+def test_rename_of_a_missing_source_is_quiet(tmp_path):
+    """Same reasoning as a prune of a missing file: the mod may have fixed its
+    own packaging upstream, which is the outcome the rename was asking for."""
+    _package(tmp_path, "b", {"msg/engus/item.dcx": b"text"})
+    assert conflicts.apply_renames(
+        tmp_path, [{"mod": "b", "paths": {"msg/engUS/item.dcx": "msg/engus/item.dcx"}}]) == []
+    assert (tmp_path / "mods" / "b" / "msg/engus/item.dcx").read_bytes() == b"text"
+
+
+def test_rename_onto_a_file_the_mod_already_ships_raises(tmp_path):
+    """If the mod ships both cases, moving one over the other destroys content
+    without anyone asking. Refuse and make the author say which one wins."""
+    _package(tmp_path, "b", {"msg/engUS/item.dcx": b"upper", "msg/engus/item.dcx": b"lower"})
+    with pytest.raises(conflicts.ConflictError):
+        conflicts.apply_renames(
+            tmp_path, [{"mod": "b", "paths": {"msg/engUS/item.dcx": "msg/engus/item.dcx"}}])
+    assert (tmp_path / "mods" / "b" / "msg/engus/item.dcx").read_bytes() == b"lower"
+
+
+def test_rename_with_a_traversal_path_raises_instead_of_moving(tmp_path):
+    """Both ends come out of a profile TOML, so both need the guard — a `../`
+    destination would write outside the package, a `../` source read from it."""
+    _package(tmp_path, "b", {"msg/live.dcx": b"2"})
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"do not touch me")
+    with pytest.raises(conflicts.ConflictError):
+        conflicts.apply_renames(
+            tmp_path, [{"mod": "b", "paths": {"msg/live.dcx": "../escaped.dcx"}}])
+    with pytest.raises(conflicts.ConflictError):
+        conflicts.apply_renames(
+            tmp_path, [{"mod": "b", "paths": {"../outside.txt": "msg/stolen.dcx"}}])
+    assert outside.read_bytes() == b"do not touch me"
+    assert not (tmp_path / "escaped.dcx").exists()
+
+
+def test_rename_lets_a_case_variant_path_join_a_merge(tmp_path):
+    """The point of the whole facility: two mods that both edit the localisation
+    file are refused outright while their paths differ only in case, because
+    nothing can tell which one me3 would mount. Normalised, they merge."""
+    _package(tmp_path, "a", {"msg/engus/x.dcx": b"AAA"})
+    _package(tmp_path, "b", {"msg/engUS/x.dcx": b"BBB"})
+    spec = [{"path": "msg/engus/x.dcx", "strategy": "fmg-union",
+             "mods": ["a", "b"], "prefer": "a"}]
+    with pytest.raises(conflicts.ConflictError):
+        conflicts.resolve(tmp_path, ["a", "b"], merges=spec)
+
+    conflicts.apply_renames(
+        tmp_path, [{"mod": "b", "paths": {"msg/engUS/x.dcx": "msg/engus/x.dcx"}}])
+    index = conflicts.index_paths(tmp_path, ["a", "b"])
+    assert sorted(index["msg/engus/x.dcx"]) == ["a", "b"]
+
+
 def test_merge_naming_a_prefer_not_among_providers_raises(tmp_path):
     """A stale or typo'd `prefer` must fail with a clear message, not a raw
     FileNotFoundError from trying to read a mod that never provided this path."""

@@ -1405,6 +1405,46 @@ _MERGE_TWO_MODS = (
     'prefer = "mod-x"\n'
 )
 
+_MERGE_THREE_MODS = (
+    _MERGE_TWO_MODS.replace('mods = ["mod-x", "mod-y"]', 'mods = ["mod-x", "mod-y", "mod-z"]')
+    + '\n[[mods]]\n'
+      'id = "mod-z"\n'
+      'source = "nexus"\n'
+      'nexus_id = 3\n'
+      'kind = "cosmetic"\n'
+      'install = "me3-package"\n'
+)
+
+
+def test_apply_reports_how_many_mods_a_merge_actually_combined(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """A merge is not limited to two contributors -- regulation.bin has six.
+    Reporting "both mods" regardless understates what was combined, and a
+    declared-but-not-installed mod must not be counted as one of them."""
+    from ermlib import conflicts
+
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(conflicts.STRATEGIES, "concat-test", lambda base, other: base + other)
+
+    _write_profile(tmp_path / "profiles", "unit-merge-three", _MERGE_THREE_MODS)
+    lock, vendor = "", tmp_path / "vendor"
+    vendor.mkdir()
+    # mod-z is declared by the merge but never fetched, the case that lets an
+    # experimental trial list in the shared profile's merge without being there.
+    for mid, body in (("mod-x", b"AAA"), ("mod-y", b"BBB")):
+        lock += f'[{mid}]\nversion = "1.0"\nasset = "{mid}.zip"\nsha256 = "a"\nsource = "nexus"\n\n'
+        with zipfile.ZipFile(vendor / f"{mid}.zip", "w") as z:
+            z.writestr("msg/x.dcx", body)
+    (tmp_path / "mods.lock.toml").write_text(lock)
+
+    assert cli.cmd_apply(_apply_args("unit-merge-three")) == 0
+    out = capsys.readouterr().out
+    assert "merged msg/x.dcx (content from 2 mods kept)" in out, out
+
+
 _MERGE_ONE_MOD_LEFT = (
     '[[mods]]\n'
     'id = "mod-x"\n'

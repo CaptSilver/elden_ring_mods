@@ -61,6 +61,47 @@ def apply_prunes(me3_dir, prunes):
     return removed
 
 
+def apply_renames(me3_dir, renames):
+    """Move a mod's files to the paths the rest of the stack uses.
+
+    Mod authors disagree about the case of the localisation directory --
+    `msg/engUS/` and `msg/engus/` both ship. me3 mounts one file per path, so
+    the two spellings claim different slots: nothing collides, nothing merges,
+    and one mod's text silently never loads. _check_no_case_only_collisions
+    refuses that rather than guessing which me3 would pick, and this is how a
+    profile answers it -- explicitly, per mod, instead of a blanket
+    normalisation policy nobody has verified against me3's resolver.
+
+    Returns the "mod:from -> to" strings moved. Runs before index_paths, so a
+    renamed file merges as if the author had shipped it at that path.
+    """
+    moved = []
+    for entry in renames:
+        mod_id = entry["mod"]
+        pkg = _package_dir(me3_dir, mod_id)
+        for src, dst in entry["paths"].items():
+            # Both ends come out of a profile TOML. A `../` destination would
+            # write outside the package; a `../` source would read from outside
+            # it. Neither is checked by anything upstream.
+            for rel in (src, dst):
+                if not is_safe_relpath(rel):
+                    raise ConflictError(f"unsafe rename path (refusing to move): {rel}")
+            source, target = pkg / src, pkg / dst
+            if not source.is_file():
+                continue          # already fixed upstream -- what the rename wanted
+            # samefile keeps this correct on a case-insensitive filesystem, where
+            # a case-only rename has the source and destination as one inode.
+            if target.exists() and not target.samefile(source):
+                raise ConflictError(
+                    f"{mod_id}: can't rename {src!r} to {dst!r} — the mod ships both, "
+                    f"and moving one over the other would destroy content. Prune "
+                    f"whichever is dead instead.")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(target)
+            moved.append(f"{mod_id}:{src} -> {dst}")
+    return moved
+
+
 def _declare_merges(merges):
     """Index merges by path, refusing to silently pick one of two conflicting
     declarations for it.

@@ -42,10 +42,12 @@ def load_profile(name, base=Path("profiles"), _seen=None):
     order-stable — so a profile that includes another inherits its excludes
     too, without having to repeat them.
 
-    Also resolves optional `[[merges]]` and `[[prunes]]` tables. A merge names a
-    game-relative path two mods both ship, the strategy that resolves it, and
-    which mod wins a genuine collision. A prune names files a mod ships that
-    carry no content of its own. Both are unioned across the include chain and
+    Also resolves optional `[[merges]]`, `[[prunes]]` and `[[renames]]` tables.
+    A merge names a game-relative path two mods both ship, the strategy that
+    resolves it, and which mod wins a genuine collision. A prune names files a
+    mod ships that carry no content of its own. A rename moves a mod's file to
+    the path the rest of the stack uses, so a packaging quirk doesn't read as a
+    separate file. All three are unioned across the include chain and
     de-duplicated, so a merge declared once in gameplay-extras is inherited by
     every profile composing it.
     """
@@ -56,8 +58,8 @@ def load_profile(name, base=Path("profiles"), _seen=None):
     data = tomllib.loads((base / f"{name}.toml").read_text())
     merged, index = [], {}
     excludes, excludes_seen = [], set()
-    merges, prunes = [], []
-    merge_seen, prune_seen = set(), set()
+    merges, prunes, renames = [], [], []
+    merge_seen, prune_seen, rename_seen = set(), set(), set()
 
     def add(mod):
         mid = mod["id"]
@@ -91,6 +93,15 @@ def load_profile(name, base=Path("profiles"), _seen=None):
             prune_seen.add(key)
             prunes.append(entry)
 
+    def add_rename(entry):
+        # Deduped for a sharper reason than merges: a rename isn't idempotent.
+        # Run it a second time and the source is already gone, so the guard
+        # against clobbering the destination would fire on the mod's own file.
+        key = _entry_key(entry)
+        if key not in rename_seen:
+            rename_seen.add(key)
+            renames.append(entry)
+
     for inc in data.get("includes", []):
         try:
             included = load_profile(inc, base, _seen + (name,))
@@ -104,6 +115,8 @@ def load_profile(name, base=Path("profiles"), _seen=None):
             add_merge(entry)
         for entry in included.get("prunes", []):
             add_prune(entry)
+        for entry in included.get("renames", []):
+            add_rename(entry)
     for m in data.get("mods", []):
         add(m)
     for exc_name in data.get("excludes", []):
@@ -112,10 +125,13 @@ def load_profile(name, base=Path("profiles"), _seen=None):
         add_merge(entry)
     for entry in data.get("prunes", []):
         add_prune(entry)
+    for entry in data.get("renames", []):
+        add_rename(entry)
     data["mods"] = merged
     data["excludes"] = excludes
     data["merges"] = merges
     data["prunes"] = prunes
+    data["renames"] = renames
     return data
 
 

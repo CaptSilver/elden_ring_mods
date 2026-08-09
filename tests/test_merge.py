@@ -349,3 +349,52 @@ def test_param_rows_folds_three_mods_editing_different_fields_of_one_row():
     third = _regulation({1: (SP, {7: bytes(6) + b"\x03" + bytes(1)}, 8)})
     out = _rows(merge.param_rows(merge.param_rows(base, second, van), third, van), 1)
     assert out[7] == b"\x01\x00\x00\x02\x00\x00\x03\x00"
+
+
+def _tpf_blob(textures):
+    """textures: [(name, data)] -> a .tpf.dcx blob."""
+    from ermlib.formats import tpf
+    return dcx.write_dflt(tpf.write(tpf.Archive(
+        tuple(tpf.Texture(n, d, 102, 0, 1, 0) for n, d in textures),
+        platform=0, flag2=3, encoding=1)))
+
+
+def _tpf_names(blob):
+    from ermlib.formats import tpf
+    return {t.name: t.data for t in tpf.read(dcx.read(blob)).textures}
+
+
+def test_tpf_union_adds_the_other_side_s_new_textures():
+    """Great Rune Overhaul's whole contribution to the menu atlas is one new
+    texture. Without it the game still draws the icon its params reference and
+    gets a missing-texture placeholder — the green squares."""
+    base = _tpf_blob([("SB_Icon_02_A", b"clevers-icons")])
+    other = _tpf_blob([("SB_Icon_02_A", b"vanilla-icons"),
+                       ("SB_Status_GRO_00", b"rune-status")])
+    out = _tpf_names(merge.tpf_union(base, other))
+    assert out == {"SB_Icon_02_A": b"clevers-icons", "SB_Status_GRO_00": b"rune-status"}
+
+
+def test_tpf_union_keeps_the_base_copy_of_a_shared_texture():
+    """Both mods ship the whole ~204 MB atlas set, so nearly every texture is
+    shared and identical. Where they differ, the preferred mod's copy is the one
+    with its own icons layered in — taking the other's would erase them."""
+    base = _tpf_blob([("SB_Icon_02_A", b"clevers-with-weapon-icons")])
+    other = _tpf_blob([("SB_Icon_02_A", b"plain-vanilla")])
+    assert _tpf_names(merge.tpf_union(base, other)) == {
+        "SB_Icon_02_A": b"clevers-with-weapon-icons"}
+
+
+def test_tpf_union_preserves_the_order_and_flags_of_every_texture():
+    """Appending must not disturb the existing table: the game reads textures by
+    offset, and the entries carry per-texture format/mipmap flags that aren't
+    interchangeable between a DDS atlas and an icon sheet."""
+    from ermlib.formats import tpf
+    base = dcx.write_dflt(tpf.write(tpf.Archive(
+        (tpf.Texture("A", b"aaaa", 102, 0, 3, 1), tpf.Texture("B", b"bb", 0, 0, 1, 0)),
+        platform=0, flag2=3, encoding=1)))
+    other = _tpf_blob([("C", b"cc")])
+    out = tpf.read(dcx.read(merge.tpf_union(base, other))).textures
+    assert [t.name for t in out] == ["A", "B", "C"]
+    assert (out[0].format, out[0].mipmaps, out[0].flags1) == (102, 3, 1)
+    assert (out[1].format, out[1].mipmaps, out[1].flags1) == (0, 1, 0)

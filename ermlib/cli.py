@@ -492,6 +492,11 @@ def cmd_apply(args):
         state_mod.forget(state, conflicts.MERGED_ID)
     package_ids = [mid for mid, _pkg in state_mod.me3_packages(state)
                    if mid != conflicts.MERGED_ID]
+    # Before the prunes, and well before resolve(): a rename decides which path
+    # a file even occupies, so every collision and merge downstream has to see
+    # the moved file rather than the one the author happened to ship.
+    for renamed in conflicts.apply_renames(ME3_DIR, profile.get("renames", [])):
+        r.info(f"renamed {renamed}")
     for pruned in conflicts.apply_prunes(ME3_DIR, profile.get("prunes", [])):
         # No reason attached: a prune drops a path because the profile says so,
         # and the profile's comment carries why. The old wording asserted the
@@ -532,7 +537,11 @@ def cmd_apply(args):
         state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}",
                                 merged_paths)
         for rel in merged:
-            r.ok(f"merged {rel} (both mods' content kept)")
+            # Count what actually contributed, not what the profile declared: a
+            # merge can name a mod that lives in another profile and isn't
+            # installed here, and regulation.bin runs to six contributors.
+            contributors = [m for m in declared_mods.get(rel, []) if m in package_ids]
+            r.ok(f"merged {rel} (content from {len(contributors)} mods kept)")
         for rel in carried:
             r.info(f"kept merged {rel} (declared by another profile)")
     state_mod.write_state(Path("installed.json"), state)
