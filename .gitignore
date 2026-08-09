@@ -8,3 +8,4 @@ tools/
 secrets.env
 erm.local.toml
 installed.json
+.superpowers/
