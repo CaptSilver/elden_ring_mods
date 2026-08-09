@@ -107,6 +107,29 @@ def read(data):
     calls_at = conds_at + cond_count * CONDITION_SIZE
     args_at = calls_at + call_count * COMMAND_CALL_SIZE
     pool_at = args_at + arg_count * COMMAND_ARG_SIZE
+
+    # The data_size check above and the 0x4C check below are both
+    # self-referential: they compare header fields to each other, and an
+    # attacker who controls the whole header can keep them mutually
+    # consistent while inflating any of the five counts far past what the
+    # file actually holds. Neither one bounds a table against the real
+    # buffer, so a bad count would otherwise survive both checks and blow up
+    # as a raw struct.error deep in a read loop below instead of failing
+    # cleanly here. These files come from the same untrusted vendor/mod
+    # pipeline as BND4 and TPF, so every count gets the same treatment.
+    data_len = len(data) - HEADER_SIZE
+    for label, count, end in (
+        ("state group", group_count, states_at),
+        ("state", state_count, conds_at),
+        ("condition", cond_count, calls_at),
+        ("command call", call_count, args_at),
+        ("command arg", arg_count, pool_at),
+    ):
+        if end > data_len:
+            raise EsdError(
+                f"{label} table (count={count}) runs past the end of the "
+                f"{len(data)}-byte file")
+
     if _u32(data, 0x4C) != pool_at:
         raise EsdError(
             f"condition-offset pool is at {_u32(data, 0x4C)} but the tables end at "

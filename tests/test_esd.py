@@ -133,6 +133,31 @@ def test_read_rejects_a_directory_that_does_not_tile_the_file():
         esd.read(bytes(raw))
 
 
+def test_read_rejects_a_table_count_that_overflows_the_buffer():
+    """dataSize (0x14) and the pool-offset tiling check (0x4C) are both
+    self-referential -- an attacker who controls the whole header can inflate
+    any table count and still keep both internally consistent, since neither
+    one compares a table's extent to the real buffer. Without an explicit
+    bounds check, a bad count survives both guards and blows up as a raw
+    struct.error deep in a read loop instead of raising EsdError cleanly."""
+    raw = bytearray(_synthetic([(1, [(0, None), (1, None)])]))
+    inflated_group_count = 999999
+    struct.pack_into("<I", raw, 0x28, inflated_group_count)  # group_count field
+    state_count = struct.unpack_from("<I", raw, 0x30)[0]
+    cond_count = struct.unpack_from("<I", raw, 0x38)[0]
+    call_count = struct.unpack_from("<I", raw, 0x40)[0]
+    arg_count = struct.unpack_from("<I", raw, 0x48)[0]
+    states_at = esd.INTERNAL_HEADER_SIZE + inflated_group_count * esd.GROUP_SIZE
+    conds_at = states_at + state_count * esd.STATE_SIZE
+    calls_at = conds_at + cond_count * esd.CONDITION_SIZE
+    args_at = calls_at + call_count * esd.COMMAND_CALL_SIZE
+    pool_at = args_at + arg_count * esd.COMMAND_ARG_SIZE
+    # Keep the tiling check happy so only the new bounds check can catch this.
+    struct.pack_into("<I", raw, 0x4C, pool_at)
+    with pytest.raises(esd.EsdError):
+        esd.read(bytes(raw))
+
+
 def test_read_rejects_a_cross_group_jump_target():
     """Verified zero of these in all three real files. Merging assumes a group is
     self-contained for jumps, so one would silently break the graft."""
