@@ -24,29 +24,25 @@ def _by_id(archive):
 
 
 def _same(a, b):
-    """Whether two groups hold the same machine, ignoring layout bookkeeping."""
+    """Whether two groups hold the same machine, ignoring how it was spelled.
+
+    Comparing the raw structure instead reads 46 groups neither mod touched as
+    modified, because every mod tool rewrites machines it never edited -- and a
+    group that reads as modified on both sides goes to `_merge_group`, which
+    would then be composing deltas nobody authored. `canonical` is what makes
+    the difference between an edit and a re-encode visible.
+
+    A missing group is not canonicalised at all: there is nothing to compare it
+    against, and a group only one side has may hold bytecode this module cannot
+    decode without that being anybody's problem.
+    """
+    if a is None or b is None:
+        return a is None and b is None
     return _shape(a) == _shape(b)
 
 
 def _shape(group):
-    if group is None:
-        return None
-    return tuple(
-        (s.id, tuple(_cond_shape(c) for c in s.conditions),
-         tuple(_call_shape(c) for c in s.entry),
-         tuple(_call_shape(c) for c in s.exit),
-         tuple(_call_shape(c) for c in s.while_))
-        for s in group.states)
-
-
-def _cond_shape(cond):
-    return (cond.target, cond.evaluator,
-            tuple(_call_shape(c) for c in cond.pass_commands),
-            tuple(_cond_shape(c) for c in cond.subconditions))
-
-
-def _call_shape(call):
-    return (call.bank, call.id, tuple(a.bytecode for a in call.args))
+    return tuple(canonical(s) for s in group.states)
 
 
 def _degraft_call(call):
@@ -114,12 +110,194 @@ def merge(base, other, vanilla):
 
     ordered = sorted((g for g in out if g is not None),
                      key=lambda g: (g.order is None, g.order if g.order is not None else 0))
-    return base._replace(groups=tuple(ordered)), notes
+    composed = base._replace(groups=tuple(ordered))
+    check(composed)
+    return composed, notes
+
+
+class _Unplaceable(Exception):
+    """A jump target in `other`'s numbering with no counterpart in the merge."""
+
+    def __init__(self, target):
+        super().__init__(target)
+        self.target = target
 
 
 def _merge_group(gid, base_group, other_group, vanilla_group):
-    raise EsdMergeError(
-        f"state group {gid} was modified by both mods and cannot be composed yet")
+    """Replay `other`'s edits to one group onto `base`'s version of it.
+
+    Neither side's state ids can be trusted as identities here -- one mod deletes
+    states and renumbers the survivors -- so everything goes through an alignment
+    against the vanilla both sides branched from. `other`'s delta is read against
+    vanilla and written out in `base`'s numbering.
+
+    Anything that cannot be replayed is named in the returned notes rather than
+    dropped. That is the whole point: a hook that quietly fails to land leaves a
+    mod installed, loading, and doing nothing.
+    """
+    if base_group is None or other_group is None or vanilla_group is None:
+        raise EsdMergeError(
+            f"state group {gid} was added or deleted by both mods differently")
+
+    to_base = align(vanilla_group, base_group)
+    to_other = align(vanilla_group, other_group)
+    vanilla_states = {s.id: s for s in vanilla_group.states}
+    base_states = {s.id: s for s in base_group.states}
+    other_states = {s.id: s for s in other_group.states}
+    other_to_vanilla = {right: left for left, right in to_other.pairs.items()}
+
+    notes = []
+    merged = dict(base_states)
+    layout = [s.id for s in base_group.states]
+
+    # A state `other` holds that vanilla never did is an addition to graft. That
+    # is `right_only` and not "everything unpaired": an unpaired state may also
+    # be one the alignment could not place, and grafting one of those adds a
+    # second copy of a machine already sitting in the group.
+    #
+    # Ids are only unique within one file, so a graft keeps its own number only
+    # where base is not already using it -- and every reference to it has to move
+    # with it, which is why the whole allocation happens before anything is
+    # retargeted.
+    additions = to_other.right_only
+    used = set(base_states)
+    graft_id = {}
+    for sid in additions:
+        graft_id[sid] = sid if sid not in used else max(used, default=-1) + 1
+        used.add(graft_id[sid])
+
+    def retarget(target):
+        """An id in `other`'s numbering, as an id in the merged group."""
+        if target is None:
+            return None
+        if target in graft_id:
+            return graft_id[target]
+        van_id = other_to_vanilla.get(target)
+        settled = to_base.pairs.get(van_id) if van_id is not None else None
+        if settled is None:
+            raise _Unplaceable(target)
+        return settled
+
+    def replay(state, sid, order):
+        """`other`'s state, renumbered into the merged group and detached from
+        `other`'s record tables. Commands come across with the conditions: a
+        state's meaning is not only where it branches."""
+        fresh = _degraft_state(state)
+        return fresh._replace(
+            id=sid, order=order,
+            conditions=_retargeted_conditions(fresh.conditions, retarget))
+
+    for sid in additions:
+        try:
+            merged[graft_id[sid]] = replay(other_states[sid], graft_id[sid], None)
+        except _Unplaceable as jump:
+            raise EsdMergeError(
+                f"group {gid}: the other mod's new state {sid} jumps to its state "
+                f"{jump.target}, which has no counterpart in the merged group")
+        layout.append(graft_id[sid])
+
+    for van_id in sorted(vanilla_states):
+        if van_id in to_other.unresolved:
+            notes.append(
+                f"group {gid}: several of the other mod's states look like vanilla "
+                f"state {van_id} and nothing separates them, so any change it made "
+                f"there was not applied")
+            continue
+        other_id = to_other.pairs.get(van_id)
+        if other_id is None:
+            notes.append(
+                f"group {gid}: the other mod has no state matching vanilla state "
+                f"{van_id} -- it either removed or rewrote it, and the preferred "
+                f"mod's copy was kept")
+            continue
+        if not _edited(vanilla_states[van_id], other_states[other_id], to_other.pairs):
+            continue
+        if van_id in to_base.unresolved:
+            notes.append(
+                f"group {gid}: the other mod changed vanilla state {van_id}, and "
+                f"several of the preferred mod's states look like it -- the change "
+                f"was not applied rather than applied to the wrong one")
+            continue
+        base_id = to_base.pairs.get(van_id)
+        if base_id is None:
+            notes.append(
+                f"group {gid}: the other mod changed vanilla state {van_id}, which "
+                f"the preferred mod deleted -- that change was not applied")
+            continue
+        if _edited(vanilla_states[van_id], base_states[base_id], to_base.pairs):
+            notes.append(
+                f"group {gid}: both mods changed vanilla state {van_id} -- kept the "
+                f"preferred mod's version")
+            continue
+        try:
+            merged[base_id] = replay(other_states[other_id], base_id,
+                                     base_states[base_id].order)
+        except _Unplaceable as jump:
+            notes.append(
+                f"group {gid}: the other mod's change to vanilla state {van_id} "
+                f"jumps to its state {jump.target}, which has no counterpart in "
+                f"the merged group -- that change was not applied")
+
+    return base_group._replace(states=tuple(merged[sid] for sid in layout)), notes
+
+
+def _edited(before, after, pairs):
+    """Whether `after` is a changed version of `before`, read through `pairs`.
+
+    A raw comparison is no good: the mod that renumbered its states rewrote
+    every jump target along with them, so an untouched state stops matching
+    itself. Targets on the vanilla side are translated into the mod's numbering
+    first, and one the alignment could not place reads as a difference rather
+    than risking a false match.
+    """
+    through = lambda target: None if target is None else pairs.get(target, _UNSETTLED)
+    return (_retargeted(canonical(before), through)
+            != _retargeted(canonical(after), lambda target: target))
+
+
+def _retargeted_conditions(conditions, retarget):
+    return tuple(
+        c._replace(target=retarget(c.target),
+                   subconditions=_retargeted_conditions(c.subconditions, retarget))
+        for c in conditions)
+
+
+def check(archive):
+    """Structural invariants for a merged graph.
+
+    The ESD analogue of checking that every authored byte survived a param
+    merge: a graft that renumbers wrongly shows up here as a dangling target,
+    rather than as a dead grace menu three hours into a playthrough.
+    """
+    group_ids = {g.id for g in archive.groups}
+    for group in archive.groups:
+        ids = [s.id for s in group.states]
+        present = set(ids)
+        if len(ids) != len(present):
+            repeated = sorted(i for i in present if ids.count(i) > 1)
+            raise EsdMergeError(
+                f"state group {group.id} has more than one state numbered "
+                f"{', '.join(str(i) for i in repeated)}")
+        for state in group.states:
+            where = f"group {group.id} state {state.id}"
+            calls = list(state.entry + state.exit + state.while_)
+            for condition in _every_condition(state.conditions):
+                if condition.target is not None and condition.target not in present:
+                    raise EsdMergeError(
+                        f"{where} jumps to state {condition.target}, which does "
+                        f"not exist in that group")
+                calls.extend(condition.pass_commands)
+            for call in calls:
+                if call.bank == esd.CALL_BANK and call.id not in group_ids:
+                    raise EsdMergeError(
+                        f"{where} calls machine {call.id}, which is not in the "
+                        f"merged file")
+
+
+def _every_condition(conditions):
+    for condition in conditions:
+        yield condition
+        yield from _every_condition(condition.subconditions)
 
 
 # --- bytecode ---------------------------------------------------------------

@@ -4,6 +4,20 @@ from ermlib import esdmerge
 from ermlib.formats import esd
 from tests.esd_fixtures import real_esd
 
+# Real bytecode, in the spellings the three files actually use. A condition
+# evaluator is a postfix stack program: 0x40+n pushes a small int, 0x82 pushes
+# an int32, 0x80/0x81 push a float32/float64, 0xB8/0xB9/0xBA are builtins,
+# 0x95/0x96/0x98/0x99 are == != && ||, and 0xA1 terminates it.
+
+ALWAYS = b"\x41\xa1"                          # push 1 -- FromSoft's "IF 1"
+ALWAYS_INT32 = b"\x82\x01\x00\x00\x00\xa1"    # both mods' spelling of the same
+ALWAYS_EQ_ONE = b"\x41\x82\x01\x00\x00\x00\x95\xa1"     # and a third: 1 == 1
+GUARD = b"\xb9\xba\x96\xa1"                   # b9 != ba
+OTHER = b"\x4f\xb8\xa1"                       # b8(15)
+GUARD_AND_OTHER = b"\xb9\xba\x96\x4f\xb8\x98\xa1"
+GUARD_OR_OTHER = b"\xb9\xba\x96\x4f\xb8\x99\xa1"
+GUARD_OR_GUARD = b"\xb9\xba\x96\xb9\xba\x96\x99\xa1"
+
 
 def _esd(groups):
     """groups: {group_id: [(state_id, target_or_None)]}"""
@@ -11,7 +25,7 @@ def _esd(groups):
         groups=tuple(
             esd.StateGroup(gid, tuple(
                 esd.State(sid, conditions=() if target is None else
-                          (esd.Condition(target=target, evaluator=b"\xa1"),))
+                          (esd.Condition(target=target, evaluator=ALWAYS),))
                 for sid, target in states))
             for gid, states in sorted(groups.items())),
         name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
@@ -19,6 +33,38 @@ def _esd(groups):
 
 def _ids(archive):
     return sorted(g.id for g in archive.groups)
+
+
+def _group(archive, gid):
+    return next(g for g in archive.groups if g.id == gid)
+
+
+def _find(group, sid):
+    return next(s for s in group.states if s.id == sid)
+
+
+def _targets(state):
+    out = []
+
+    def walk(conditions):
+        for condition in conditions:
+            if condition.target is not None:
+                out.append(condition.target)
+            walk(condition.subconditions)
+
+    walk(state.conditions)
+    return out
+
+
+def _reachable(group, start=0):
+    states = {s.id: s for s in group.states}
+    seen, pending = {start}, [start]
+    while pending:
+        for target in _targets(states[pending.pop()]):
+            if target not in seen:
+                seen.add(target)
+                pending.append(target)
+    return seen
 
 
 def test_a_group_only_the_other_side_added_is_grafted():
@@ -66,10 +112,12 @@ def test_a_group_only_the_base_modified_keeps_the_base_version():
     assert [s.id for s in group.states] == [0, 1]
 
 
-def test_a_group_both_sides_modified_is_refused_for_now():
-    vanilla = _esd({24: [(0, None)]})
-    base = _esd({24: [(0, None), (1, 0)]})
-    other = _esd({24: [(0, None), (2, 0)]})
+def test_a_group_both_sides_invented_differently_is_refused():
+    """No vanilla to express either side's edit against, so there is no delta to
+    replay -- the two machines are simply different machines under one id."""
+    vanilla = _esd({1: [(0, None)]})
+    base = _esd({1: [(0, None)], 24: [(0, None), (1, 0)]})
+    other = _esd({1: [(0, None)], 24: [(0, None), (2, 0)]})
     with pytest.raises(esdmerge.EsdMergeError):
         esdmerge.merge(base, other, vanilla)
 
@@ -92,12 +140,12 @@ def test_a_grafted_group_carries_no_leftover_order_and_survives_write():
             esd.StateGroup(1, (esd.State(0, order=0),), order=0),
             esd.StateGroup(1000, (
                 esd.State(0, order=1, conditions=(
-                    esd.Condition(target=1, evaluator=b"\xa1", order=0,
+                    esd.Condition(target=1, evaluator=ALWAYS, order=0,
                                   blob_order=0),
                 )),
                 esd.State(1, order=2, entry=(
-                    esd.CommandCall(6, 5, args=(
-                        esd.CommandArg(b"\x40", order=0, blob_order=100),
+                    esd.CommandCall(6, 1000, args=(
+                        esd.CommandArg(b"\x40\xa1", order=0, blob_order=100),
                     ), order=0),
                 )),
             ), order=1),
@@ -159,10 +207,10 @@ def test_a_grafted_condition_degrafts_through_subconditions_and_pass_commands():
     """
     group1 = esd.StateGroup(1, (
         esd.State(0, order=0, conditions=(
-            esd.Condition(target=None, evaluator=b"\xb0", order=0, blob_order=0),
+            esd.Condition(target=None, evaluator=b"\x42\xa1", order=0, blob_order=0),
         ), entry=(
             esd.CommandCall(9, 9, args=(
-                esd.CommandArg(b"\xa0", order=0, blob_order=0),
+                esd.CommandArg(b"\x43\xa1", order=0, blob_order=0),
             ), order=0),
         )),
     ), order=0)
@@ -172,11 +220,11 @@ def test_a_grafted_condition_degrafts_through_subconditions_and_pass_commands():
                          # order/blob_order values above are what land in
                          # the merged output, unmodified
 
-    graft_arg = esd.CommandArg(b"\x99", order=0, blob_order=0)      # collides with base's arg
+    graft_arg = esd.CommandArg(b"\x44\xa1", order=0, blob_order=0)  # collides with base's arg
     graft_call = esd.CommandCall(1, 1, args=(graft_arg,), order=0)  # collides with base's call
-    graft_sub = esd.Condition(target=None, evaluator=b"\xd0",
+    graft_sub = esd.Condition(target=None, evaluator=b"\x45\xa1",
                               order=0, blob_order=0)                # collides with base's cond
-    graft_cond = esd.Condition(target=1, evaluator=b"\xc0",
+    graft_cond = esd.Condition(target=1, evaluator=b"\x46\xa1",
                                pass_commands=(graft_call,),
                                subconditions=(graft_sub,),
                                order=50, blob_order=50)
@@ -206,19 +254,6 @@ def test_a_grafted_condition_degrafts_through_subconditions_and_pass_commands():
 
 
 # --- canonicalisation -------------------------------------------------------
-#
-# Real bytecode, in the spellings the three files actually use. A condition
-# evaluator is a postfix stack program: 0x40+n pushes a small int, 0x82 pushes
-# an int32, 0x80/0x81 push a float32/float64, 0xB8/0xB9/0xBA are builtins,
-# 0x95/0x96/0x98/0x99 are == != && ||, and 0xA1 terminates it.
-
-ALWAYS = b"\x41\xa1"                          # push 1 -- FromSoft's "IF 1"
-ALWAYS_INT32 = b"\x82\x01\x00\x00\x00\xa1"    # both mods' spelling of the same
-GUARD = b"\xb9\xba\x96\xa1"                   # b9 != ba
-OTHER = b"\x4f\xb8\xa1"                       # b8(15)
-GUARD_AND_OTHER = b"\xb9\xba\x96\x4f\xb8\x98\xa1"
-GUARD_OR_OTHER = b"\xb9\xba\x96\x4f\xb8\x99\xa1"
-GUARD_OR_GUARD = b"\xb9\xba\x96\xb9\xba\x96\x99\xa1"
 
 
 def _state(sid, conditions=()):
@@ -506,3 +541,390 @@ def test_align_resolves_look_alike_states_by_iterating_on_the_targets():
     aligned = esdmerge.align(left, right)
     assert aligned.pairs == {1: 11, 2: 12, 3: 13, 4: 14, 5: 15}
     assert (aligned.left_only, aligned.right_only, aligned.unresolved) == ((), (), ())
+
+
+# --- change detection -------------------------------------------------------
+
+
+def test_a_group_three_encoders_spell_differently_is_not_a_conflict():
+    """The reason change detection cannot compare raw structure. Nobody edited
+    this group; each of the three files just writes "always" its own way. Read
+    literally that is two conflicting edits, and the merge would refuse a
+    machine none of the three disagrees about."""
+    spelling = lambda evaluator: esd.Esd(
+        groups=(esd.StateGroup(24, (
+            esd.State(0, conditions=(esd.Condition(target=1, evaluator=evaluator),)),
+            esd.State(1))),),
+        name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    merged, notes = esdmerge.merge(spelling(ALWAYS_INT32), spelling(ALWAYS_EQ_ONE),
+                                   spelling(ALWAYS))
+    assert notes == []
+    assert _find(_group(merged, 24), 0).conditions[0].evaluator == ALWAYS_INT32
+
+
+# --- delta replay -----------------------------------------------------------
+
+
+def test_shared_group_replays_an_added_state_and_its_hook():
+    """Melina's shape: she adds a state and redirects an existing transition into
+    it. The redirect has to land on the base's copy of that state."""
+    vanilla = _esd({24: [(15, None), (26, 15)]})
+    base = _esd({24: [(15, None), (26, 15), (99, 15)]})       # base added its own
+    other = _esd({24: [(15, None), (26, 44)]})
+    other = other._replace(groups=(
+        esd.StateGroup(24, other.groups[0].states + (
+            esd.State(44, conditions=(esd.Condition(target=15, evaluator=GUARD),)),)),))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    group = _group(merged, 24)
+    ids = [s.id for s in group.states]
+    assert 44 in ids and 99 in ids          # both sides' additions survive
+    assert _targets(_find(group, 26)) == [44]   # the redirect was replayed
+    assert _targets(_find(group, 44)) == [15]   # and the graft still lands
+    assert notes == []
+
+
+def test_shared_group_notes_a_state_the_base_deleted():
+    """Where the other side edits a state the base removed, there is nowhere to
+    replay it. Keep the base and say so -- silently dropping it is the failure this
+    whole design is trying to avoid."""
+    vanilla = _esd({24: [(15, None), (26, 15), (27, 15)]})
+    base = _esd({24: [(15, None), (26, 15)]})                 # deleted 27
+    other = _esd({24: [(15, None), (26, 15), (27, 999)]})     # edited 27
+    other = other._replace(groups=(
+        esd.StateGroup(24, other.groups[0].states + (esd.State(999),)),))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert any("27" in note for note in notes), notes
+    assert [s.id for s in _group(merged, 24).states] == [15, 26, 999]
+
+
+def test_a_grafted_state_gets_an_id_that_is_free_in_the_base():
+    """Both sides added a state under the same id. Renumbering the graft is the
+    only option, and every reference to it has to move with it."""
+    vanilla = _esd({24: [(0, 9), (9, None)]})
+    base = _esd({24: [(0, 9), (9, None), (1, 9)]})            # base's own state 1
+    other = _esd({24: [(0, 1), (9, None)]})                   # hooks its own state 1
+    other = other._replace(groups=(
+        esd.StateGroup(24, other.groups[0].states + (
+            esd.State(1, conditions=(esd.Condition(target=9, evaluator=GUARD),)),)),))
+
+    merged, _ = esdmerge.merge(base, other, vanilla)
+    group = _group(merged, 24)
+    assert len({s.id for s in group.states}) == len(group.states)   # no duplicate ids
+    grafted, = _targets(_find(group, 0))
+    assert grafted != 1                        # base already owns 1
+    assert _targets(_find(group, grafted)) == [9]
+    assert _targets(_find(group, 1)) == [9]    # base's own state 1 is untouched
+
+
+def test_both_mods_changing_one_state_keeps_the_base_and_names_it():
+    vanilla = _esd({24: [(0, 1), (1, None), (2, None)]})
+    base = _esd({24: [(0, 2), (1, None), (2, None)]})         # redirected to 2
+    other = _esd({24: [(0, 3), (1, None), (2, None)]})        # redirected to its own 3
+    other = other._replace(groups=(
+        esd.StateGroup(24, other.groups[0].states + (esd.State(3),)),))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert _targets(_find(_group(merged, 24), 0)) == [2]      # base wins
+    assert any("0" in note and "both" in note for note in notes), notes
+
+
+def test_an_edit_alignment_cannot_place_is_named_rather_than_dropped():
+    """align pairs states on content, so a state whose *commands* changed reads
+    as a delete plus an add rather than as an edit -- there is nothing left that
+    looks like the vanilla state to replay onto. The edit must not vanish."""
+    def one(entry_id, extra=()):
+        return esd.Esd(
+            groups=(esd.StateGroup(24, (
+                esd.State(0, conditions=(esd.Condition(target=1, evaluator=ALWAYS),),
+                          entry=(esd.CommandCall(1, entry_id),)),
+                esd.State(1)) + extra),),
+            name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    vanilla = one(100)
+    base = one(100, extra=(esd.State(2, conditions=(
+        esd.Condition(target=1, evaluator=GUARD),)),))        # base changed elsewhere
+    other = one(200)                                          # other changed the call
+
+    _merged, notes = esdmerge.merge(base, other, vanilla)
+    assert any("0" in note for note in notes), notes
+
+
+def test_a_replayed_state_carries_no_leftover_order():
+    """A replayed state's records come from the other file's tables, and table
+    indices only mean anything inside the file they were read from.
+
+    Every record other's state 0 carries -- the condition, its pass command and
+    that command's argument -- is stamped with the index base already uses for a
+    *different* record of the same kind (its state 2's). Left uncleared, each one
+    is indistinguishable from a genuine shared row and write() refuses the lot.
+    """
+    def replayable(target, orders, call_id, blob):
+        """One state whose only difference from vanilla's is where it jumps."""
+        index, blob_index = orders
+        return esd.State(0, order=0, conditions=(esd.Condition(
+            target=target, evaluator=ALWAYS, order=index, blob_order=blob_index,
+            pass_commands=(esd.CommandCall(1, call_id, order=index, args=(
+                esd.CommandArg(blob, order=index, blob_order=blob_index),)),)),))
+
+    vanilla = esd.Esd(groups=(esd.StateGroup(24, (
+        replayable(1, (None, None), 7, b"\x41\xa1"), esd.State(1)),),),
+        name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+    base = esd.Esd(groups=(esd.StateGroup(24, (
+        replayable(1, (0, 0), 7, b"\x41\xa1"),
+        esd.State(1, order=1),
+        # Base's own addition, and the owner of every table index other's state
+        # 0 also claims.
+        esd.State(2, order=2, conditions=(esd.Condition(
+            target=1, evaluator=GUARD, order=1, blob_order=1,
+            pass_commands=(esd.CommandCall(1, 8, order=1, args=(
+                esd.CommandArg(b"\x42\xa1", order=1, blob_order=2),)),)),)),
+    ), order=0),), name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+    other = esd.Esd(groups=(esd.StateGroup(24, (
+        replayable(3, (1, 1), 7, b"\x41\xa1"),      # redirected to a state she adds
+        esd.State(1, order=1),
+        esd.State(3, order=2),
+    ), order=0),), name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert notes == []
+    replayed = _find(_group(merged, 24), 0)
+    assert _targets(replayed) == [3]
+    for condition in replayed.conditions:
+        _assert_condition_degrafted(condition)
+    assert {s.id for s in esd.read(esd.write(merged)).groups[0].states} == {0, 1, 2, 3}
+
+
+# --- structural invariants --------------------------------------------------
+
+
+def test_check_accepts_the_three_real_files():
+    """The invariants have to be ones a shipped file already satisfies, or they
+    are not invariants -- they are just this module's opinion."""
+    for which in ("vanilla", "bossres", "melina"):
+        esdmerge.check(esd.read(real_esd(which)))
+
+
+def test_check_rejects_a_dangling_jump_target():
+    with pytest.raises(esdmerge.EsdMergeError):
+        esdmerge.check(_esd({1: [(0, 99)]}))
+
+
+def test_check_rejects_a_dangling_target_inside_a_subcondition():
+    """A graft's targets get rewritten recursively, so the check has to look
+    just as deep -- a nested branch is where a missed rewrite would hide."""
+    archive = _esd({1: [(0, None)]})
+    nested = esd.State(0, conditions=(esd.Condition(
+        target=None, evaluator=GUARD,
+        subconditions=(esd.Condition(target=99, evaluator=ALWAYS),)),))
+    with pytest.raises(esdmerge.EsdMergeError):
+        esdmerge.check(archive._replace(
+            groups=(archive.groups[0]._replace(states=(nested,)),)))
+
+
+def test_check_rejects_duplicate_state_ids():
+    archive = _esd({1: [(0, None)]})
+    twice = archive.groups[0].states * 2
+    with pytest.raises(esdmerge.EsdMergeError):
+        esdmerge.check(archive._replace(
+            groups=(archive.groups[0]._replace(states=twice),)))
+
+
+def test_check_rejects_a_call_to_a_missing_machine():
+    archive = _esd({1: [(0, None)]})
+    caller = archive.groups[0].states[0]._replace(
+        entry=(esd.CommandCall(bank=esd.CALL_BANK, id=2147482648),))
+    with pytest.raises(esdmerge.EsdMergeError):
+        esdmerge.check(archive._replace(
+            groups=(archive.groups[0]._replace(states=(caller,)),)))
+
+
+def test_check_ignores_other_banks():
+    """Only bank 6 command ids name a state group. Banks 1/5/7 are ordinary
+    engine calls whose ids collide with group ids by coincidence."""
+    archive = _esd({1: [(0, None)]})
+    caller = archive.groups[0].states[0]._replace(
+        entry=(esd.CommandCall(bank=1, id=2147482648),))
+    esdmerge.check(archive._replace(
+        groups=(archive.groups[0]._replace(states=(caller,)),)))
+
+
+def test_check_rejects_a_call_from_a_pass_command():
+    archive = _esd({1: [(0, None)]})
+    caller = archive.groups[0].states[0]._replace(conditions=(esd.Condition(
+        target=None, evaluator=ALWAYS,
+        pass_commands=(esd.CommandCall(bank=esd.CALL_BANK, id=77),)),))
+    with pytest.raises(esdmerge.EsdMergeError):
+        esdmerge.check(archive._replace(
+            groups=(archive.groups[0]._replace(states=(caller,)),)))
+
+
+# --- the real pair ----------------------------------------------------------
+
+
+def test_the_real_shared_group_replays_melina_onto_boss_res():
+    """2147483624 is the one group both mods change, and it is the whole reason
+    this merge exists. Boss Res deletes vanilla 26, 27 and 41 and renumbers the
+    survivors down; Melina hooks vanilla 26 and 29 into two states she adds.
+
+    One of her two hooks lands on a state Boss Res deleted. That one cannot be
+    replayed and is named. The other survives, and with it the path into her
+    machine.
+    """
+    v, b, m = (esd.read(real_esd(w)) for w in ("vanilla", "bossres", "melina"))
+    merged, notes = esdmerge.merge(b, m, v)
+    group = _group(merged, 2147483624)
+
+    # Boss Res's 40 survivors, plus Melina's two additions at their own ids.
+    assert sorted(s.id for s in group.states) == list(range(40)) + [43, 44]
+
+    # Vanilla 29 is Boss Res's 27. Her redirect had to move with the renumbering.
+    assert _targets(_find(group, 27)) == [43]
+    assert _targets(_find(group, 43)) == [44]
+    assert _targets(_find(group, 44)) == [15]
+    assert [(c.bank, c.id) for c in _find(group, 44).entry] == [(6, 2147482648)]
+
+    # The machine she calls came across with her, so the call resolves.
+    assert 2147482648 in {g.id for g in merged.groups}
+
+    # Her machine is still entered: nothing above is worth anything if the
+    # surviving hook sits on an orphan.
+    assert {27, 43, 44} <= _reachable(group)
+
+    # Her other hook was on vanilla 26, which Boss Res deleted.
+    assert len(notes) == 1, notes
+    assert "26" in notes[0] and "2147483624" in notes[0]
+
+
+def test_the_real_merge_writes_and_survives_a_round_trip():
+    v, b, m = (esd.read(real_esd(w)) for w in ("vanilla", "bossres", "melina"))
+    merged, _ = esdmerge.merge(b, m, v)
+    reread = esd.read(esd.write(merged))
+    esdmerge.check(reread)
+
+    # Boss Res's own groups, plus the machine Melina brought.
+    assert {g.id for g in reread.groups} == \
+        {g.id for g in b.groups} | {2147482648}
+    assert sorted(s.id for s in _group(reread, 2147483624).states) == \
+        list(range(40)) + [43, 44]
+
+
+def test_a_graft_that_jumps_at_a_deleted_state_is_refused():
+    """A new state whose jump has nowhere to land cannot be grafted quietly:
+    silently blanking the target turns a branch into a fallthrough, which is a
+    different machine that still loads."""
+    vanilla = _esd({24: [(0, 1), (1, None), (2, None)]})
+    base = _esd({24: [(0, 1), (1, None)]})                    # deleted 2
+    other = _esd({24: [(0, 1), (1, None), (2, None)]})
+    other = other._replace(groups=(
+        esd.StateGroup(24, other.groups[0].states + (
+            esd.State(3, conditions=(esd.Condition(target=2, evaluator=GUARD),)),)),))
+
+    with pytest.raises(esdmerge.EsdMergeError):
+        esdmerge.merge(base, other, vanilla)
+
+
+def test_a_replay_that_jumps_at_a_deleted_state_keeps_the_base_and_names_it():
+    vanilla = _esd({24: [(0, 1), (1, None), (2, None)]})
+    base = _esd({24: [(0, 1), (1, None)]})                    # deleted 2
+    other = _esd({24: [(0, 2), (1, None), (2, None)]})        # redirected 0 at it
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert _targets(_find(_group(merged, 24), 0)) == [1]      # base's, untouched
+    assert any("2" in note for note in notes), notes
+
+
+def test_states_alignment_could_not_tell_apart_are_named_not_duplicated():
+    """`unresolved` is not `right_only`. Treating a state the alignment gave up
+    on as an addition grafts a second copy of a machine that is already there."""
+    def group(*states):
+        return esd.Esd(groups=(esd.StateGroup(24, states),),
+                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    look_alike = lambda sid: esd.State(
+        sid, conditions=(esd.Condition(target=7, evaluator=OTHER),))
+    anchor = esd.State(0, conditions=(esd.Condition(target=7, evaluator=GUARD),))
+
+    vanilla = group(anchor, look_alike(1), look_alike(2), esd.State(7))
+    base = group(anchor, look_alike(1), look_alike(2), esd.State(7),
+                 esd.State(8, conditions=(esd.Condition(target=7, evaluator=GUARD),)))
+    other = group(anchor, look_alike(5), look_alike(6), esd.State(7))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert [s.id for s in _group(merged, 24).states] == [0, 1, 2, 7, 8]
+    assert len(notes) == 2 and all("look like" in note for note in notes), notes
+
+
+def test_merge_refuses_to_return_a_graph_that_does_not_hold_together():
+    """The check is only worth having if it runs on the way out."""
+    vanilla = _esd({1: [(0, None)]})
+    other = _esd({1: [(0, None)]})
+    base = _esd({1: [(0, None)]})
+    dangling = base.groups[0].states[0]._replace(
+        conditions=(esd.Condition(target=99, evaluator=ALWAYS),))
+    base = base._replace(groups=(base.groups[0]._replace(states=(dangling,)),))
+
+    with pytest.raises(esdmerge.EsdMergeError):
+        esdmerge.merge(base, other, vanilla)
+
+
+def test_a_renumbered_but_unedited_state_is_not_read_as_a_second_edit():
+    """Telling "the preferred mod also changed this state" from "the preferred
+    mod renumbered around it" is what decides whether the other mod's edit gets
+    replayed or refused.
+
+    Base deletes vanilla 2 and its state 3 becomes 2, so base's copy of state 0
+    now jumps at `2` where vanilla's jumps at `3`. Compared literally that is an
+    edit, and the merge would call a conflict on a state base never touched.
+    """
+    def group(*states):
+        return esd.Esd(groups=(esd.StateGroup(24, states),),
+                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    hook = lambda target: esd.State(
+        0, conditions=(esd.Condition(target=target, evaluator=ALWAYS),))
+    keep = lambda sid, target: esd.State(
+        sid, conditions=(esd.Condition(target=target, evaluator=GUARD),))
+
+    vanilla = group(hook(3), keep(1, 3),
+                    esd.State(2, conditions=(
+                        esd.Condition(target=3, evaluator=GUARD_OR_OTHER),)),
+                    esd.State(3))
+    base = group(hook(2), keep(1, 2), esd.State(2))       # dropped vanilla 2
+    other = group(hook(4), keep(1, 3),                    # redirected 0 at a new state
+                  esd.State(2, conditions=(
+                      esd.Condition(target=3, evaluator=GUARD_OR_OTHER),)),
+                  esd.State(3),
+                  esd.State(4, conditions=(esd.Condition(target=3, evaluator=OTHER),)))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    group24 = _group(merged, 24)
+    assert notes == []
+    assert _targets(_find(group24, 0)) == [4]     # the redirect replayed
+    assert _targets(_find(group24, 4)) == [2]     # onto base's numbering
+
+
+def test_an_edit_with_no_single_home_in_the_base_is_not_reported_as_a_deletion():
+    """Falling through to the deletion path keeps the right state -- base's --
+    but says the wrong thing about why. "I deleted it" sends someone looking at
+    the preferred mod's diff; "I could not tell which of these it is" is the
+    alignment admitting it gave up, which is a different thing to go fix.
+    """
+    def group(*states):
+        return esd.Esd(groups=(esd.StateGroup(24, states),),
+                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    look_alike = lambda sid, target=7: esd.State(
+        sid, conditions=(esd.Condition(target=target, evaluator=OTHER),))
+    anchor = esd.State(0, conditions=(esd.Condition(target=7, evaluator=GUARD),))
+
+    vanilla = group(anchor, look_alike(1), look_alike(2), esd.State(7))
+    base = group(anchor, look_alike(5), look_alike(6), esd.State(7))   # renumbered
+    other = group(anchor, look_alike(1, target=8), look_alike(2),
+                  esd.State(7), esd.State(8))                          # edited 1
+
+    _merged, notes = esdmerge.merge(base, other, vanilla)
+    assert len(notes) == 1, notes
+    assert "look like" in notes[0] and "deleted" not in notes[0], notes[0]
