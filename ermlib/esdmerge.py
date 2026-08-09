@@ -1,9 +1,15 @@
 """Three-way merge of two mods' edits to one ESD state machine.
 
 Group-level for everything that can be settled there, which measured against the two
-real mods is all but one group out of 86. A group both sides changed needs the state
-alignment in `align.py`'s sense -- see `_merge_group`.
+real mods is all but one group out of 86. A group both sides changed needs `align`
+to pair its states up first -- see `_merge_group`.
+
+Telling an edit from a re-encode is the hard part, and `canonical` is what makes it
+possible: three encoders wrote these files and they spell the same machine three
+different ways.
 """
+import struct
+
 from .errors import ErmError
 from .formats import esd
 
@@ -113,3 +119,222 @@ def merge(base, other, vanilla):
 def _merge_group(gid, base_group, other_group, vanilla_group):
     raise EsdMergeError(
         f"state group {gid} was modified by both mods and cannot be composed yet")
+
+
+# --- bytecode ---------------------------------------------------------------
+#
+# A condition's evaluator -- and a command argument -- is a postfix stack
+# program. Three encoders wrote the files this merge has to compare: FromSoft's
+# compiler, and the toolchain behind each mod. They agree on the machine and
+# disagree on almost everything about how to spell it, so the only way to tell
+# an edit from a re-encode is to decode both sides and compare the expressions.
+#
+# The opcode table below is not documented anywhere. It was recovered by
+# decoding all 11038 blobs in the three real files and requiring every one to
+# consume its bytes exactly and leave exactly one value on the stack at its
+# terminator. Nothing else fits; a table off by one anywhere fails hundreds of
+# blobs.
+_END = 0xA1
+_IMMEDIATE = {0x80: ("<f", 4), 0x81: ("<d", 8), 0x82: ("<i", 4)}
+_CALL = range(0x84, 0x8C)      # pops (op - 0x83) values: function id, then args
+_BINARY = range(0x8C, 0x9C)
+_MARKER = (0xA6, 0xB7)         # FromSoft-only; leaves the value stack untouched
+_SAVE = range(0xA7, 0xAF)      # cache the value on top in slot (op - 0xA7)
+_LOAD = range(0xAF, 0xB7)      # push slot (op - 0xAF) back on
+_ONE_ARG_BUILTIN = 0xB8
+_NO_ARG_BUILTINS = (0xB9, 0xBA)
+_EQ, _NE, _AND, _OR = 0x95, 0x96, 0x98, 0x99
+_TRUE = ("int", 1)
+
+
+def _expression(bytecode, slots):
+    """Decode one blob into a comparable expression tree.
+
+    `slots` is the register file, shared across everything in one state:
+    FromSoft's compiler computes a subexpression once, parks it, and reloads it
+    from a later condition of the same state.
+    """
+    stack, at = [], 0
+    while at < len(bytecode):
+        op = bytecode[at]
+        at += 1
+        if op == _END:
+            if at != len(bytecode) or len(stack) != 1:
+                raise EsdMergeError(
+                    f"bytecode {bytecode.hex()} is not one expression -- it "
+                    f"ends with {len(stack)} values on the stack")
+            return stack[0]
+        if op <= 0x7F:
+            stack.append(("int", op - 0x40))       # 0x40 is zero; 0x3F is -1
+        elif op in _IMMEDIATE:
+            fmt, size = _IMMEDIATE[op]
+            if at + size > len(bytecode):
+                raise EsdMergeError(
+                    f"bytecode {bytecode.hex()} is cut off mid-literal")
+            kind = "int" if op == 0x82 else "float"
+            stack.append((kind, struct.unpack_from(fmt, bytecode, at)[0]))
+            at += size
+        elif op in _CALL:
+            stack.append(("call", _take(stack, op - 0x83, bytecode)))
+        elif op in _BINARY:
+            lhs, rhs = _take(stack, 2, bytecode)
+            stack.append(_combine(op, lhs, rhs))
+        elif op == _ONE_ARG_BUILTIN:
+            stack.append(("builtin", op, _take(stack, 1, bytecode)))
+        elif op in _NO_ARG_BUILTINS:
+            stack.append(("builtin", op, ()))
+        elif op in _MARKER:
+            pass
+        elif op in _SAVE:
+            cached = _take(stack, 1, bytecode)[0]     # inspects, does not consume
+            slots[op - _SAVE.start] = cached
+            stack.append(cached)
+        elif op in _LOAD:
+            slot = op - _LOAD.start
+            if slot not in slots:
+                raise EsdMergeError(
+                    f"bytecode {bytecode.hex()} reads cache slot {slot} before "
+                    f"anything in this state wrote it")
+            stack.append(slots[slot])
+        else:
+            raise EsdMergeError(
+                f"bytecode {bytecode.hex()} uses opcode {op:#04x}, which this "
+                f"decoder has never seen -- refusing to guess what it means")
+    raise EsdMergeError(f"bytecode {bytecode.hex()} has no terminator")
+
+
+def _take(stack, count, bytecode):
+    if len(stack) < count:
+        raise EsdMergeError(
+            f"bytecode {bytecode.hex()} pops {count} values off a stack of "
+            f"{len(stack)}")
+    taken = tuple(stack[len(stack) - count:])
+    del stack[len(stack) - count:]
+    return taken
+
+
+def _combine(op, lhs, rhs):
+    """Build a binary node, folding the spellings the encoders disagree about."""
+    if op in (_EQ, _NE) and _is_literal(lhs) and not _is_literal(rhs):
+        lhs, rhs = rhs, lhs               # constant goes on the right
+    if op == _EQ and rhs == _TRUE:
+        return lhs                        # `X == 1` is `X`
+    if op == _AND and rhs == _TRUE:
+        return lhs
+    if op == _AND and lhs == _TRUE:
+        return rhs
+    if op in (_AND, _OR):
+        # Associative, so keep chains flat -- a run of same-target branches
+        # merges into one of these and the grouping must not matter.
+        return ("chain", op) + _operands(op, lhs) + _operands(op, rhs)
+    return ("op", op, lhs, rhs)
+
+
+def _is_literal(node):
+    return node[0] in ("int", "float")
+
+
+def _operands(op, node):
+    return node[2:] if node[:2] == ("chain", op) else (node,)
+
+
+# --- comparable states ------------------------------------------------------
+
+
+def canonical(state):
+    """A comparable form of a state, with the encoders' re-spellings removed.
+
+    Compare raw structure instead and 46 groups that neither mod touched read
+    as modified, because every mod tool rewrites machines it never edited. What
+    survives here is the state's meaning: which condition jumps where, under
+    which expression, running which commands.
+    """
+    slots = {}
+    return (state.id,
+            _canonical_conditions(state.conditions, slots),
+            tuple(_canonical_call(c, slots) for c in state.entry),
+            tuple(_canonical_call(c, slots) for c in state.exit),
+            tuple(_canonical_call(c, slots) for c in state.while_))
+
+
+def _canonical_conditions(conditions, slots):
+    out = []
+    for condition in conditions:
+        item = _canonical_condition(condition, slots)
+        if out and _one_branch_twice(out[-1], item):
+            target, evaluator = out[-1][0], out[-1][1]
+            out[-1] = (target, _combine(_OR, evaluator, item[1]), (), ())
+        else:
+            out.append(item)
+    return tuple(out)
+
+
+def _one_branch_twice(first, second):
+    """Whether two adjacent conditions are one branch written apart.
+
+    Same jump target, nothing else attached to either: taking the first is
+    indistinguishable from taking the second, so `IF A -> T; IF B -> T` and
+    `IF A || B -> T` are the same machine. One toolchain writes them merged.
+    """
+    target, _, passes, subconditions = first
+    other_target, _, other_passes, other_subconditions = second
+    return (target is not None and target == other_target
+            and not passes and not subconditions
+            and not other_passes and not other_subconditions)
+
+
+def _canonical_condition(condition, slots):
+    evaluator = _expression(condition.evaluator, slots) if condition.evaluator else None
+    passes = tuple(_canonical_call(c, slots) for c in condition.pass_commands)
+    subconditions = _canonical_conditions(condition.subconditions, slots)
+    target = condition.target
+    if target is None and not passes and len(subconditions) == 1:
+        # `IF E: { IF F -> T }` is `IF E && F -> T`, and vanilla writes the
+        # nested form where both mods write the flat one. Only sound while the
+        # outer condition runs no commands: those fire when E holds and F does
+        # not, which the flattened form would never do.
+        child_target, child_evaluator, child_passes, child_subconditions = subconditions[0]
+        if not child_subconditions and None not in (evaluator, child_evaluator):
+            target = child_target
+            evaluator = _combine(_AND, evaluator, child_evaluator)
+            passes, subconditions = child_passes, ()
+    return (target, evaluator, passes, subconditions)
+
+
+def _canonical_call(call, slots):
+    return (call.bank, call.id,
+            tuple(_expression(a.bytecode, slots) if a.bytecode else None
+                  for a in call.args))
+
+
+def align(left, right):
+    """Map `left`'s state ids onto `right`'s, by content.
+
+    Ids are matched first where the content also agrees, because that is both
+    the common case and the cheapest. Everything left over is matched on
+    canonical content, which is what survives a renumbering.
+    """
+    right_by_id = {s.id: s for s in right.states}
+    mapping, taken = {}, set()
+    for state in left.states:
+        twin = right_by_id.get(state.id)
+        if twin is not None and _content(state) == _content(twin):
+            mapping[state.id] = twin.id
+            taken.add(twin.id)
+    by_content = {}
+    for state in right.states:
+        if state.id not in taken:
+            by_content.setdefault(_content(state), []).append(state)
+    for state in left.states:
+        if state.id in mapping:
+            continue
+        bucket = by_content.get(_content(state))
+        if bucket:
+            mapping[state.id] = bucket.pop(0).id
+    return mapping
+
+
+def _content(state):
+    """canonical() minus the state id -- identity has to come from content
+    alone when the whole question is whether the id moved."""
+    return canonical(state)[1:]
