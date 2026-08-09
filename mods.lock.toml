@@ -6,6 +6,12 @@ asset = "AdjustTheFov-325-2-0-1653830963.zip"
 sha256 = "339a27e94780c1550380d0fbc81026265da0539f95cfd004b012ec5c99c8323b"
 source = "nexus"
 
+[better-bows-and-arrows]
+version = "1.2"
+asset = "Regulation.bin-4628-1-2-1760355506.7z"
+sha256 = "6fc23b7c52464f6c59285b51b608c5dec4479b955d354222b352fa66e2a126c0"
+source = "nexus"
+
 [boss-resurrection-lite]
 version = "2.0.1"
 asset = "Boss Resurrection - Lite-2790-2-0-1-1720450846.zip"
@@ -22,6 +28,12 @@ source = "nexus"
 version = "25.0"
 asset = "moveset_modpack 25.0-1928-25-0-1738532654.zip"
 sha256 = "9ccfedc32901c89c3b12135988e2d7119aae028e34818ecda0b8fdb01444f03a"
+source = "nexus"
+
+[damage-competition]
+version = "1.6a"
+asset = "Damage Competition 10461 1.6a 2026-08-04T14-33Z EFcQetJUe.7z"
+sha256 = "429eb1683ab04dbbac9933d7ec69affec87f0e3d1f14f4a3c0335c8c8ee14b67"
 source = "nexus"
 
 [disable-rune-loss]
@@ -60,6 +72,12 @@ asset = "ertransmogrify-3596-2-4-13-1773526503.zip"
 sha256 = "8b684ccb0f391224b1951c7c75aa665e47f916145dd3ddfd9e1515159d9db848"
 source = "nexus"
 
+[expanded-talisman-slots]
+version = "1.1.2"
+asset = "Expanded Talisman Slots 10481 1.1.2 2026-07-30T14-09Z Ls9Xqlxsk.rar"
+sha256 = "c70467c2f863544e7d70a118bedcd18f79fe060221973de5f0c8588dff7ddde9"
+source = "nexus"
+
 [faster-respawn]
 version = "2.0"
 asset = "FasterRespawn-501-2-0-1676655598.zip"
@@ -78,6 +96,12 @@ asset = "ermerchant-5192-1-2-1-1755047173.zip"
 sha256 = "f243fc38f583c1fa9062628c2060a70933da90ee3f4d2b79d1dea824b4324cf0"
 source = "nexus"
 
+[great-rune-overhaul]
+version = "1.1.6"
+asset = "Great Rune Overhaul-2869-1-1-6-1729540057.rar"
+sha256 = "e5e9c4db0917f1c533da8ac3f5f8265cdac6e04e8ecb85f801eb28f683aa2491"
+source = "nexus"
+
 [increase-animation-distance]
 version = "3.0"
 asset = "IncreaseAnimationDistance-349-3-0-1652302425.zip"
@@ -88,6 +112,12 @@ source = "nexus"
 version = "v0.11.4"
 asset = "Elden Ring Randomizer-428-v0-11-4-1763103112.zip"
 sha256 = "b1b7ea2370a49d03d7e4ee0a9cd25fc887b21bb364e37a6cdf0330de77be4387"
+source = "nexus"
+
+[journey-with-melina]
+version = "1.1"
+asset = "Journey With Melina V1.1 10079 1.1 2026-06-12T09-51Z n7XrmU9K3.zip"
+sha256 = "c7981869c2f2ae983cb08e9f1cb2448472a87654ae3a67de00b3c6ec3fde7b3e"
 source = "nexus"
 
 [map-for-goblins]
@@ -124,6 +154,12 @@ source = "nexus"
 version = "1.3.0"
 asset = "QuestPath 10363 1.3.0 2026-07-19T20-46Z NhlU57Tcv.rar"
 sha256 = "fa5f2ebda4ff35a77416414076beb9223d3cea65d2c31cb75035548418306e75"
+source = "nexus"
+
+[radialmenu]
+version = "1.3.1"
+asset = "RadialMenu-9832-1-3-1-1779978112.zip"
+sha256 = "38d08f45e7363dc0c2f00b01fb31921965bf76b458804a834c38656641736243"
 source = "nexus"
 
 [remove-chromatic-aberration]

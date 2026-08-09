@@ -152,7 +152,8 @@ prefer = "clevers-moveset"
 [[merges]]
 path = "regulation.bin"
 strategy = "param-rows"
-mods = ["clevers-moveset", "nofalldead", "drop-rate-100", "forever-buffs"]
+mods = ["clevers-moveset", "nofalldead", "drop-rate-100", "forever-buffs",
+        "great-rune-overhaul", "better-bows-and-arrows"]
 prefer = "clevers-moveset"
 vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/regulation.bin" }
 
@@ -161,12 +162,70 @@ vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/re
 # this archive too, carrying vanilla text for those rows and its own edits to
 # 1,391 others, so a two-way union is wrong in both directions — it would drop
 # one side or the other. Three-way against vanilla keeps both.
+#
+# Great Rune Overhaul joins on the same file with 14 strings — the seven Great
+# Rune info lines and their seven captions, rewritten to describe the passives
+# it adds. Not one of them collides with what the other two changed, so all
+# three fold in cleanly. It ships them under msg/engUS/, hence the rename below.
 [[merges]]
 path = "msg/engus/item_dlc02.msgbnd.dcx"
 strategy = "fmg-3way"
-mods = ["clevers-moveset", "nofalldead"]
+mods = ["clevers-moveset", "nofalldead", "great-rune-overhaul"]
 prefer = "clevers-moveset"
 vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/msg/engus/item_dlc02.msgbnd.dcx" }
+
+# Great Rune Overhaul ships its text under msg/engUS/; Clever's, NoFallDead and
+# Boss Res all use msg/engus/. me3 mounts one file per path, so the two
+# spellings are two different slots — the merge above would never see this mod's
+# copy, and its rune descriptions would silently never load. erm refuses paths
+# that differ only in case rather than guessing which one me3 resolves to, so
+# the profile has to say which spelling wins.
+#
+# Lowercase, because that's the one already proven to mount in this stack: the
+# merged menu_dlc02 sits at msg/engus/ and Boss Resurrection's grace menu draws
+# from it correctly (it rendered as tofu when the merge wasn't happening).
+[[renames]]
+mod = "great-rune-overhaul"
+paths = { "msg/engUS/item_dlc02.msgbnd.dcx" = "msg/engus/item_dlc02.msgbnd.dcx" }
+
+# Smithbox workspace leftovers. The .js is a decompile of the emevd sitting next
+# to it, not something the game reads; project.json is the editor's own file.
+# The real event/common.emevd.dcx is content and stays — it's what grants the
+# passives on rune activation.
+[[prunes]]
+mod = "great-rune-overhaul"
+paths = [
+    "project.json",
+    "event/common.emevd.dcx.js",
+]
+
+# The Great Rune status icons. Both mods ship the whole ~204 MB menu atlas set,
+# but their actual contributions barely overlap: Great Rune Overhaul adds ONE
+# texture of its own, SB_Status_GRO_00, and the only shared texture whose
+# content differs is SB_Icon_02_A — where Clever's copy is the larger one, with
+# its weapon icons layered in, and this mod's is untouched vanilla. So base
+# wins the shared name and the new texture comes across.
+#
+# Dropping it is what produced green squares in game: the icon reference lives
+# in the SpEffectVfx rows, which survive the regulation merge either way, so the
+# game goes looking for a texture that isn't there and draws the missing-texture
+# placeholder. There is no "just don't show the icon" state to fall back to.
+#
+# Two-way, not three-way: vanilla's copy of this file exists only inside the
+# game's .bdt archives, which erm can't read. That's workable here because a
+# texture is keyed by name and an added icon sheet carries a name of its own —
+# unlike FMG text, where telling an authored string from an untouched one is
+# exactly what needs vanilla.
+#
+# The mod's matching menu/hi/01_common.sblytbnd.dcx (the layout that positions
+# the icon) needs no merge — Clever's doesn't ship it, so it mounts as the sole
+# provider. It has to stay unpruned though, or the texture arrives with nothing
+# placing it.
+[[merges]]
+path = "menu/hi/01_common.tpf.dcx"
+strategy = "tpf-union"
+mods = ["clevers-moveset", "great-rune-overhaul"]
+prefer = "clevers-moveset"
 
 # Unedited editor artifact, same as the Boss Res systemparam below: byte-identical
 # to the .prev Smithbox wrote beside it, so it carries nothing of the author's.

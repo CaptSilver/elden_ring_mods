@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -317,6 +318,39 @@ def test_merges_and_prunes_resolve_through_includes(tmp_path):
     assert prof["prunes"][0]["paths"] == ["msg/engus/item_dlc02.msgbnd.dcx"]
 
 
+def test_renames_resolve_through_includes(tmp_path):
+    """A rename is packaging metadata like a prune, so it has to travel with the
+    mod through the include chain. Declared ONLY in the included profile, so the
+    raw TOML key on the top profile can't make this pass on its own."""
+    (tmp_path / "base.toml").write_text(
+        'name = "base"\n'
+        '[[renames]]\n'
+        'mod = "b"\n'
+        'paths = { "msg/engUS/item.dcx" = "msg/engus/item.dcx" }\n')
+    (tmp_path / "top.toml").write_text('name = "top"\nincludes = ["base"]\n')
+
+    prof = load_profile("top", base=tmp_path)
+    assert len(prof["renames"]) == 1
+    assert prof["renames"][0]["paths"] == {"msg/engUS/item.dcx": "msg/engus/item.dcx"}
+
+
+def test_a_rename_declared_twice_is_deduplicated(tmp_path):
+    """Running one twice would raise the second time round: the source has
+    already moved, and its destination is now occupied by the mod's own file."""
+    body = ('[[renames]]\n'
+            'mod = "b"\n'
+            'paths = { "msg/engUS/item.dcx" = "msg/engus/item.dcx" }\n')
+    (tmp_path / "one.toml").write_text('name = "one"\n' + body)
+    (tmp_path / "two.toml").write_text('name = "two"\nincludes = ["one"]\n' + body)
+
+    assert len(load_profile("two", base=tmp_path)["renames"]) == 1
+
+
+def test_profiles_without_renames_get_an_empty_list(tmp_path):
+    (tmp_path / "bare.toml").write_text('name = "bare"\n')
+    assert load_profile("bare", base=tmp_path)["renames"] == []
+
+
 def test_a_merge_declared_twice_is_deduplicated(tmp_path):
     """Two profiles in the include graph may both declare the same merge.
     Applying it twice would merge an already-merged file into itself."""
@@ -443,41 +477,74 @@ def test_map_for_goblins_is_client_side_in_both_full_profiles():
         m["id"] for m in load_profile("gameplay-extras", base=Path("profiles"))["mods"]]
 
 
-def test_experimental_has_no_trials_left_but_keeps_its_rejections():
-    """The testbed is empty by design right now. The rejected-candidate notes
-    have to stay -- they are what stops questpath and starlight-shards being
-    re-added by someone who doesn't know they were already tried."""
+def test_experimental_keeps_its_rejected_and_blocked_notes():
+    """The notes are what stop a candidate being re-added by someone who doesn't
+    know it was already tried. Two categories, and the difference matters:
+    questpath and starlight-shards FAILED and shouldn't come back, while
+    journey-with-melina is fine and is only waiting on an ESD merger."""
     prof = load_profile("experimental", base=Path("profiles"))
     text = Path("profiles/experimental.toml").read_text()
     assert prof["includes"] == ["seamless-full"]
-    for rejected in ("questpath", "starlight-shards-rune-arcs"):
-        assert rejected not in [m["id"] for m in prof["mods"]]
-        assert rejected in text
+    for parked in ("questpath", "starlight-shards-rune-arcs", "journey-with-melina"):
+        assert parked not in [m["id"] for m in prof["mods"]]
+        assert parked in text
+    # The one that can come back needs its route back recorded, not just its name.
+    assert "esd-3way" in text
 
 
-def test_every_regulation_mod_lives_in_the_shared_profile():
-    """The merged regulation.bin is built from whichever profile is applied, so a
-    regulation mod left out of the shared set gives partners a different file --
-    which reads as a failure to connect, not a desync. Anything carrying params
-    therefore belongs in gameplay-extras, and the merge declaration has to name
-    every one of them or the apply aborts on an undeclared provider."""
+def _ships_regulation(asset):
+    """Whether a vendor archive carries a regulation.bin. bsdtar rather than
+    zipfile because Nexus serves .rar and .7z as readily as .zip."""
+    out = subprocess.run(["bsdtar", "-tf", str(Path("vendor") / asset)],
+                         capture_output=True, text=True)
+    return any(line.rsplit("/", 1)[-1] == "regulation.bin"
+               for line in out.stdout.splitlines())
+
+
+def test_every_regulation_mod_is_named_in_the_regulation_merge():
+    """An undeclared provider aborts the apply, so the merge has to name every
+    mod that ships a regulation.bin -- in ANY profile composing this one, not
+    just the ones installed here. Read out of the archives rather than listed by
+    hand: a hardcoded set only ever records what was true when it was written,
+    and this is exactly the check a newly added regulation mod has to trip."""
     shared = load_profile("gameplay-extras", base=Path("profiles"))
-    ids = [m["id"] for m in shared["mods"]]
-    regulation_mods = {"clevers-moveset", "nofalldead", "forever-buffs", "drop-rate-100"}
-    assert regulation_mods <= set(ids)
-    for m in shared["mods"]:
-        if m["id"] in regulation_mods:
-            assert m["requires_all_players"] is True, m["id"]
-
     merge = next(x for x in shared["merges"] if x["path"] == "regulation.bin")
-    assert set(merge["mods"]) == regulation_mods
     assert merge["prefer"] == "clevers-moveset"
     assert merge["strategy"] == "param-rows"
 
-    # The trials are promoted, so nothing regulation-carrying is left on trial.
-    exp = load_profile("experimental", base=Path("profiles"))
-    assert not [m for m in exp["mods"] if m["id"] not in ids and m["id"] not in
-                {x["id"] for x in load_profile("seamless-full", base=Path("profiles"))["mods"]}]
+    lock = load_lock("mods.lock.toml")
+    candidates = {m["id"]: m for prof in ("gameplay-extras", "experimental")
+                  for m in load_profile(prof, base=Path("profiles"))["mods"]
+                  if m.get("install") == "me3-package"}
+    checked = 0
+    for mod_id, mod in sorted(candidates.items()):
+        asset = lock.get(mod_id, {}).get("asset")
+        if not asset or not (Path("vendor") / asset).exists():
+            continue                      # not fetched here; nothing to read
+        checked += 1
+        if _ships_regulation(asset):
+            assert mod_id in merge["mods"], (
+                f"{mod_id} ships a regulation.bin but the merge doesn't name it")
+            assert mod.get("requires_all_players") is True, mod_id
+    if not checked:
+        pytest.skip("no vendor archives present to read")
+
+
+def test_regulation_mods_in_the_shared_profile_are_required_of_everyone():
+    """The merged regulation.bin is built from whichever profile is applied, so
+    a regulation mod in the shared set gives partners a different file unless
+    they run it too -- which reads as a failure to connect, not a desync."""
+    shared = load_profile("gameplay-extras", base=Path("profiles"))
+    merge = next(x for x in shared["merges"] if x["path"] == "regulation.bin")
+    shared_ids = {m["id"] for m in shared["mods"]}
+    for m in shared["mods"]:
+        if m["id"] in merge["mods"]:
+            assert m["requires_all_players"] is True, m["id"]
+    # Every contributor is declared somewhere reachable, or the apply aborts on
+    # a name nothing provides.
+    trial_ids = {m["id"] for m in load_profile("experimental", base=Path("profiles"))["mods"]}
+    for mod_id in merge["mods"]:
+        assert mod_id in shared_ids | trial_ids, mod_id
 
 
 def test_forever_buffs_keeps_its_packaging_workarounds():
