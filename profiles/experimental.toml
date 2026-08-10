@@ -7,32 +7,6 @@ description = "seamless-full plus whatever is currently on trial. Five on trial 
 
 includes = ["seamless-full"]
 
-# --- blocked, not rejected ---
-# journey-with-melina (#10079, BITEMYDUSTO) — Melina sits with you at every
-# grace, minus the stretches where the story says she shouldn't. Nothing is
-# wrong with the mod; it's waiting on a capability erm doesn't have yet.
-#
-# It ships exactly one file, script/talk/m00_00_00_00.talkesdbnd.dcx, and so
-# does Boss Resurrection Lite — which is already in the shared profile. Both
-# rewrite the SAME entry inside it, t000001000.esd, the grace talk state
-# machine (vanilla 202,800 B; Boss Res 391,901 B; this mod 214,903 B). Neither
-# can be pruned down to coexist, because that one file IS the whole mod on both
-# sides. Melina's second edit, t000003000.esd, collides with nothing.
-#
-# No strategy here can merge it. ESD is a compiled state machine with internal
-# offsets, so the byte-granular trick that composes two mods inside one param
-# row is not available — splicing bytes would corrupt the machine, not merge it.
-# An entry-level three-way would work if they touched different entries, and
-# they don't.
-#
-# UNBLOCKS WHEN: an esd-3way strategy exists that merges inside a single ESD.
-# Vanilla's copy is already on hand for the third side — the randomizer archive
-# bundles randomizer/diste/Vanilla/m00_00_00_00.talkesdbnd.dcx. Then this
-# becomes a normal entry: nexus_id=10079, file_id=47405, install="me3-package",
-# plus a [[merges]] on script/talk/m00_00_00_00.talkesdbnd.dcx naming
-# boss-resurrection-lite and this mod. Its pin stays in mods.lock.toml so the
-# archive stays hash-verified in the meantime.
-
 # --- tried and rejected ---
 # questpath (#10363) DISABLED — it kills the game during startup on this box.
 # Every launch with it died ~10ms after its own log recorded "DXGI creation

@@ -477,19 +477,27 @@ def test_map_for_goblins_is_client_side_in_both_full_profiles():
         m["id"] for m in load_profile("gameplay-extras", base=Path("profiles"))["mods"]]
 
 
-def test_experimental_keeps_its_rejected_and_blocked_notes():
+def test_experimental_keeps_its_rejected_notes():
     """The notes are what stop a candidate being re-added by someone who doesn't
-    know it was already tried. Two categories, and the difference matters:
-    questpath and starlight-shards FAILED and shouldn't come back, while
-    journey-with-melina is fine and is only waiting on an ESD merger."""
+    know it was already tried. Both of these failed on this machine."""
     prof = load_profile("experimental", base=Path("profiles"))
     text = Path("profiles/experimental.toml").read_text()
     assert prof["includes"] == ["seamless-full"]
-    for parked in ("questpath", "starlight-shards-rune-arcs", "journey-with-melina"):
-        assert parked not in [m["id"] for m in prof["mods"]]
-        assert parked in text
-    # The one that can come back needs its route back recorded, not just its name.
-    assert "esd-3way" in text
+    for rejected in ("questpath", "starlight-shards-rune-arcs"):
+        assert rejected not in [m["id"] for m in prof["mods"]]
+        assert rejected in text
+
+
+def test_the_grace_talk_machine_is_merged_not_won():
+    """Both mods ship this file and it is the whole mod on either side, so a
+    last-one-wins mount silently disables one of them."""
+    shared = load_profile("gameplay-extras", base=Path("profiles"))
+    merge = next(x for x in shared["merges"]
+                 if x["path"] == "script/talk/m00_00_00_00.talkesdbnd.dcx")
+    assert merge["strategy"] == "esd-3way"
+    assert set(merge["mods"]) == {"boss-resurrection-lite", "journey-with-melina"}
+    assert merge["prefer"] == "boss-resurrection-lite"
+    assert merge["vanilla"]["mod"] == "item-enemy-randomizer"
 
 
 def _ships_regulation(asset):

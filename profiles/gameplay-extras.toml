@@ -20,6 +20,22 @@ kind = "gameplay"
 install = "me3-package"
 requires_all_players = true
 
+# Journey with Melina (#10079, BITEMYDUSTO) — Melina sits with you at every
+# grace, minus the stretches the story says she shouldn't. One file, a talk
+# ESD, merged with Boss Resurrection's copy of the same file.
+#
+# Shared rather than client-side: the merged talkesd is built from whichever
+# profile is applied, so a partner who doesn't run her gets a different file.
+# Whether that desyncs or just means she isn't there for them is untested.
+[[mods]]
+id = "journey-with-melina"
+source = "nexus"
+nexus_id = 10079
+file_id = 47405
+kind = "gameplay"
+install = "me3-package"
+requires_all_players = true
+
 # Clever's Moveset Modpack — new weapon movesets + animations. EDITS regulation.bin
 # + c0000.anibnd (the character animation bundle), so it claims the ONE regulation
 # slot (fine now the randomizer is disabled — don't add another regulation mod).
@@ -244,3 +260,28 @@ paths = [
     "msg/engus/item_dlc02.msgbnd.dcx",
     "param/systemparam/systemparam.parambnd.dcx",
 ]
+
+# Both mods rewrite the site-of-grace talk machine, and that one file is the
+# whole mod on either side, so neither can be pruned to make room. They collide
+# on exactly one state group out of 86: Boss Res deletes three of its states and
+# renumbers the survivors, while Melina hooks two of the states it deletes. The
+# merge therefore matches states by content rather than by id -- see the strategy.
+#
+# prefer is Boss Res because it is the larger, already-shared mod and its rewrite
+# is the more invasive; replaying Melina's interception onto it is the tractable
+# direction.
+[[merges]]
+path = "script/talk/m00_00_00_00.talkesdbnd.dcx"
+strategy = "esd-3way"
+mods = ["boss-resurrection-lite", "journey-with-melina"]
+prefer = "boss-resurrection-lite"
+vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/m00_00_00_00.talkesdbnd.dcx" }
+
+# Boss Res's archive ships a Smithbox backup of this same file, a leftover from
+# whatever edit session produced the real one. It lands in the installed
+# package unpruned, which would leave two providers for the merge input path
+# once anything else in the stack looked for a .bak sibling -- prune it rather
+# than let a stale backup quietly become a second source of truth.
+[[prunes]]
+mod = "boss-resurrection-lite"
+paths = ["script/talk/m00_00_00_00.talkesdbnd.dcx.bak"]
