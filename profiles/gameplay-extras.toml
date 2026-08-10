@@ -132,6 +132,52 @@ kind = "gameplay"
 install = "me3-package"
 requires_all_players = true
 
+# Great Rune Overhaul (#2869, Blabla) — each Great Rune gains a small permanent
+# passive once activated at its Divine Tower, and they stack. The Rune Arc
+# activation still works as normal on top. Confirmed in game 2026-08-09.
+#
+# 28 new SpEffect rows, 3 modified, 3 new SpEffectVfx. No other mod touches those
+# rows. Its BND4 reports game build 11601000, same as Clever's.
+#
+# It ships three other files, each handled differently below: event/common.emevd.dcx
+# is content and mounts as sole provider (it's what grants the passives), the
+# msgbnd needs a rename because it ships under msg/engUS/, and the menu atlas
+# needs a union with Clever's or the rune status icons render as green squares.
+[[mods]]
+id = "great-rune-overhaul"
+source = "nexus"
+nexus_id = 2869
+file_id = 31870
+kind = "gameplay"
+install = "me3-package"
+requires_all_players = true
+
+# Better Bows and Arrows (#4628, Ragius25) — arrow stacks to 250, faster special
+# arrows, reworked crossbow/ballista scaling, and a 1.5x sneak multiplier with
+# bows instead of 1.2x. Confirmed in game 2026-08-09.
+#
+# 127 Bullet rows, 35 EquipParamWeapon, 1 GameSystemCommonParam. Its BND4 reports
+# 11611000 — exactly the current vanilla build.
+#
+# All 35 weapon rows are ALSO edited by Clever's or Forever Buffs, and the merge
+# composes them inside the row: every byte this mod authored survives alongside
+# theirs. Arrow stacks past 99 while Clever's bow movesets still behave is what
+# proves that in game, and it's the widest test the intra-row merge has had.
+#
+# file_id 41004 is the MAIN regulation, which is v1.2. The page's v1.5 content
+# (doubled special-arrow speed, faster Through & Through) ships ONLY as CSVs for
+# Smithbox, and erm merges regulations, not CSVs — so this deliberately installs
+# v1.2 while the page reads v1.5. Not a stale pin; re-check if a v1.5 regulation
+# ever appears.
+[[mods]]
+id = "better-bows-and-arrows"
+source = "nexus"
+nexus_id = 4628
+file_id = 41004
+kind = "gameplay"
+install = "me3-package"
+requires_all_players = true
+
 # --- Summon Ashes Anywhere REMOVED (co-op incompatible) ---
 # SummonAnywhere.dll (nexus 5434, file 23945, v1.12.1) loaded fine via Elden Mod
 # Loader (Game/mods/) but was useless in Seamless Co-op: summons couldn't be

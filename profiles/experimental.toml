@@ -3,7 +3,7 @@
 # plus whatever's being tried out — switching to a standalone profile would
 # uninstall Seamless along with everything else.
 name = "experimental"
-description = "seamless-full plus whatever is currently on trial. Five on trial now: RadialMenu, Expanded Talisman Slots and Damage Competition (client-side), plus Great Rune Overhaul and Better Bows and Arrows (regulation mods — see the warning below before taking those into co-op). The notes below record rejected and blocked candidates so they don't get re-added."
+description = "seamless-full plus whatever is currently on trial. Nothing is on trial right now — the last batch all passed their in-game checks and was promoted. The notes below record rejected candidates so they don't get re-added."
 
 includes = ["seamless-full"]
 
@@ -45,139 +45,15 @@ includes = ["seamless-full"]
 # normal timer — "it loaded" proves nothing here, that is exactly how it failed.
 
 # --- on trial ---
-# Each entry names the in-game check that would promote it and the profile it
-# graduates to. Promoted so far: map-for-goblins (icons appear, F10 panel opens)
-# and nofalldead (talisman survives a 20 m drop), then forever-buffs and
-# drop-rate-100.
-
-# Expanded Talisman Slots (#10481, imCioco) — up to 8 extra talisman slots on
-# top of whatever the save has unlocked. The equipment screen has a hard cap on
-# how many slots it can draw, so the extra ones live in a menu the mod adds to
-# the Site of Grace list; the two views stay in sync.
-#
-# me3-native, not "mods": it reads ExpandedTalismanSlots.ini from beside the
-# binary, and me3-native extracts the whole archive so the ini travels with the
-# dll. The author recommends me3 first as well. Default is 3 extra slots.
-#
-# Client-side as far as the loader is concerned, but it changes what your
-# character can equip, so the party should agree before this ships to everyone.
-# PROMOTE TO seamless-full when: rest at a grace, open the new menu, equip a
-# talisman in an extra slot and confirm the effect actually applies in combat —
-# a slot that displays but doesn't grant its effect is the failure mode here.
-[[mods]]
-id = "expanded-talisman-slots"
-source = "nexus"
-nexus_id = 10481
-file_id = 48747
-kind = "gameplay"
-install = "me3-native"
-
-# RadialMenu (#9832, LorenzoFaith) — hold the change-spell or change-item bind
-# to get a wheel instead of cycling one at a time. Reads names and icons out of
-# the running game rather than a fixed table, so Clever's weapons and DLC items
-# show up correctly.
-#
-# The best fit of this batch for a controller playthrough: D-pad up/down to
-# open, right stick to pick, release to confirm. Short taps still cycle the
-# vanilla way, so it costs nothing when you don't want it.
-#
-# me3-native because the dll sits inside a RadialMenu/ folder next to the .me3
-# profile it ships; find_native_dll recurses to it, and the mod writes
-# RadialMenu.log beside the binary.
-#
-# It draws an overlay, so it joins ReShade and Map for Goblins on the swapchain
-# — that contention has bitten this stack before. If the game dies at startup
-# after adding this, it is the first thing to pull.
-# PROMOTE TO seamless-full when: the wheel opens on the D-pad in a real session,
-# picks the right item, and nothing flickers with ReShade running.
-[[mods]]
-id = "radialmenu"
-source = "nexus"
-nexus_id = 9832
-file_id = 46913
-kind = "qol"
-install = "me3-native"
-
-# Damage Competition (#10461, Xykcu) — floating damage numbers coloured by
-# status proc, a DPS meter with boss names, a player list with HP/ping, and text
-# chat. Solo gives the damage meter; Seamless unlocks the networked half.
-#
-# file_id MUST stay pinned. The other file on that page is a branch for a
-# pirated build of the game — the author says so in its own description and
-# recommends against it. 48887 is the real MAIN.
-#
-# install = "mods": the author documents Elden Mod Loader's mods/ folder, the
-# archive is a bare dll, and the ini is written next to it on first launch.
-# F5 opens settings, F6 reloads the ini, Enter is chat.
-#
-# Newest and least proven thing here — released days before it was added, a few
-# hundred downloads. It also draws an overlay, same contention caveat as
-# RadialMenu. Client-side: a partner without it just doesn't see the numbers.
-# PROMOTE TO seamless-full when: numbers appear on hit in an actual co-op
-# session and the player list shows the other player, not just you.
-[[mods]]
-id = "damage-competition"
-source = "nexus"
-nexus_id = 10461
-file_id = 48887
-kind = "qol"
-install = "mods"
-
-# Great Rune Overhaul (#2869, Blabla) — each Great Rune gains a small permanent
-# passive once activated at its Divine Tower, and they stack. The Rune Arc
-# activation still works as normal on top.
-#
-# Regulation mod: 28 new SpEffect rows, 3 modified, 3 new SpEffectVfx. Clean
-# against everything else in the stack — no other mod touches those rows. Its
-# BND4 reports game build 11601000, same as Clever's.
-#
-# It also ships event/common.emevd.dcx (what grants the passives on activation)
-# and menu/hi/01_common.* (the status icons), neither of which anything else
-# provides. The msgbnd needs a rename — see gameplay-extras, where its merges
-# live.
-# PROMOTE TO gameplay-extras when: activate a Great Rune at its Divine Tower,
-# then confirm the passive is live with NO Rune Arc used — that is the whole
-# point of the mod and the part vanilla can fake if you misread it.
-[[mods]]
-id = "great-rune-overhaul"
-source = "nexus"
-nexus_id = 2869
-file_id = 31870
-kind = "gameplay"
-install = "me3-package"
-requires_all_players = true
-
-# Better Bows and Arrows (#4628, Ragius25) — arrow stacks to 250, faster special
-# arrows, reworked crossbow/ballista scaling, and a 1.5x sneak multiplier with
-# bows instead of 1.2x.
-#
-# Regulation mod: 127 Bullet rows, 35 EquipParamWeapon, 1 GameSystemCommonParam.
-# Its BND4 reports 11611000 — exactly the current vanilla build.
-#
-# All 35 weapon rows are ALSO edited by Clever's or Forever Buffs, and the merge
-# composes them inside the row: every byte this mod authored survives alongside
-# theirs. That is the widest test the intra-row merge has had.
-#
-# file_id 41004 is the MAIN regulation, which is v1.2. The page's v1.5 content
-# (doubled special-arrow speed, faster Through & Through) ships ONLY as CSVs for
-# Smithbox, and erm merges regulations, not CSVs — so this deliberately installs
-# v1.2 while the page reads v1.5. Not a stale pin; re-check if a v1.5 regulation
-# ever appears.
-# PROMOTE TO gameplay-extras when: an arrow stack goes past 99 in the inventory,
-# and Clever's bow movesets still behave — that pair is what proves the shared
-# weapon rows merged rather than one side winning.
-[[mods]]
-id = "better-bows-and-arrows"
-source = "nexus"
-nexus_id = 4628
-file_id = 41004
-kind = "gameplay"
-install = "me3-package"
-requires_all_players = true
+# Empty. Add a [[mods]] entry here with the in-game check that would promote it,
+# and the profile it graduates to. Promoted so far: map-for-goblins (icons
+# appear, F10 panel opens), nofalldead (talisman survives a 20 m drop),
+# forever-buffs and drop-rate-100 — then RadialMenu, Expanded Talisman Slots and
+# Damage Competition to seamless-full, and Great Rune Overhaul and Better Bows
+# and Arrows to gameplay-extras, all confirmed in game 2026-08-09.
 #
 # Worth knowing before parking a regulation mod here: the merged regulation.bin
 # is built from whatever profile you apply, so playing on experimental with an
 # extra regulation mod gives you a DIFFERENT file than a partner running
 # seamless-full — which reads as a failure to connect, not a desync. A regulation
 # trial is a solo-testing state, not something to co-op on.
-
