@@ -323,11 +323,12 @@ mods = ["boss-resurrection-lite", "journey-with-melina"]
 prefer = "boss-resurrection-lite"
 vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/m00_00_00_00.talkesdbnd.dcx" }
 
-# Boss Res's archive ships a Smithbox backup of this same file, a leftover from
-# whatever edit session produced the real one. It lands in the installed
-# package unpruned, which would leave two providers for the merge input path
-# once anything else in the stack looked for a .bak sibling -- prune it rather
-# than let a stale backup quietly become a second source of truth.
+# Boss Res's archive ships a Smithbox backup of the file above, a leftover from
+# whatever edit session produced the real one. It is its own path, so it
+# collides with nothing and me3 never mounts it -- this is hygiene, not a
+# conflict fix. Keeping it would leave a stale copy of the pre-merge talk
+# machine sitting in the installed package next to the merged one, which is
+# exactly the thing to hand someone debugging a talk bug the wrong file.
 [[prunes]]
 mod = "boss-resurrection-lite"
 paths = ["script/talk/m00_00_00_00.talkesdbnd.dcx.bak"]

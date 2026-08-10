@@ -648,6 +648,16 @@ def align(left, right):
     depends on the mapping, which makes it a fixed point: seed on the part of a
     state a renumbering cannot touch, then re-read the jump targets through
     whatever is settled and go round again until a round settles nothing new.
+
+    Known limit: the shape being matched includes a state's commands, so a state
+    whose *commands* changed cannot pair with its own vanilla original -- it
+    reads as a delete plus an add. The delete is noted against the vanilla state
+    and the rewritten copy is grafted as an addition, usually with nothing
+    pointing at it: a machine in the output that will never run. Tolerable only
+    because it is loud -- the graft reachability check names it too, so the user
+    gets both halves of what happened. Zero occurrences on the real pair. Fixing
+    it means also matching on a command-free shape and reconciling two answers
+    that can disagree.
     """
     left_shape = {s.id: canonical(s) for s in left.states}
     right_shape = {s.id: canonical(s) for s in right.states}

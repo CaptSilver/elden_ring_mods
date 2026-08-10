@@ -23,8 +23,12 @@ def _condition_count(raw):
 def _synthetic(groups, name="t000001000"):
     """Build a minimal valid ESD. groups: [(group_id, [(state_id, target_or_None)])].
 
-    Deliberately hand-rolled rather than going through esd.write, so the reader is
-    tested against bytes assembled independently of it.
+    Hand-rolled rather than going through esd.write, so the reader is tested
+    against bytes this file assembled. Not an independent implementation of the
+    format, though: the trailing dummy state row, the pool layout and the
+    zero-length -1 offsets are all write()'s conventions, copied here because
+    they are what the reader has to accept. Only the real files in the fixtures
+    are outside evidence about the format.
     """
     states, conditions, cond_slots = [], [], []
     group_records, state_cursor = [], 0

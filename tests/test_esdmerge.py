@@ -73,6 +73,11 @@ def test_a_group_only_the_other_side_added_is_grafted():
     other = _esd({1: [(0, None)], 1000: [(0, None), (1, 0)]})
     merged, notes = esdmerge.merge(base, other, vanilla)
     assert _ids(merged) == [1, 1000]
+    # The group's contents, not just its id: a graft that arrives as an empty
+    # shell of the right number is the failure this is guarding against.
+    grafted = _group(merged, 1000)
+    assert [s.id for s in grafted.states] == [0, 1]
+    assert _targets(_find(grafted, 1)) == [0]
     assert notes == []
 
 
@@ -574,7 +579,7 @@ def test_canonicaliser_finds_exactly_the_groups_the_mods_edited():
 
 def test_align_pairs_every_state_of_a_group_both_mods_left_alone():
     """Alignment on a real group: same machine, three encoders, and every state
-    has to find its counterpart or Task 5 has nothing to replay a delta onto."""
+    has to find its counterpart or the delta replay has nothing to replay onto."""
     v, b = (esd.read(real_esd(w)) for w in ("vanilla", "bossres"))
     untouched = 2147483573        # trivial-wrapper nesting, edited by nobody
     vg = next(g for g in v.groups if g.id == untouched)
@@ -812,9 +817,14 @@ def test_an_edit_alignment_cannot_place_is_named_rather_than_dropped():
         esd.Condition(target=1, evaluator=GUARD),)),))        # base changed elsewhere
     other = one(200)                                          # other changed the call
 
-    _merged, notes = esdmerge.merge(base, other, vanilla)
+    merged, notes = esdmerge.merge(base, other, vanilla)
     assert any(n.group == 24 and n.state == 0 and n.reason is esdmerge.Reason.NOT_IN_OTHER
                for n in notes), notes
+    # The other half of the same limitation: the rewritten state is also
+    # grafted, and nothing reaches it. A dead machine in the output is only
+    # tolerable because it is named -- so the naming is what gets pinned.
+    orphan, = [n for n in notes if n.reason is esdmerge.Reason.ORPHANED_GRAFT]
+    assert orphan.target not in _reachable(_group(merged, 24))
 
 
 def test_a_replayed_state_carries_no_leftover_order():
