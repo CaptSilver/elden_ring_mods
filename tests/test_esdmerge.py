@@ -793,9 +793,12 @@ def test_the_real_shared_group_replays_melina_onto_boss_res():
     # surviving hook sits on an orphan.
     assert {27, 43, 44} <= _reachable(group)
 
-    # Her other hook was on vanilla 26, which Boss Res deleted.
+    # Her other hook was on vanilla 26, which Boss Res deleted. That is the only
+    # thing wrong with this merge: in particular neither state she added arrives
+    # orphaned, so the graft-reachability check has nothing to say.
     assert len(notes) == 1, notes
     assert "26" in notes[0] and "2147483624" in notes[0]
+    assert "reaches it" not in notes[0]
 
 
 def test_the_real_merge_writes_and_survives_a_round_trip():
@@ -928,3 +931,89 @@ def test_an_edit_with_no_single_home_in_the_base_is_not_reported_as_a_deletion()
     _merged, notes = esdmerge.merge(base, other, vanilla)
     assert len(notes) == 1, notes
     assert "look like" in notes[0] and "deleted" not in notes[0], notes[0]
+
+
+# --- grafts that arrive dead ------------------------------------------------
+
+
+def test_a_graft_orphaned_by_a_refused_replay_is_named():
+    """The hook that would have entered the other mod's new state lost a
+    conflict, so the state is grafted with nothing left pointing at it.
+
+    Structurally the output is perfect -- no duplicate ids, no dangling target,
+    every call resolves -- and the machine is dead. The note about the lost hook
+    does not say that a whole machine came across as unreachable code, and that
+    is the difference between "your redirect was overruled" and "this mod does
+    nothing now".
+    """
+    vanilla = _esd({24: [(0, 1), (1, None), (9, None)]})
+    base = _esd({24: [(0, 9), (1, None), (9, None)]})       # redirected 0 at 9
+    other = _esd({24: [(0, 3), (1, None), (9, None), (3, 1)]})   # 0 through a new 3
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    group = _group(merged, 24)
+    assert 3 in {s.id for s in group.states}      # grafted, as before
+    assert 3 not in _reachable(group)             # and nothing reaches it
+    assert any("reaches it" in note for note in notes), notes
+
+
+def test_a_graft_the_other_mod_could_not_reach_either_is_not_named():
+    """The invariant is relative, not absolute. Shipped files are full of states
+    nothing jumps at -- 22 of vanilla's, across 10 of its 86 groups -- so a
+    graft that was already dead in the mod it came from is not news."""
+    vanilla = _esd({24: [(0, 1), (1, None)]})
+    base = _esd({24: [(0, 1), (1, None), (8, 1)]})          # base's own addition
+    other = _esd({24: [(0, 1), (1, None), (3, 1)]})         # nothing points at 3
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    group = _group(merged, 24)
+    assert 3 in {s.id for s in group.states} and 3 not in _reachable(group)
+    assert notes == []
+
+
+def _nested_hook(target):
+    """A state whose only branch is one level down -- `IF guard: { IF x -> t }`,
+    the shape vanilla writes where both mods write it flat."""
+    return esd.State(0, conditions=(esd.Condition(
+        target=None, evaluator=GUARD,
+        subconditions=(esd.Condition(target=target, evaluator=OTHER),)),))
+
+
+def _one_group(*states):
+    return esd.Esd(groups=(esd.StateGroup(24, states),),
+                   name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+
+def test_a_hook_written_as_a_nested_branch_is_retargeted_too():
+    """Both mods added a state 3, so the graft has to be renumbered -- and the
+    reference that has to move with it is buried in a subcondition. Left alone
+    it still resolves, to the preferred mod's unrelated state 3, which is the
+    quiet kind of wrong this whole alignment exists to avoid."""
+    vanilla = _one_group(_nested_hook(1), esd.State(1))
+    base = _one_group(_nested_hook(1), esd.State(1),
+                      esd.State(3, conditions=(esd.Condition(target=1, evaluator=GUARD),)))
+    other = _one_group(_nested_hook(3), esd.State(1),
+                       esd.State(3, conditions=(esd.Condition(target=1, evaluator=OTHER),)))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    group = _group(merged, 24)
+    grafted, = _targets(_find(group, 0))
+    assert grafted != 3                        # base already owns 3
+    assert grafted in _reachable(group)
+    assert _targets(_find(group, 3)) == [1]    # base's own state 3, untouched
+    assert notes == []
+
+
+def test_a_graft_hooked_by_a_nested_branch_is_still_seen_as_live():
+    """The relative invariant compares two reachability walks, so a walk that
+    skips nested branches breaks both sides equally and the comparison still
+    balances -- it just balances at "this graft was dead anyway", and the orphan
+    goes unreported. Here the graft's only in-edge in the other mod is nested."""
+    vanilla = _one_group(_nested_hook(1), esd.State(1), esd.State(9))
+    base = _one_group(_nested_hook(9), esd.State(1), esd.State(9))     # took the hook
+    other = _one_group(_nested_hook(3), esd.State(1), esd.State(9),
+                       esd.State(3, conditions=(esd.Condition(target=1, evaluator=OTHER),)))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert 3 not in _reachable(_group(merged, 24))
+    assert any("reaches it" in note for note in notes), notes

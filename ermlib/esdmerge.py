@@ -238,7 +238,13 @@ def _merge_group(gid, base_group, other_group, vanilla_group):
                 f"jumps to its state {jump.target}, which has no counterpart in "
                 f"the merged group -- that change was not applied")
 
-    return base_group._replace(states=tuple(merged[sid] for sid in layout)), notes
+    composed = base_group._replace(states=tuple(merged[sid] for sid in layout))
+    for sid in _orphaned_grafts(other_group, composed, graft_id):
+        notes.append(
+            f"group {gid}: the other mod's state {sid} came across as state "
+            f"{graft_id[sid]}, but nothing in the merged group reaches it -- "
+            f"whatever it does will not run")
+    return composed, notes
 
 
 def _edited(before, after, pairs):
@@ -260,6 +266,48 @@ def _retargeted_conditions(conditions, retarget):
         c._replace(target=retarget(c.target),
                    subconditions=_retargeted_conditions(c.subconditions, retarget))
         for c in conditions)
+
+
+def _orphaned_grafts(other_group, merged_group, graft_id):
+    """States the other mod could enter, and the merged group cannot.
+
+    Deliberately relative, not "every state is reachable": shipped files are
+    full of states nothing jumps at -- 22 of vanilla's, across 10 of its 86
+    groups, and the same in both mods -- so an absolute rule would reject
+    FromSoft's own work. What is not normal is a machine the other mod added
+    *and could enter* arriving with nothing left pointing at it, which is what
+    happens when the hook that would have entered it loses a conflict.
+
+    The result is a note rather than a refusal. Base's mod still works, and a
+    merge that keeps one mod and names what the other lost beats aborting and
+    shipping neither.
+    """
+    live = _reachable(other_group)
+    arrived = _reachable(merged_group)
+    return tuple(sid for sid in sorted(graft_id)
+                 if sid in live and graft_id[sid] not in arrived)
+
+
+def _reachable(group):
+    """State ids reachable from the group's entry.
+
+    The entry is the group's first state row -- what its header points at. Every
+    group in all three real files starts at state 0.
+    """
+    states = {s.id: s for s in group.states}
+    start = group.states[0].id
+    seen, pending = {start}, [start]
+    while pending:
+        for target in _jump_targets(states[pending.pop()]):
+            if target in states and target not in seen:
+                seen.add(target)
+                pending.append(target)
+    return seen
+
+
+def _jump_targets(state):
+    return tuple(c.target for c in _every_condition(state.conditions)
+                 if c.target is not None)
 
 
 def check(archive):
