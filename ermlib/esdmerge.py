@@ -362,11 +362,12 @@ def _orphaned_grafts(other_group, merged_group, graft_id):
 def _reachable(group):
     """State ids reachable from the group's entry.
 
-    The entry is the group's first state row -- what its header points at. Every
-    group in all three real files starts at state 0.
+    The entry is whatever `esd.write` will point the group header at, which is
+    the one rule that decides where the game starts the machine. Every group in
+    all three real files starts at state 0.
     """
     states = {s.id: s for s in group.states}
-    start = group.states[0].id
+    start = esd.first_state(group).id
     seen, pending = {start}, [start]
     while pending:
         for target in _jump_targets(states[pending.pop()]):
@@ -573,10 +574,15 @@ def _one_branch_twice(first, second):
     Same jump target, nothing else attached to either: taking the first is
     indistinguishable from taking the second, so `IF A -> T; IF B -> T` and
     `IF A || B -> T` are the same machine. One toolchain writes them merged.
+
+    Both sides need an evaluator to fold. A condition with no evaluator bytes
+    has no expression to disjoin -- the same reason the wrapper collapse below
+    refuses a missing evaluator instead of guessing it means "always".
     """
-    target, _, passes, subconditions = first
-    other_target, _, other_passes, other_subconditions = second
+    target, evaluator, passes, subconditions = first
+    other_target, other_evaluator, other_passes, other_subconditions = second
     return (target is not None and target == other_target
+            and None not in (evaluator, other_evaluator)
             and not passes and not subconditions
             and not other_passes and not other_subconditions)
 

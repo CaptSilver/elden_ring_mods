@@ -370,3 +370,123 @@ def test_write_does_not_mistake_genuine_sharing_for_an_order_collision(which):
     construction (it's the same physical row, re-read fresh each time), so a
     plain read-then-write of any real file has to pass with no EsdError."""
     esd.write(esd.read(real_esd(which)))
+
+
+def test_write_refuses_a_jump_target_the_group_does_not_have():
+    """A merge that renumbers states and misses a reference gets here. Before,
+    it came out as a bare KeyError -- erm catches ErmError and nothing else, so
+    a stale jump target reached the user as a stack trace."""
+    state = esd.State(0, conditions=(esd.Condition(target=99, evaluator=b"\x41\xa1"),))
+    archive = esd.Esd(groups=(esd.StateGroup(1, (state,)),), name="",
+                      unk=(0, 0, 0, 0), pool_count=0)
+    with pytest.raises(esd.EsdError, match="99"):
+        esd.write(archive)
+
+
+def test_write_refuses_a_group_with_no_states():
+    """The group header has to point at a first state row, and there isn't
+    one. IndexError said nothing about which group or why."""
+    archive = esd.Esd(groups=(esd.StateGroup(1, ()),), name="",
+                      unk=(0, 0, 0, 0), pool_count=0)
+    with pytest.raises(esd.EsdError, match="no states"):
+        esd.write(archive)
+
+
+def test_first_state_is_the_lowest_order_row_not_the_first_in_the_tuple():
+    """Where a machine starts is one rule, and two callers read it: the writer,
+    which points the group header at a row, and the merge's reachability walk.
+    They only agree by accident on a group that came off disk -- a merge can
+    hand back states in an order that is not their table order, and then a walk
+    that trusts tuple position starts somewhere the game never enters.
+    """
+    late = esd.State(7, order=3)
+    early = esd.State(4, order=1)
+    group = esd.StateGroup(1, (late, early))
+    assert esd.first_state(group) is early
+
+
+def test_first_state_falls_back_to_tuple_order_for_fresh_records():
+    """Merge-created rows carry order=None and are appended in the order they
+    were added, so the first of those is the entry when nothing is numbered."""
+    group = esd.StateGroup(1, (esd.State(4), esd.State(7)))
+    assert esd.first_state(group).id == 4
+
+
+def test_write_points_the_group_header_at_the_lowest_order_state():
+    """The rule has to be the one the file actually carries, not just what the
+    helper returns: reading back gives the states in table order."""
+    group = esd.StateGroup(1, (esd.State(7, order=3), esd.State(4, order=1)))
+    archive = esd.Esd(groups=(group,), name="t000001000",
+                      unk=(0, 0, 0, 0), pool_count=0)
+    reread = esd.read(esd.write(archive))
+    assert [s.id for s in reread.groups[0].states] == [4, 7]
+
+
+def test_a_single_state_group_round_trips_without_a_dummy_row():
+    """Every group in the three real files has at least two states, so the
+    branch that skips the dummy row is never taken by any file on disk."""
+    group = esd.StateGroup(1, (esd.State(0, conditions=(
+        esd.Condition(target=0, evaluator=b"\x41\xa1"),)),))
+    archive = esd.Esd(groups=(group,), name="t000001000",
+                      unk=(0, 0, 0, 0), pool_count=0)
+    raw = esd.write(archive)
+    reread = esd.read(raw)
+    assert [s.id for s in reread.groups[0].states] == [0]
+    assert reread.groups[0].states[0].conditions[0].target == 0
+    assert esd.write(reread) == raw
+
+
+def _corrupt(raw, offset, value, fmt="<I"):
+    out = bytearray(raw)
+    struct.pack_into(fmt, out, offset, value)
+    return bytes(out)
+
+
+def test_read_refuses_a_name_that_runs_past_the_end():
+    """Slicing bytes past the end gives a short result instead of raising, so a
+    bad name_off/name_len used to come back as a silently truncated name."""
+    raw = _synthetic([(1, [(0, 1), (1, None)])])
+    with pytest.raises(esd.EsdError, match="name"):
+        esd.read(_corrupt(raw, 0x58, 4000))                # name_len
+    with pytest.raises(esd.EsdError, match="name"):
+        esd.read(_corrupt(raw, 0x54, 0x7000_0000))         # name_off
+
+
+def test_read_refuses_a_state_run_that_leaves_its_table():
+    """The header checks bound the five tables against the buffer; they say
+    nothing about where a run inside one starts. A group claiming states from
+    beyond the state table used to read whatever bytes sat there."""
+    raw = _synthetic([(1, [(0, 1), (1, None)])])
+    group_at = esd.HEADER_SIZE + esd.INTERNAL_HEADER_SIZE
+    states_at = esd.INTERNAL_HEADER_SIZE + esd.GROUP_SIZE
+    with pytest.raises(esd.EsdError, match="state run"):
+        esd.read(_corrupt(raw, group_at + 8,
+                          states_at + 40 * esd.STATE_SIZE, "<q"))
+
+
+def test_read_refuses_a_state_run_that_is_not_on_a_row_boundary():
+    raw = _synthetic([(1, [(0, 1), (1, None)])])
+    group_at = esd.HEADER_SIZE + esd.INTERNAL_HEADER_SIZE
+    states_at = esd.INTERNAL_HEADER_SIZE + esd.GROUP_SIZE
+    with pytest.raises(esd.EsdError, match="row boundary"):
+        esd.read(_corrupt(raw, group_at + 8, states_at + 3, "<q"))
+
+
+def test_read_refuses_a_condition_pool_run_outside_the_pool():
+    """A state's conditions are addressed by an offset into the pool, and the
+    pool is the one region whose declared length vanilla overstates -- so it
+    gets bounded against the file rather than against that count."""
+    raw = _synthetic([(1, [(0, 1), (1, None)])])
+    states_at = esd.HEADER_SIZE + esd.INTERNAL_HEADER_SIZE + esd.GROUP_SIZE
+    with pytest.raises(esd.EsdError, match="condition pool"):
+        esd.read(_corrupt(raw, states_at + 8, 0x7000_0000, "<q"))
+
+
+def test_read_refuses_an_evaluator_that_runs_past_the_end():
+    """A truncated evaluator decodes to a different machine, which is the one
+    outcome the canonicaliser has no way to notice."""
+    raw = _synthetic([(1, [(0, 1), (1, None)])])
+    conds_at = (esd.HEADER_SIZE + esd.INTERNAL_HEADER_SIZE + esd.GROUP_SIZE
+                + 3 * esd.STATE_SIZE)
+    with pytest.raises(esd.EsdError, match="evaluator"):
+        esd.read(_corrupt(raw, conds_at + 48, 4000, "<q"))     # ev_len

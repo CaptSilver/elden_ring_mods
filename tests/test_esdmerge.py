@@ -478,6 +478,34 @@ def test_canonical_keeps_a_real_difference():
         esdmerge.canonical(_state(0, [_cond(5, b"\x4f\xb8\x43\x95\xa1")]))
 
 
+def test_canonical_will_not_fold_same_target_branches_with_no_evaluator():
+    """A condition with no evaluator bytes has no expression to disjoin, so the
+    two-branches-are-one rule has nothing to fold and must leave them alone.
+
+    Folding them built `None || None` and came out as a TypeError, which erm
+    does not catch -- it only catches ErmError -- so a file with two of these
+    side by side reached the user as a stack trace. And it is on the hot path:
+    change detection decodes every group of all three files.
+    """
+    empty = lambda: esd.Condition(target=5, evaluator=b"")
+    _sid, conditions, _entry, _exit, _while = esdmerge.canonical(
+        _state(0, [empty(), empty()]))
+    assert len(conditions) == 2
+    assert [c[1] for c in conditions] == [None, None]
+
+
+def test_a_group_with_an_empty_evaluator_merges_instead_of_crashing():
+    spelling = lambda target: esd.Esd(
+        groups=(esd.StateGroup(24, (
+            esd.State(0, conditions=(esd.Condition(target=target, evaluator=b""),
+                                     esd.Condition(target=target, evaluator=b""))),
+            esd.State(1))),),
+        name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+    merged, notes = esdmerge.merge(spelling(1), spelling(1), spelling(1))
+    assert notes == []
+    assert [s.id for s in _group(merged, 24).states] == [0, 1]
+
+
 def test_canonical_refuses_bytecode_it_cannot_decode():
     """An opcode the decoder has never seen means the canonical form is a
     guess. Say so instead of quietly reporting two machines as different."""
@@ -1114,6 +1142,39 @@ def test_a_graft_the_other_mod_could_not_reach_either_is_not_named():
     group = _group(merged, 24)
     assert 3 in {s.id for s in group.states} and 3 not in _reachable(group)
     assert notes == []
+
+
+def test_reachability_starts_where_the_writer_says_the_group_starts():
+    """A group's entry is its lowest-`order` state row -- what esd.write points
+    the group header at -- and not whatever sits first in the states tuple. The
+    two agree for anything read off disk, so nothing in the real files tells
+    them apart, and a walk that picks the wrong one reports a live machine as
+    dead or the reverse.
+
+    Here the other mod's states are in an order the tuple does not reflect. Its
+    hook into the state it adds hangs off the real entry row, so starting from
+    the tuple's first state finds nothing, the graft reads as dead-on-arrival,
+    and the note saying the mod now does nothing never gets written.
+    """
+    def group(*states):
+        return esd.Esd(groups=(esd.StateGroup(24, states, order=0),),
+                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    hook = lambda target, order: esd.State(
+        0, order=order, conditions=(esd.Condition(target=target, evaluator=ALWAYS),))
+
+    vanilla = group(hook(1, 0), esd.State(1, order=1), esd.State(9, order=2))
+    base = group(hook(9, 0), esd.State(1, order=1), esd.State(9, order=2))
+    other = group(esd.State(1, order=1),          # tuple order is not table order
+                  hook(3, 0),
+                  esd.State(9, order=2),
+                  esd.State(3, order=3,
+                            conditions=(esd.Condition(target=1, evaluator=GUARD),)))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert 3 in {s.id for s in _group(merged, 24).states}
+    assert any(n.group == 24 and n.state == 3
+               and n.reason is esdmerge.Reason.ORPHANED_GRAFT for n in notes), notes
 
 
 def _nested_hook(target):

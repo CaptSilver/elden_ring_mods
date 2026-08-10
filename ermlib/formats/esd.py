@@ -138,27 +138,69 @@ def read(data):
     def abs_(rel):
         return HEADER_SIZE + rel
 
+    # Everything below this point is addressed by numbers the file itself
+    # supplies: a run is (byte offset, count) and the reader recovers the rest
+    # by walking forward. The header checks above bound the five tables against
+    # the buffer but say nothing about where a run inside them starts, so
+    # without these two an offset that is unaligned, before its table, or short
+    # of the rows it claims reads whatever bytes happen to sit there -- or
+    # surfaces as a raw struct.error several frames down instead of an EsdError.
+    def run_start(what, offset, base, size, count, n):
+        """The first row index of a run, or a refusal."""
+        if n <= 0:
+            return 0
+        if offset < base or (offset - base) % size:
+            raise EsdError(
+                f"{what} run starts at {offset}, which is not a row boundary of "
+                f"the table at {base}")
+        first = (offset - base) // size
+        if first + n > count:
+            raise EsdError(
+                f"{what} run of {n} at row {first} runs past the end of the "
+                f"{count}-row table")
+        return first
+
+    def blob(offset, length, what):
+        """A payload slice. Slicing `bytes` past the end silently gives a short
+        result, which turns a corrupt offset into a truncated evaluator that
+        decodes to a different machine."""
+        if length <= 0:
+            return b""
+        if offset < 0 or offset + length > data_len:
+            raise EsdError(
+                f"{what} at {offset} ({length} bytes) runs past the end of the "
+                f"{len(data)}-byte file")
+        return data[abs_(offset):abs_(offset) + length]
+
     unk = struct.unpack_from("<IIII", data, abs_(4))
     name = ""
     if name_len:
-        raw = data[abs_(name_off):abs_(name_off) + (name_len - 1) * 2]
-        name = raw.decode("utf-16-le")
+        raw = blob(name_off, (name_len - 1) * 2, "name")   # the NUL isn't stored
+        try:
+            name = raw.decode("utf-16-le")
+        except UnicodeDecodeError as exc:
+            raise EsdError(f"ESD name at {name_off} is not UTF-16: {exc}") from exc
 
     def read_args(offset, count):
         # Gate on the count. The offset is -1 in some writers and a live cursor in
         # others for an empty list, so it can never be the emptiness test.
         out = []
+        first = run_start("command arg", offset, args_at, COMMAND_ARG_SIZE,
+                          arg_count, count)
         for i in range(count):
-            idx = (offset - args_at) // COMMAND_ARG_SIZE + i
+            idx = first + i
             at = abs_(args_at + idx * COMMAND_ARG_SIZE)
             b_off, b_len = _i64(data, at), _i64(data, at + 8)
-            out.append(CommandArg(data[abs_(b_off):abs_(b_off) + b_len], idx, b_off))
+            out.append(CommandArg(blob(b_off, b_len, "command arg bytecode"),
+                                  idx, b_off))
         return tuple(out)
 
     def read_calls(offset, count):
         out = []
+        first = run_start("command call", offset, calls_at, COMMAND_CALL_SIZE,
+                          call_count, count)
         for i in range(count):
-            idx = (offset - calls_at) // COMMAND_CALL_SIZE + i
+            idx = first + i
             at = abs_(calls_at + idx * COMMAND_CALL_SIZE)
             bank, cid = struct.unpack_from("<ii", data, at)
             a_off, a_count = _i64(data, at + 8), _i64(data, at + 16)
@@ -167,9 +209,18 @@ def read(data):
 
     def read_conditions(pool_offset, count):
         out = []
+        # The pool is bounded against the buffer rather than against its
+        # declared slot count: vanilla over-declares that, so trusting it would
+        # reject FromSoft's own file.
+        if count > 0 and (pool_offset < pool_at or (pool_offset - pool_at) % 8
+                          or pool_offset + count * 8 > data_len):
+            raise EsdError(
+                f"condition pool run of {count} at {pool_offset} is not inside "
+                f"the pool at {pool_at}")
         for i in range(count):
             cond_rel = _i64(data, abs_(pool_offset + i * 8))
-            idx = (cond_rel - conds_at) // CONDITION_SIZE
+            idx = run_start("condition", cond_rel, conds_at, CONDITION_SIZE,
+                            cond_count, 1)
             at = abs_(conds_at + idx * CONDITION_SIZE)
             target = _i64(data, at)
             pc_off, pc_count = _i64(data, at + 8), _i64(data, at + 16)
@@ -179,7 +230,7 @@ def read(data):
                 target,                       # still an offset; resolved below
                 read_calls(pc_off, pc_count),
                 read_conditions(sc_off, sc_count),
-                data[abs_(ev_off):abs_(ev_off) + ev_len],
+                blob(ev_off, ev_len, "condition evaluator"),
                 idx, ev_off))
         return tuple(out)
 
@@ -187,7 +238,7 @@ def read(data):
     for gi in range(group_count):
         at = abs_(groups_at + gi * GROUP_SIZE)
         gid, states_off, n = _i64(data, at), _i64(data, at + 8), _i64(data, at + 16)
-        first = (states_off - states_at) // STATE_SIZE
+        first = run_start("state", states_off, states_at, STATE_SIZE, state_count, n)
         states = []
         for si in range(n):
             idx = first + si
@@ -244,6 +295,22 @@ def _ordered(records):
     known = [r for r in records if r.order is not None]
     fresh = [r for r in records if r.order is None]
     return sorted(known, key=lambda r: r.order) + fresh
+
+
+def first_state(group):
+    """The state a group's header points at -- where the machine starts.
+
+    One rule, in one place, because two callers need it and disagreeing is
+    silent: `write` emits a group's states in `_ordered` order and points the
+    header at the first row, so anything walking the graph has to start where
+    the game will. Tuple order agrees for any group that came off disk (a read
+    hands states back in table order) and can differ for one a merge assembled.
+    """
+    if not group.states:
+        raise EsdError(
+            f"state group {group.id} has no states -- a machine with no entry "
+            f"point cannot be written or walked")
+    return _ordered(group.states)[0]
 
 
 def _dedupe(records):
@@ -303,6 +370,7 @@ def _slots(occurrences, deduped):
 def write(archive):
     """Serialise an Esd. Reproduces a file the reader read, byte for byte."""
     groups = _ordered(archive.groups)
+    entry = {group.id: first_state(group) for group in groups}
 
     # Flatten, keeping every reference encountered -- including duplicates of a
     # shared record -- so `_dedupe` sees the full picture and `_slots` can answer
@@ -312,7 +380,7 @@ def write(archive):
     # a shared condition's target must in any case lie in the group of every
     # state that references it (the reader rejects cross-group jumps), so one
     # answer per condition is enough regardless of how many states share it.
-    all_states, all_conditions, all_calls, all_args = [], [], [], []
+    all_conditions, all_calls, all_args = [], [], []
     cond_group = {}
 
     def collect_calls(calls):
@@ -329,7 +397,6 @@ def write(archive):
 
     for group in groups:
         for state in _ordered(group.states):
-            all_states.append(state)
             collect_conditions(state.conditions, group.id)
             collect_calls(state.entry)
             collect_calls(state.exit)
@@ -353,7 +420,7 @@ def write(archive):
             state_rows.append((group.id, state))
             slot += 1
         if len(ordered_states) > 1:
-            state_rows.append((group.id, ordered_states[0]))    # dummy
+            state_rows.append((group.id, entry[group.id]))       # dummy
             slot += 1
     state_count = slot
 
@@ -416,7 +483,7 @@ def write(archive):
                        name_at if name_len else -1, name_len, -1, -1)
 
     for group in groups:
-        first = state_slot[(group.id, _ordered(group.states)[0].id)]
+        first = state_slot[(group.id, entry[group.id].id)]
         at = states_at + first * STATE_SIZE
         out += struct.pack("<qqqq", group.id, at, len(group.states), at)
 
@@ -464,7 +531,13 @@ def write(archive):
         target = -1
         if cond.target is not None:
             owner = cond_group[id(cond)]
-            target = states_at + state_slot[(owner, cond.target)] * STATE_SIZE
+            slot = state_slot.get((owner, cond.target))
+            if slot is None:
+                raise EsdError(
+                    f"condition in group {owner} jumps to state {cond.target}, "
+                    f"which that group does not have -- a merge left a jump "
+                    f"target behind when it renumbered")
+            target = states_at + slot * STATE_SIZE
         pc_off, pc_n = call_span(cond.pass_commands,
                                   f"condition (order={cond.order}) pass_commands")
         sc_off = pool_start.get(("cond", id(cond)), -1) if cond.subconditions else -1
