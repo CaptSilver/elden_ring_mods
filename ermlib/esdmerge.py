@@ -241,6 +241,11 @@ def _merge_group(gid, base_group, other_group, vanilla_group):
     # be one the alignment could not place, and grafting one of those adds a
     # second copy of a machine already sitting in the group.
     #
+    # Those get no note under their own id, and do not need one: a state lands
+    # there only by looking exactly like an unpaired vanilla state, and that
+    # vanilla state is in `unresolved` and named below. The note points at the
+    # vanilla id because that is the id the user can look up in all three files.
+    #
     # Ids are only unique within one file, so a graft keeps its own number only
     # where base is not already using it -- and every reference to it has to move
     # with it, which is why the whole allocation happens before anything is

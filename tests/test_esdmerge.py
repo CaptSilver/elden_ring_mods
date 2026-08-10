@@ -1292,3 +1292,40 @@ def test_describe_names_the_state_a_graft_landed_at():
     text = esdmerge.describe(esdmerge.Note(
         group=2147483624, state=43, reason=esdmerge.Reason.ORPHANED_GRAFT, target=41))
     assert "43" in text and "41" in text
+
+
+def _masked(group, sid):
+    """A state's content with every jump target blanked -- the shape `align`
+    falls back on when it has no mapping to read targets through."""
+    state = next(s for s in group.states if s.id == sid)
+    return esdmerge._retargeted(esdmerge.canonical(state), esdmerge._target_masked)
+
+
+def test_a_right_hand_state_that_is_neither_paired_nor_added_has_a_look_alike():
+    """The accounting that lets the merge say nothing about one of the other
+    mod's states directly.
+
+    A state of `other` that is neither paired nor grafted is not reported under
+    its own id -- the note names the vanilla state it could not be told apart
+    from. That is only honest while every such state really does have an
+    unpaired look-alike on the vanilla side, which is what gets that vanilla
+    state into `unresolved` and therefore into a note. Let `_leftovers` stop
+    guaranteeing it and a state the other mod holds goes missing in silence.
+    """
+    look_alike = lambda sid: esd.State(
+        sid, conditions=(esd.Condition(target=7, evaluator=OTHER),))
+    left = esd.StateGroup(24, (esd.State(0, conditions=(
+        esd.Condition(target=7, evaluator=GUARD),)),
+        look_alike(1), look_alike(2), esd.State(7)))
+    right = esd.StateGroup(24, (esd.State(0, conditions=(
+        esd.Condition(target=7, evaluator=GUARD),)),
+        look_alike(5), look_alike(6), esd.State(7),
+        esd.State(8, conditions=(esd.Condition(target=7, evaluator=ALWAYS),))))
+
+    aligned = esdmerge.align(left, right)
+    accounted = set(aligned.pairs.values()) | set(aligned.right_only)
+    leftover = [s.id for s in right.states if s.id not in accounted]
+    assert leftover == [5, 6]                       # the look-alikes, not 8
+    for sid in leftover:
+        assert any(_masked(left, van) == _masked(right, sid)
+                   for van in aligned.unresolved), sid
