@@ -349,8 +349,16 @@ def esd_three_way(base, other, vanilla, notes=None):
             continue
         merged, entry_notes = esdmerge.merge(
             esd.read(base_blob), esd.read(other_blob), esd.read(van_blob))
-        esdmerge.check(merged)
-        replacements[eid] = esd.write(merged)
+        blob = esd.write(merged)
+        # Check the bytes, not the graph esdmerge already checked on the way
+        # out: re-reading is what puts the writer under the same invariants as
+        # everything else, and esd.read adds two of its own on the way through
+        # -- that the five tables tile the file, and that the state rows the
+        # header declares are the ones the groups actually span. Nothing else
+        # in the pipeline ever reads back what it wrote, so without this the
+        # first reader of a merged .esd is the game.
+        esdmerge.check(esd.read(blob))
+        replacements[eid] = blob
         if notes is not None:
             notes.extend(entry_notes)
     return dcx.write_dflt(bnd4.rebuild(base_raw, replacements))

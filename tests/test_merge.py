@@ -1,6 +1,8 @@
+from unittest import mock
+
 import pytest
 
-from ermlib import merge
+from ermlib import esdmerge, merge
 from ermlib.formats import bnd4, dcx, fmg
 from tests.test_bnd4 import _synthetic_bnd4
 
@@ -463,7 +465,15 @@ def test_esd_three_way_leaves_an_untouched_entry_byte_identical():
     base = _msgbnd_like({0: van})
     other = _msgbnd_like({0: van})
     out = merge.esd_three_way(base, other, vanilla)
-    assert out == base
+    # The entry's own bytes are the claim. Comparing whole containers passes
+    # for a second reason -- the fixture is already DFLT-compressed the way
+    # rebuild writes it -- so it would go on passing if the entry were
+    # re-serialised into byte-identical DCX.
+    assert {e.id: e.data for e in bnd4.read(dcx.read(out))}[0] == van
+
+
+def _esd_entries(blob):
+    return {e.id: e.data for e in bnd4.read(dcx.read(blob))}
 
 
 def test_esd_three_way_runs_the_graph_merge_on_an_entry_both_sides_changed():
@@ -481,10 +491,69 @@ def test_esd_three_way_runs_the_graph_merge_on_an_entry_both_sides_changed():
     other = _msgbnd_like({6: other_esd})
 
     out = merge.esd_three_way(base, other, vanilla)
-    merged = esd.read({e.id: e.data for e in bnd4.read(dcx.read(out))}[6])
+    merged = esd.read(_esd_entries(out)[6])
     group = next(g for g in merged.groups if g.id == 24)
     state0 = next(s for s in group.states if s.id == 0)
     assert [c.target for c in state0.conditions] == [2]     # base's redirect wins
+
+
+def test_esd_three_way_writes_the_merged_graph_into_the_entry():
+    """What ships is the entry's bytes, and nothing else here asserts on them.
+
+    The graph merge can run, hand back a correct graph and collect its notes
+    while the adapter forgets to write the result -- base's blob goes out
+    unchanged, every note is still right, and the other mod's whole
+    contribution is gone. On the real pair that mutant drops Melina's two
+    grafted states and her machine, and it is invisible to any test that only
+    reads back what base already had.
+    """
+    from ermlib.formats import esd
+    from tests.test_esdmerge import _esd
+
+    van = esd.write(_esd({24: [(0, 1), (1, None), (2, None)]}))
+    base_esd = esd.write(_esd({24: [(0, 2), (1, None), (2, None)]}))
+    other_esd = esd.write(_esd({24: [(0, 3), (1, None), (2, None), (3, None)]}))
+    base = _msgbnd_like({6: base_esd})
+    out = merge.esd_three_way(base, _msgbnd_like({6: other_esd}),
+                              _msgbnd_like({6: van}))
+
+    shipped = _esd_entries(out)[6]
+    assert shipped != base_esd
+    merged = esd.read(shipped)
+    group = next(g for g in merged.groups if g.id == 24)
+    # State 3 is the other mod's, and only the graph merge puts it here.
+    assert sorted(s.id for s in group.states) == [0, 1, 2, 3]
+
+
+def test_esd_three_way_checks_the_bytes_it_is_about_to_ship():
+    """Validating the graph handed to the writer is not validating the file.
+
+    esdmerge.merge already checks the graph it returns, so a second check of
+    that same object cannot fail and cannot be tested. Re-reading the written
+    bytes can: it puts the writer itself inside the invariant, and picks up
+    esd.read's own structural checks on real merged output, which production
+    otherwise never exercises.
+    """
+    from ermlib.formats import esd
+    from tests.test_esdmerge import _esd
+
+    van = esd.write(_esd({24: [(0, 1), (1, None), (2, None)]}))
+    base_esd = esd.write(_esd({24: [(0, 2), (1, None), (2, None)]}))
+    other_esd = esd.write(_esd({24: [(0, 3), (1, None), (2, None), (3, None)]}))
+
+    def corrupting_write(archive):
+        """A writer that emits one state twice. The graph handed to it holds
+        together; the file it produces does not."""
+        group = archive.groups[0]
+        return real_write(archive._replace(
+            groups=(group._replace(states=group.states + group.states[1:2]),)))
+
+    real_write = esd.write
+    with mock.patch.object(esd, "write", corrupting_write):
+        with pytest.raises(esdmerge.EsdMergeError):
+            merge.esd_three_way(_msgbnd_like({6: base_esd}),
+                                _msgbnd_like({6: other_esd}),
+                                _msgbnd_like({6: van}))
 
 
 def test_esd_three_way_collects_notes_when_the_graph_merge_leaves_one():
