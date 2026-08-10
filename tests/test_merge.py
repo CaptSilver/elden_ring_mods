@@ -385,6 +385,127 @@ def test_tpf_union_keeps_the_base_copy_of_a_shared_texture():
         "SB_Icon_02_A": b"clevers-with-weapon-icons"}
 
 
+# --- esd-3way: BND4 container level, esdmerge next door does the graph work ---
+
+
+def _msgbnd_like(entries):
+    """A BND4-in-DCX container holding raw blobs under the given entry ids."""
+    return dcx.write_dflt(_synthetic_bnd4(
+        [(eid, f"t{eid:09d}.esd", blob) for eid, blob in sorted(entries.items())]))
+
+
+def test_esd_three_way_is_registered_and_needs_vanilla():
+    assert "esd-3way" in merge.STRATEGIES
+    assert "esd-3way" in merge.NEEDS_VANILLA
+
+
+def test_esd_three_way_takes_an_entry_only_one_side_changed():
+    """Melina's second edit, t000003000.esd, collides with nothing. It must come
+    across without the ESD merge being involved at all."""
+    from ermlib.formats import esd
+    from tests.test_esdmerge import _esd
+
+    van = esd.write(_esd({1: [(0, None)]}))
+    changed = esd.write(_esd({1: [(0, None), (1, 0)]}))
+    vanilla = _msgbnd_like({0: van, 6: van})
+    base = _msgbnd_like({0: van, 6: van})
+    other = _msgbnd_like({0: van, 6: changed})
+    out = merge.esd_three_way(base, other, vanilla)
+    entries = {e.id: e.data for e in bnd4.read(dcx.read(out))}
+    assert entries[6] == changed
+    assert entries[0] == van
+
+
+def test_esd_three_way_refuses_an_entry_only_the_other_side_has():
+    """The container clone can't add BND4 entries any more than fmg_union can --
+    refusing loudly beats silently dropping the extra .esd."""
+    from ermlib.formats import esd
+    from tests.test_esdmerge import _esd
+
+    van = esd.write(_esd({1: [(0, None)]}))
+    vanilla = _msgbnd_like({0: van})
+    base = _msgbnd_like({0: van})
+    other = _msgbnd_like({0: van, 9: van})
+    with pytest.raises(merge.MergeError, match="9"):
+        merge.esd_three_way(base, other, vanilla)
+
+
+def test_esd_three_way_leaves_an_untouched_entry_byte_identical():
+    """An entry neither side changed must be copied through unrebuilt, not
+    re-serialised through esd.read/write -- that's the same reasoning fmg-3way
+    already applies to untouched FMG entries."""
+    from ermlib.formats import esd
+    from tests.test_esdmerge import _esd
+
+    van = esd.write(_esd({1: [(0, None)]}))
+    vanilla = _msgbnd_like({0: van})
+    base = _msgbnd_like({0: van})
+    other = _msgbnd_like({0: van})
+    out = merge.esd_three_way(base, other, vanilla)
+    assert out == base
+
+
+def test_esd_three_way_runs_the_graph_merge_on_an_entry_both_sides_changed():
+    """The one group both mods edit is the whole reason esdmerge exists at all;
+    an entry where that happens has to actually reach it, not just the
+    container-level wholesale swap."""
+    from ermlib.formats import esd
+    from tests.test_esdmerge import _esd
+
+    van = esd.write(_esd({24: [(0, 1), (1, None), (2, None)]}))
+    base_esd = esd.write(_esd({24: [(0, 2), (1, None), (2, None)]}))
+    other_esd = esd.write(_esd({24: [(0, 3), (1, None), (2, None), (3, None)]}))
+    vanilla = _msgbnd_like({6: van})
+    base = _msgbnd_like({6: base_esd})
+    other = _msgbnd_like({6: other_esd})
+
+    out = merge.esd_three_way(base, other, vanilla)
+    merged = esd.read({e.id: e.data for e in bnd4.read(dcx.read(out))}[6])
+    group = next(g for g in merged.groups if g.id == 24)
+    state0 = next(s for s in group.states if s.id == 0)
+    assert [c.target for c in state0.conditions] == [2]     # base's redirect wins
+
+
+def test_esd_three_way_collects_notes_when_the_graph_merge_leaves_one():
+    """Notes must come out of the container adapter, not be swallowed -- that's
+    the only way an apply can tell the user a mod's change didn't land."""
+    from ermlib import esdmerge
+    from ermlib.formats import esd
+    from tests.test_esdmerge import _esd
+
+    van = esd.write(_esd({24: [(0, 1), (1, None), (2, None)]}))
+    base_esd = esd.write(_esd({24: [(0, 2), (1, None), (2, None)]}))
+    other_esd = esd.write(_esd({24: [(0, 3), (1, None), (2, None), (3, None)]}))
+    vanilla = _msgbnd_like({6: van})
+    base = _msgbnd_like({6: base_esd})
+    other = _msgbnd_like({6: other_esd})
+
+    notes = []
+    merge.esd_three_way(base, other, vanilla, notes=notes)
+    # Both mods redirect state 0 differently, so base's version wins and that's
+    # the note this test is after. The other mod's own new state 3 also arrives
+    # orphaned as a result (nothing still points at it) -- a second, correct note
+    # from the same conflict, not something this test needs to pin down further.
+    assert any(n.group == 24 and n.state == 0 and n.reason is esdmerge.Reason.BOTH_CHANGED
+               for n in notes), notes
+
+
+def test_esd_three_way_without_a_notes_list_does_not_raise():
+    """conflicts.resolve() only threads a notes list through for strategies
+    that ask for it; called bare (as the registration tests above do), the
+    strategy must not require one."""
+    from ermlib.formats import esd
+    from tests.test_esdmerge import _esd
+
+    van = esd.write(_esd({24: [(0, 1), (1, None), (2, None)]}))
+    base_esd = esd.write(_esd({24: [(0, 2), (1, None), (2, None)]}))
+    other_esd = esd.write(_esd({24: [(0, 3), (1, None), (2, None), (3, None)]}))
+    vanilla = _msgbnd_like({6: van})
+    base = _msgbnd_like({6: base_esd})
+    other = _msgbnd_like({6: other_esd})
+    merge.esd_three_way(base, other, vanilla)          # must not raise
+
+
 def test_tpf_union_preserves_the_order_and_flags_of_every_texture():
     """Appending must not disturb the existing table: the game reads textures by
     offset, and the entries carry per-texture format/mipmap flags that aren't

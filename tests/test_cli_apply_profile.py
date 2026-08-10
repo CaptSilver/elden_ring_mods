@@ -1445,6 +1445,50 @@ def test_apply_reports_how_many_mods_a_merge_actually_combined(
     assert "merged msg/x.dcx (content from 2 mods kept)" in out, out
 
 
+def test_apply_surfaces_a_merge_note_as_a_warning(tmp_path, monkeypatch, capsys, tmp_game):
+    """esd-3way (or anything else registered under NEEDS_NOTES) reports back
+    things it couldn't carry over cleanly; the apply report is the only place
+    that reaches the user, so a note has to come out as a warning here, not
+    get computed and quietly dropped once resolve() returns."""
+    from ermlib import conflicts, esdmerge, merge
+
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    note = esdmerge.Note(group=24, state=0, reason=esdmerge.Reason.BOTH_CHANGED)
+
+    def strategy(base, other, vanilla, notes=None):
+        if notes is not None:
+            notes.append(note)
+        return base
+
+    monkeypatch.setitem(conflicts.STRATEGIES, "fake-notes", strategy)
+    monkeypatch.setattr(conflicts, "NEEDS_VANILLA", conflicts.NEEDS_VANILLA | {"fake-notes"})
+    monkeypatch.setattr(conflicts, "NEEDS_NOTES", conflicts.NEEDS_NOTES | {"fake-notes"})
+
+    profile = _MERGE_TWO_MODS.replace('strategy = "concat-test"', 'strategy = "fake-notes"')
+    profile += 'vanilla = { mod = "mod-v", member = "V/x.dcx" }\n'
+    _write_profile(tmp_path / "profiles", "unit-merge-notes", profile)
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    lock = ""
+    for mid, body in (("mod-x", b"AAA"), ("mod-y", b"BBB")):
+        lock += f'[{mid}]\nversion = "1.0"\nasset = "{mid}.zip"\nsha256 = "a"\nsource = "nexus"\n\n'
+        with zipfile.ZipFile(vendor / f"{mid}.zip", "w") as z:
+            z.writestr("msg/x.dcx", body)
+    lock += '[mod-v]\nversion = "1.0"\nasset = "mod-v.zip"\nsha256 = "a"\nsource = "nexus"\n\n'
+    with zipfile.ZipFile(vendor / "mod-v.zip", "w") as z:
+        z.writestr("V/x.dcx", b"vanilla")
+    (tmp_path / "mods.lock.toml").write_text(lock)
+
+    assert cli.cmd_apply(_apply_args("unit-merge-notes")) == 0
+    out = capsys.readouterr().out
+    assert f"msg/x.dcx: {merge.describe_note(note)}" in out, out
+
+
 _MERGE_ONE_MOD_LEFT = (
     '[[mods]]\n'
     'id = "mod-x"\n'

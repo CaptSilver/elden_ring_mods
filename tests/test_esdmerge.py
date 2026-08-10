@@ -596,7 +596,8 @@ def test_shared_group_notes_a_state_the_base_deleted():
         esd.StateGroup(24, other.groups[0].states + (esd.State(999),)),))
 
     merged, notes = esdmerge.merge(base, other, vanilla)
-    assert any("27" in note for note in notes), notes
+    assert any(n.group == 24 and n.state == 27 and n.reason is esdmerge.Reason.NOT_IN_BASE
+               for n in notes), notes
     assert [s.id for s in _group(merged, 24).states] == [15, 26, 999]
 
 
@@ -628,7 +629,8 @@ def test_both_mods_changing_one_state_keeps_the_base_and_names_it():
 
     merged, notes = esdmerge.merge(base, other, vanilla)
     assert _targets(_find(_group(merged, 24), 0)) == [2]      # base wins
-    assert any("0" in note and "both" in note for note in notes), notes
+    assert any(n.group == 24 and n.state == 0 and n.reason is esdmerge.Reason.BOTH_CHANGED
+               for n in notes), notes
 
 
 def test_an_edit_alignment_cannot_place_is_named_rather_than_dropped():
@@ -649,7 +651,8 @@ def test_an_edit_alignment_cannot_place_is_named_rather_than_dropped():
     other = one(200)                                          # other changed the call
 
     _merged, notes = esdmerge.merge(base, other, vanilla)
-    assert any("0" in note for note in notes), notes
+    assert any(n.group == 24 and n.state == 0 and n.reason is esdmerge.Reason.NOT_IN_OTHER
+               for n in notes), notes
 
 
 def test_a_replayed_state_carries_no_leftover_order():
@@ -797,8 +800,9 @@ def test_the_real_shared_group_replays_melina_onto_boss_res():
     # thing wrong with this merge: in particular neither state she added arrives
     # orphaned, so the graft-reachability check has nothing to say.
     assert len(notes) == 1, notes
-    assert "26" in notes[0] and "2147483624" in notes[0]
-    assert "reaches it" not in notes[0]
+    assert notes[0].group == 2147483624
+    assert notes[0].state == 26
+    assert notes[0].reason is esdmerge.Reason.NOT_IN_BASE
 
 
 def test_the_real_merge_writes_and_survives_a_round_trip():
@@ -836,7 +840,8 @@ def test_a_replay_that_jumps_at_a_deleted_state_keeps_the_base_and_names_it():
 
     merged, notes = esdmerge.merge(base, other, vanilla)
     assert _targets(_find(_group(merged, 24), 0)) == [1]      # base's, untouched
-    assert any("2" in note for note in notes), notes
+    assert any(n.group == 24 and n.state == 0 and n.reason is esdmerge.Reason.UNPLACEABLE_JUMP
+               and n.target == 2 for n in notes), notes
 
 
 def test_states_alignment_could_not_tell_apart_are_named_not_duplicated():
@@ -857,7 +862,10 @@ def test_states_alignment_could_not_tell_apart_are_named_not_duplicated():
 
     merged, notes = esdmerge.merge(base, other, vanilla)
     assert [s.id for s in _group(merged, 24).states] == [0, 1, 2, 7, 8]
-    assert len(notes) == 2 and all("look like" in note for note in notes), notes
+    assert len(notes) == 2
+    assert all(n.group == 24 and n.reason is esdmerge.Reason.UNRESOLVED_IN_OTHER
+              for n in notes), notes
+    assert {n.state for n in notes} == {1, 2}
 
 
 def test_merge_refuses_to_return_a_graph_that_does_not_hold_together():
@@ -930,7 +938,9 @@ def test_an_edit_with_no_single_home_in_the_base_is_not_reported_as_a_deletion()
 
     _merged, notes = esdmerge.merge(base, other, vanilla)
     assert len(notes) == 1, notes
-    assert "look like" in notes[0] and "deleted" not in notes[0], notes[0]
+    assert notes[0].group == 24
+    assert notes[0].state == 1
+    assert notes[0].reason is esdmerge.Reason.UNRESOLVED_IN_BASE
 
 
 # --- grafts that arrive dead ------------------------------------------------
@@ -954,7 +964,8 @@ def test_a_graft_orphaned_by_a_refused_replay_is_named():
     group = _group(merged, 24)
     assert 3 in {s.id for s in group.states}      # grafted, as before
     assert 3 not in _reachable(group)             # and nothing reaches it
-    assert any("reaches it" in note for note in notes), notes
+    assert any(n.group == 24 and n.state == 3 and n.reason is esdmerge.Reason.ORPHANED_GRAFT
+               and n.target == 3 for n in notes), notes
 
 
 def test_a_graft_the_other_mod_could_not_reach_either_is_not_named():
@@ -1016,4 +1027,25 @@ def test_a_graft_hooked_by_a_nested_branch_is_still_seen_as_live():
 
     merged, notes = esdmerge.merge(base, other, vanilla)
     assert 3 not in _reachable(_group(merged, 24))
-    assert any("reaches it" in note for note in notes), notes
+    assert any(n.group == 24 and n.state == 3 and n.reason is esdmerge.Reason.ORPHANED_GRAFT
+               and n.target == 3 for n in notes), notes
+
+
+# --- rendering a note -------------------------------------------------------
+
+
+def test_describe_covers_every_reason():
+    """Every Reason must render to something -- a note whose prose is missing
+    would raise KeyError the first time an apply actually hit it, which is a
+    strictly worse place to discover a gap than a test."""
+    for reason in esdmerge.Reason:
+        text = esdmerge.describe(esdmerge.Note(group=24, state=1, reason=reason, target=2))
+        assert "24" in text and "1" in text
+
+
+def test_describe_names_the_group_and_state():
+    text = esdmerge.describe(esdmerge.Note(
+        group=2147483624, state=26, reason=esdmerge.Reason.NOT_IN_BASE))
+    assert "2147483624" in text
+    assert "26" in text
+    assert "deleted" in text

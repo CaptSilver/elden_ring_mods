@@ -5,7 +5,7 @@ import urllib.error
 import zipfile
 from pathlib import Path
 
-from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy, me3pkg, me3profile, launch, conflicts
+from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy, me3pkg, me3profile, launch, conflicts, merge
 from . import state as state_mod
 from .errors import ErmError, NetworkError, PathError
 from .conflicts import ConflictError
@@ -515,8 +515,9 @@ def cmd_apply(args):
         # merge (or a skipped one) built on missing content.
         conflicts.require_faithful_merge_sources(
             profile.get("merges", []), package_ids, reinstalled_packages)
+        merge_notes = []
         merged = conflicts.resolve(ME3_DIR, package_ids, profile.get("merges", []),
-                                   lock=lock)
+                                   lock=lock, notes=merge_notes)
     except ConflictError:
         state_mod.write_state(Path("installed.json"), state)
         # The me3 profile is meant to be a pure function of state, and state has
@@ -542,6 +543,12 @@ def cmd_apply(args):
             # installed here, and regulation.bin runs to six contributors.
             contributors = [m for m in declared_mods.get(rel, []) if m in package_ids]
             r.ok(f"merged {rel} (content from {len(contributors)} mods kept)")
+        # Something a strategy couldn't carry over cleanly -- e.g. two mods'
+        # ESD edits landing on the same state machine differently. The merge
+        # still happened and one mod's package is still installed; this is the
+        # only place that names what the *other* one lost.
+        for rel, note in merge_notes:
+            r.warn(f"{rel}: {merge.describe_note(note)}")
         for rel in carried:
             r.info(f"kept merged {rel} (declared by another profile)")
     state_mod.write_state(Path("installed.json"), state)

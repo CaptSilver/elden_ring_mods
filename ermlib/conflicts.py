@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 
 from .errors import ErmError
-from .merge import NEEDS_VANILLA, STRATEGIES
+from .merge import NEEDS_NOTES, NEEDS_VANILLA, STRATEGIES
 from .paths import is_safe_relpath
 
 MERGED_ID = "_merged"
@@ -228,7 +228,7 @@ def _load_vanilla(rel, spec, lock):
         raise ConflictError(f"{rel}: cannot read vanilla from {asset}: {exc}") from exc
 
 
-def resolve(me3_dir, mod_ids, merges, lock=None):
+def resolve(me3_dir, mod_ids, merges, lock=None, notes=None):
     """Merge every declared conflict and refuse any undeclared one.
 
     Merged output goes to a synthetic package and the path is removed from its
@@ -241,6 +241,14 @@ def resolve(me3_dir, mod_ids, merges, lock=None):
     exactly as it was found -- otherwise a later path's failure would strand
     an earlier path half-migrated, with its source already deleted and no
     merged output to show for it either.
+
+    `notes` is a list the caller supplies to learn about things a strategy
+    couldn't carry over cleanly (currently only esd-3way produces any). Each
+    entry is `(path, note)`, since one apply can merge more than one path and
+    a bare note doesn't say which file it's about. Left untouched if the
+    caller doesn't pass one -- the strategies that produce notes tolerate that
+    the same way they tolerate being called directly, without conflicts.py
+    in between.
     """
     me3_dir = Path(me3_dir)
     declared = _declare_merges(merges)
@@ -291,10 +299,22 @@ def resolve(me3_dir, mod_ids, merges, lock=None):
         # per path, and only for strategies that ask for it, so a two-way
         # declaration never has to name a vanilla it wouldn't look at.
         vanilla = _load_vanilla(rel, spec, lock) if spec["strategy"] in NEEDS_VANILLA else None
+        # A strategy's own notes list, not the caller's: kept separate so it can
+        # be tagged with `rel` before joining the caller's list below -- a bare
+        # note doesn't say which merged path it's about, and a profile can
+        # merge more than one.
+        path_notes = [] if spec["strategy"] in NEEDS_NOTES else None
         out = blobs[0]
         for extra in blobs[1:]:
-            out = strategy(out, extra, vanilla) if vanilla is not None else strategy(out, extra)
+            if vanilla is None:
+                out = strategy(out, extra)
+            elif path_notes is not None:
+                out = strategy(out, extra, vanilla, notes=path_notes)
+            else:
+                out = strategy(out, extra, vanilla)
         planned.append((rel, out, providers))
+        if notes is not None and path_notes:
+            notes.extend((rel, note) for note in path_notes)
 
     # Every merge above succeeded in memory -- only now do we touch disk, so a
     # raise anywhere in the loop above never gets here at all.

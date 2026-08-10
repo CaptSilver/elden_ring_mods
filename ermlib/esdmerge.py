@@ -9,7 +9,8 @@ possible: three encoders wrote these files and they spell the same machine three
 different ways.
 """
 import struct
-from typing import NamedTuple
+from enum import Enum
+from typing import NamedTuple, Optional
 
 from .errors import ErmError
 from .formats import esd
@@ -17,6 +18,72 @@ from .formats import esd
 
 class EsdMergeError(ErmError):
     """Two ESDs could not be composed without dropping someone's work."""
+
+
+class Reason(Enum):
+    """Why one thing in a shared group's merge could not be carried over as-is."""
+    UNRESOLVED_IN_OTHER = "unresolved-in-other"    # several of other's states look like this vanilla state
+    NOT_IN_OTHER = "not-in-other"                  # other has no state matching this vanilla state
+    UNRESOLVED_IN_BASE = "unresolved-in-base"      # several of base's states look like this vanilla state
+    NOT_IN_BASE = "not-in-base"                    # base deleted this vanilla state
+    BOTH_CHANGED = "both-changed"                  # both sides edited it differently; base's version was kept
+    UNPLACEABLE_JUMP = "unplaceable-jump"          # other's edit jumps somewhere with no counterpart in the merge
+    ORPHANED_GRAFT = "orphaned-graft"              # other's added state arrived with nothing reaching it
+
+
+class Note(NamedTuple):
+    """One thing a group's merge could not carry over cleanly.
+
+    `state` is a vanilla state id for every reason except ORPHANED_GRAFT, where
+    there is no vanilla state to name at all -- it's the other mod's own id for a
+    state it added. `target` only carries meaning for two reasons: the jump target
+    that had no home in the merge (UNPLACEABLE_JUMP), and the id a graft landed at
+    (ORPHANED_GRAFT).
+
+    Kept structural rather than a formatted string: `esdmerge` decides *that* a
+    merge could not carry something across and *why*, and describe() below is the
+    only place that turns it into English -- tests assert on these fields instead
+    of grepping prose, and the wording can change without touching either.
+    """
+    group: int
+    state: int
+    reason: Reason
+    target: Optional[int] = None
+
+
+_PROSE = {
+    Reason.UNRESOLVED_IN_OTHER: (
+        "group {group}: several of the other mod's states look like vanilla "
+        "state {state} and nothing separates them, so any change it made there "
+        "was not applied"),
+    Reason.NOT_IN_OTHER: (
+        "group {group}: the other mod has no state matching vanilla state "
+        "{state} -- it either removed or rewrote it, and the preferred mod's "
+        "copy was kept"),
+    Reason.UNRESOLVED_IN_BASE: (
+        "group {group}: the other mod changed vanilla state {state}, and "
+        "several of the preferred mod's states look like it -- the change was "
+        "not applied rather than applied to the wrong one"),
+    Reason.NOT_IN_BASE: (
+        "group {group}: the other mod changed vanilla state {state}, which the "
+        "preferred mod deleted -- that change was not applied"),
+    Reason.BOTH_CHANGED: (
+        "group {group}: both mods changed vanilla state {state} -- kept the "
+        "preferred mod's version"),
+    Reason.UNPLACEABLE_JUMP: (
+        "group {group}: the other mod's change to vanilla state {state} jumps "
+        "to its state {target}, which has no counterpart in the merged group -- "
+        "that change was not applied"),
+    Reason.ORPHANED_GRAFT: (
+        "group {group}: the other mod's state {state} came across as state "
+        "{target}, but nothing in the merged group reaches it -- whatever it "
+        "does will not run"),
+}
+
+
+def describe(note):
+    """The English sentence an apply report shows for one merge note."""
+    return _PROSE[note.reason].format(group=note.group, state=note.state, target=note.target)
 
 
 def _by_id(archive):
@@ -198,52 +265,33 @@ def _merge_group(gid, base_group, other_group, vanilla_group):
 
     for van_id in sorted(vanilla_states):
         if van_id in to_other.unresolved:
-            notes.append(
-                f"group {gid}: several of the other mod's states look like vanilla "
-                f"state {van_id} and nothing separates them, so any change it made "
-                f"there was not applied")
+            notes.append(Note(gid, van_id, Reason.UNRESOLVED_IN_OTHER))
             continue
         other_id = to_other.pairs.get(van_id)
         if other_id is None:
-            notes.append(
-                f"group {gid}: the other mod has no state matching vanilla state "
-                f"{van_id} -- it either removed or rewrote it, and the preferred "
-                f"mod's copy was kept")
+            notes.append(Note(gid, van_id, Reason.NOT_IN_OTHER))
             continue
         if not _edited(vanilla_states[van_id], other_states[other_id], to_other.pairs):
             continue
         if van_id in to_base.unresolved:
-            notes.append(
-                f"group {gid}: the other mod changed vanilla state {van_id}, and "
-                f"several of the preferred mod's states look like it -- the change "
-                f"was not applied rather than applied to the wrong one")
+            notes.append(Note(gid, van_id, Reason.UNRESOLVED_IN_BASE))
             continue
         base_id = to_base.pairs.get(van_id)
         if base_id is None:
-            notes.append(
-                f"group {gid}: the other mod changed vanilla state {van_id}, which "
-                f"the preferred mod deleted -- that change was not applied")
+            notes.append(Note(gid, van_id, Reason.NOT_IN_BASE))
             continue
         if _edited(vanilla_states[van_id], base_states[base_id], to_base.pairs):
-            notes.append(
-                f"group {gid}: both mods changed vanilla state {van_id} -- kept the "
-                f"preferred mod's version")
+            notes.append(Note(gid, van_id, Reason.BOTH_CHANGED))
             continue
         try:
             merged[base_id] = replay(other_states[other_id], base_id,
                                      base_states[base_id].order)
         except _Unplaceable as jump:
-            notes.append(
-                f"group {gid}: the other mod's change to vanilla state {van_id} "
-                f"jumps to its state {jump.target}, which has no counterpart in "
-                f"the merged group -- that change was not applied")
+            notes.append(Note(gid, van_id, Reason.UNPLACEABLE_JUMP, target=jump.target))
 
     composed = base_group._replace(states=tuple(merged[sid] for sid in layout))
     for sid in _orphaned_grafts(other_group, composed, graft_id):
-        notes.append(
-            f"group {gid}: the other mod's state {sid} came across as state "
-            f"{graft_id[sid]}, but nothing in the merged group reaches it -- "
-            f"whatever it does will not run")
+        notes.append(Note(gid, sid, Reason.ORPHANED_GRAFT, target=graft_id[sid]))
     return composed, notes
 
 

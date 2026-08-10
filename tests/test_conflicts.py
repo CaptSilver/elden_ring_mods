@@ -422,6 +422,62 @@ def test_an_unsafe_vanilla_member_is_refused(tmp_path, monkeypatch, fake_three_w
                           _three_way_spec("../../etc/passwd"), lock=lock)
 
 
+@pytest.fixture
+def fake_notes_strategy(monkeypatch):
+    """A NEEDS_VANILLA strategy that also reports back things it couldn't
+    carry over, the way esd-3way does. Registered under NEEDS_NOTES too, so
+    resolve() has to hand it somewhere to put them."""
+    def strategy(base, other, vanilla, notes=None):
+        if notes is not None:
+            notes.append(f"lost something merging past {vanilla!r}")
+        return base + other
+
+    monkeypatch.setitem(conflicts.STRATEGIES, "fake-notes", strategy)
+    monkeypatch.setattr(conflicts, "NEEDS_VANILLA", conflicts.NEEDS_VANILLA | {"fake-notes"})
+    monkeypatch.setattr(conflicts, "NEEDS_NOTES", conflicts.NEEDS_NOTES | {"fake-notes"})
+
+
+def test_a_strategy_needing_notes_gets_its_note_back_tagged_with_the_path(
+        tmp_path, monkeypatch, fake_notes_strategy):
+    """A profile can merge more than one path this way, so a bare note isn't
+    enough -- the caller (ultimately the apply report) needs to know which
+    file it's about."""
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"base"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"other"})
+    lock = _vanilla_zip(tmp_path, "V/x.dcx", b"vanilla")
+    notes = []
+    conflicts.resolve(tmp_path, ["a", "b"],
+                      _three_way_spec("V/x.dcx", strategy="fake-notes"), lock=lock, notes=notes)
+    assert notes == [("msg/x.dcx", "lost something merging past b'vanilla'")]
+
+
+def test_resolve_without_a_notes_list_does_not_raise(tmp_path, monkeypatch, fake_notes_strategy):
+    """Most callers of resolve() (and every existing test) don't pass notes= at
+    all -- a strategy that wants to report something must not require one."""
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"base"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"other"})
+    lock = _vanilla_zip(tmp_path, "V/x.dcx", b"vanilla")
+    merged = conflicts.resolve(tmp_path, ["a", "b"],
+                               _three_way_spec("V/x.dcx", strategy="fake-notes"), lock=lock)
+    assert merged == ["msg/x.dcx"]
+
+
+def test_a_strategy_not_needing_notes_is_still_called_with_two_or_three_arguments(
+        tmp_path, monkeypatch, fake_three_way):
+    """NEEDS_NOTES is opt-in per strategy: fake_three_way's strategy only takes
+    (base, other, vanilla), and resolve() must not start passing it a fourth
+    positional/keyword argument just because some other strategy wants one."""
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"base"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"other"})
+    lock = _vanilla_zip(tmp_path, "V/x.dcx", b"vanilla")
+    notes = []
+    conflicts.resolve(tmp_path, ["a", "b"], _three_way_spec("V/x.dcx"), lock=lock, notes=notes)
+    assert notes == []
+
+
 def test_a_two_way_strategy_still_takes_two_arguments(tmp_path):
     """fmg-union predates vanilla sourcing and must keep working untouched."""
     _package(tmp_path, "a", {"msg/x.dcx": b"1"})

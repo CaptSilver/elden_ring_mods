@@ -300,8 +300,71 @@ def tpf_union(base, other):
         tpf.write(base_archive.with_textures(base_archive.textures + extra)))
 
 
+def esd_three_way(base, other, vanilla, notes=None):
+    """Merge two mods' edits to a .talkesdbnd.dcx.
+
+    The container is handled here and the state machines next door in esdmerge.
+    An entry only one side changed is swapped whole, which costs nothing and
+    covers the common case of two mods touching different machines in the same
+    bundle -- it's how a second, unrelated edit crosses with no graph work at
+    all. Only an entry both sides changed reaches esdmerge, and even then only
+    a group both sides touched goes through the full three-way replay; most of
+    a shared .esd is still a wholesale copy at the group level, inside esdmerge
+    itself.
+
+    `notes` is what esdmerge hands back when it couldn't carry something across
+    cleanly -- passed in by the caller (conflicts.resolve, ultimately the apply
+    report) rather than printed here, since a library function has no business
+    deciding how its own diagnostics reach a user.
+    """
+    from . import esdmerge
+    from .formats import esd
+
+    base_raw = dcx.read(base)
+    base_entries = {e.id: e.data for e in bnd4.read(base_raw)}
+    other_entries = {e.id: e.data for e in bnd4.read(dcx.read(other))}
+    van_entries = {e.id: e.data for e in bnd4.read(dcx.read(vanilla))}
+
+    extra = set(other_entries) - set(base_entries)
+    if extra:
+        raise MergeError(
+            f"the other mod adds ESD entries the base doesn't have: {sorted(extra)}")
+
+    replacements = {}
+    for eid, base_blob in base_entries.items():
+        other_blob = other_entries.get(eid)
+        van_blob = van_entries.get(eid)
+        if other_blob is None or other_blob == base_blob or other_blob == van_blob:
+            continue                              # base's own edit, or nobody touched it
+        if van_blob is None or base_blob == van_blob:
+            replacements[eid] = other_blob        # only the other side moved
+            continue
+        merged, entry_notes = esdmerge.merge(
+            esd.read(base_blob), esd.read(other_blob), esd.read(van_blob))
+        esdmerge.check(merged)
+        replacements[eid] = esd.write(merged)
+        if notes is not None:
+            notes.extend(entry_notes)
+    return dcx.write_dflt(bnd4.rebuild(base_raw, replacements))
+
+
+def describe_note(note):
+    """Render a strategy's structured note as the sentence an apply report shows.
+
+    Only esd-3way produces notes today; this indirection means a caller
+    displaying one doesn't need to import esdmerge itself to do it.
+    """
+    from . import esdmerge
+    return esdmerge.describe(note)
+
+
 STRATEGIES = {"fmg-union": fmg_union, "fmg-3way": fmg_three_way,
-              "param-rows": param_rows, "tpf-union": tpf_union}
+              "param-rows": param_rows, "tpf-union": tpf_union,
+              "esd-3way": esd_three_way}
 # Strategies that need the vanilla file the mods branched from. conflicts.py
 # resolves it from the merge declaration and refuses if it isn't declared.
-NEEDS_VANILLA = frozenset({"fmg-3way", "param-rows"})
+NEEDS_VANILLA = frozenset({"fmg-3way", "param-rows", "esd-3way"})
+# Strategies that report back things they couldn't carry over cleanly.
+# conflicts.py only threads a notes list through for these -- every other
+# strategy keeps the plain two/three-argument call it always had.
+NEEDS_NOTES = frozenset({"esd-3way"})
