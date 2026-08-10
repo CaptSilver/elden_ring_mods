@@ -389,6 +389,42 @@ def test_canonical_will_not_merge_siblings_that_jump_somewhere_else():
         esdmerge.canonical(_state(0, [_cond(5, GUARD_OR_OTHER)]))
 
 
+def _calling(blob):
+    """One state whose entry command takes a single argument."""
+    return esd.State(0, entry=(
+        esd.CommandCall(1, 2, args=(esd.CommandArg(blob),)),))
+
+
+def test_canonical_reads_a_command_argument():
+    """A command's arguments are as much of what it does as its id -- an ESD
+    talk command is `ShowShopMessage(3)`, not `ShowShopMessage`. Dropping them
+    here makes two different calls compare equal."""
+    assert esdmerge.canonical(_calling(b"\x42\xa1")) != \
+        esdmerge.canonical(_calling(b"\x43\xa1"))
+
+
+def test_canonical_reads_an_argument_through_the_same_decoder():
+    """The re-spellings the three encoders disagree about show up in argument
+    bytecode too, so a raw byte comparison of arguments would report an edit
+    wherever a mod tool rewrote a call it never touched."""
+    assert esdmerge.canonical(_calling(ALWAYS)) == \
+        esdmerge.canonical(_calling(ALWAYS_INT32))
+
+
+def test_a_mod_whose_only_edit_is_a_command_argument_is_not_dropped():
+    """canonical drives change detection, so an edit it cannot see is an edit
+    that never happened: the group reads as untouched and base's copy ships."""
+    def spelling(blob):
+        return esd.Esd(groups=(esd.StateGroup(24, (_calling(blob),)),),
+                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    merged, notes = esdmerge.merge(spelling(b"\x42\xa1"), spelling(b"\x43\xa1"),
+                                   spelling(b"\x42\xa1"))
+    shipped, = _group(merged, 24).states[0].entry
+    assert [a.bytecode for a in shipped.args] == [b"\x43\xa1"]
+    assert notes == []
+
+
 def test_canonical_keeps_a_real_difference():
     """The rules must not be so aggressive that a genuine edit disappears."""
     assert esdmerge.canonical(_state(0, [_cond(5)])) != \
