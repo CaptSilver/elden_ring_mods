@@ -1034,18 +1034,54 @@ def test_a_graft_hooked_by_a_nested_branch_is_still_seen_as_live():
 # --- rendering a note -------------------------------------------------------
 
 
-def test_describe_covers_every_reason():
-    """Every Reason must render to something -- a note whose prose is missing
-    would raise KeyError the first time an apply actually hit it, which is a
-    strictly worse place to discover a gap than a test."""
-    for reason in esdmerge.Reason:
-        text = esdmerge.describe(esdmerge.Note(group=24, state=1, reason=reason, target=2))
-        assert "24" in text and "1" in text
+# What each sentence has to actually say, as (phrases it must contain, phrases
+# it must not). The notes are the whole product of merge-and-flag: they are what
+# turns "go check the mod still works" into "go check state 26 of group
+# 2147483624", so a reason rendering to the wrong sentence sends someone looking
+# at the wrong mod's diff. Not the full prose -- rewording stays free -- just the
+# words that make one reason a different statement from its neighbours.
+_MUST_SAY = {
+    esdmerge.Reason.UNRESOLVED_IN_OTHER:
+        (("several", "other mod's states", "not applied"), ("preferred",)),
+    esdmerge.Reason.NOT_IN_OTHER:
+        (("the other mod", "no state matching"), ("several",)),
+    esdmerge.Reason.UNRESOLVED_IN_BASE:
+        (("several", "preferred mod's states", "not applied"), ()),
+    esdmerge.Reason.NOT_IN_BASE:
+        (("preferred mod deleted", "not applied"), ("several",)),
+    esdmerge.Reason.BOTH_CHANGED:
+        (("both mods changed", "kept the preferred mod's"), ("not applied",)),
+    esdmerge.Reason.UNPLACEABLE_JUMP:
+        (("jumps to", "no counterpart", "not applied"), ("several",)),
+    esdmerge.Reason.ORPHANED_GRAFT:
+        (("nothing", "reaches it", "will not run"), ("not applied",)),
+}
 
 
-def test_describe_names_the_group_and_state():
+def test_every_reason_says_what_it_means():
+    """A missing prose entry would raise KeyError the first time an apply hit
+    it, and a wrong one is worse than that: it is confidently misleading."""
+    assert set(_MUST_SAY) == set(esdmerge.Reason)
+    for reason, (must, must_not) in _MUST_SAY.items():
+        text = esdmerge.describe(esdmerge.Note(
+            group=2147483624, state=26, reason=reason, target=44))
+        assert "2147483624" in text and "26" in text, (reason, text)
+        for phrase in must:
+            assert phrase in text, (reason, phrase, text)
+        for phrase in must_not:
+            assert phrase not in text, (reason, phrase, text)
+
+
+def test_no_two_reasons_render_to_the_same_sentence():
+    rendered = [esdmerge.describe(esdmerge.Note(group=24, state=1, reason=r, target=2))
+                for r in esdmerge.Reason]
+    assert len(set(rendered)) == len(rendered)
+
+
+def test_describe_names_the_state_a_graft_landed_at():
+    """ORPHANED_GRAFT is the one reason whose `state` is the other mod's own id
+    rather than a vanilla one, and both numbers matter: one identifies the mod's
+    state, the other says where to look for it in the merged file."""
     text = esdmerge.describe(esdmerge.Note(
-        group=2147483624, state=26, reason=esdmerge.Reason.NOT_IN_BASE))
-    assert "2147483624" in text
-    assert "26" in text
-    assert "deleted" in text
+        group=2147483624, state=43, reason=esdmerge.Reason.ORPHANED_GRAFT, target=41))
+    assert "43" in text and "41" in text

@@ -1450,7 +1450,7 @@ def test_apply_surfaces_a_merge_note_as_a_warning(tmp_path, monkeypatch, capsys,
     things it couldn't carry over cleanly; the apply report is the only place
     that reaches the user, so a note has to come out as a warning here, not
     get computed and quietly dropped once resolve() returns."""
-    from ermlib import conflicts, esdmerge, merge
+    from ermlib import conflicts, esdmerge
 
     game_dir = tmp_game
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
@@ -1486,7 +1486,10 @@ def test_apply_surfaces_a_merge_note_as_a_warning(tmp_path, monkeypatch, capsys,
 
     assert cli.cmd_apply(_apply_args("unit-merge-notes")) == 0
     out = capsys.readouterr().out
-    assert f"msg/x.dcx: {merge.describe_note(note)}" in out, out
+    # Spelled out rather than built by calling describe_note: an expectation
+    # computed from the renderer matches whatever the renderer does, so the
+    # renderer could return the note's repr and this would still pass.
+    assert "msg/x.dcx: group 24: both mods changed vanilla state 0" in out, out
 
 
 _MERGE_ONE_MOD_LEFT = (

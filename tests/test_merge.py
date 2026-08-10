@@ -580,6 +580,17 @@ def test_esd_three_way_collects_notes_when_the_graph_merge_leaves_one():
                for n in notes), notes
 
 
+def test_describe_note_renders_the_sentence_and_not_the_note():
+    """The apply report prints whatever comes back from here, so anything that
+    merely contains the numbers -- the note's own repr, say -- reads to a user
+    as a stack trace fragment and tells them nothing. Compared against
+    esdmerge.describe rather than a literal, so the prose lives in one place;
+    what each sentence has to say is pinned next door in test_esdmerge."""
+    note = esdmerge.Note(group=24, state=0, reason=esdmerge.Reason.BOTH_CHANGED)
+    assert merge.describe_note(note) == esdmerge.describe(note)
+    assert repr(note) not in merge.describe_note(note)
+
+
 def test_esd_three_way_without_a_notes_list_does_not_raise():
     """conflicts.resolve() only threads a notes list through for strategies
     that ask for it; called bare (as the registration tests above do), the
