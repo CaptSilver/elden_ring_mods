@@ -24,6 +24,7 @@ class Reason(Enum):
     """Why one thing in a shared group's merge could not be carried over as-is."""
     UNRESOLVED_IN_OTHER = "unresolved-in-other"    # several of other's states look like this vanilla state
     NOT_IN_OTHER = "not-in-other"                  # other has no state matching this vanilla state
+    NOT_IN_EITHER = "not-in-either"                # neither side has one, so no copy survived
     UNRESOLVED_IN_BASE = "unresolved-in-base"      # several of base's states look like this vanilla state
     NOT_IN_BASE = "not-in-base"                    # base deleted this vanilla state
     BOTH_CHANGED = "both-changed"                  # both sides edited it differently; base's version was kept
@@ -60,6 +61,9 @@ _PROSE = {
         "group {group}: the other mod has no state matching vanilla state "
         "{state} -- it either removed or rewrote it, and the preferred mod's "
         "copy was kept"),
+    Reason.NOT_IN_EITHER: (
+        "group {group}: neither mod has a state matching vanilla state {state} "
+        "-- both removed or rewrote it, so nothing of it survived the merge"),
     Reason.UNRESOLVED_IN_BASE: (
         "group {group}: the other mod changed vanilla state {state}, and "
         "several of the preferred mod's states look like it -- the change was "
@@ -202,9 +206,24 @@ def _merge_group(gid, base_group, other_group, vanilla_group):
     dropped. That is the whole point: a hook that quietly fails to land leaves a
     mod installed, loading, and doing nothing.
     """
-    if base_group is None or other_group is None or vanilla_group is None:
+    # Three different things get here, and they are three different problems to
+    # go and fix. Boss Res already deletes group 2147483563 outright, so the
+    # deletion arms are not hypothetical -- the next mod that touches that group
+    # lands on one of them, and the message is all it gets.
+    if vanilla_group is None:
         raise EsdMergeError(
-            f"state group {gid} was added or deleted by both mods differently")
+            f"state group {gid} was added by both mods, with different contents "
+            f"-- there is no vanilla version to read either one as an edit of, "
+            f"so there is no delta to replay")
+    if base_group is None:
+        raise EsdMergeError(
+            f"state group {gid} was deleted by the preferred mod and changed by "
+            f"the other -- there is nothing left to replay that change onto")
+    if other_group is None:
+        raise EsdMergeError(
+            f"state group {gid} was deleted by the other mod and changed by the "
+            f"preferred mod -- keeping the deletion would drop the preferred "
+            f"mod's change and keeping the change would undo the deletion")
 
     to_base = align(vanilla_group, base_group)
     to_other = align(vanilla_group, other_group)
@@ -269,7 +288,11 @@ def _merge_group(gid, base_group, other_group, vanilla_group):
             continue
         other_id = to_other.pairs.get(van_id)
         if other_id is None:
-            notes.append(Note(gid, van_id, Reason.NOT_IN_OTHER))
+            # "the preferred mod's copy was kept" is only true if there is one.
+            # `left_only` is the alignment saying base has nothing this could
+            # be, as opposed to `unresolved`, where some copy of it does ship.
+            notes.append(Note(gid, van_id, Reason.NOT_IN_EITHER
+                              if van_id in to_base.left_only else Reason.NOT_IN_OTHER))
             continue
         if not _edited(vanilla_states[van_id], other_states[other_id], to_other.pairs):
             continue

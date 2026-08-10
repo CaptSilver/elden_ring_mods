@@ -118,8 +118,53 @@ def test_a_group_both_sides_invented_differently_is_refused():
     vanilla = _esd({1: [(0, None)]})
     base = _esd({1: [(0, None)], 24: [(0, None), (1, 0)]})
     other = _esd({1: [(0, None)], 24: [(0, None), (2, 0)]})
-    with pytest.raises(esdmerge.EsdMergeError):
+    with pytest.raises(esdmerge.EsdMergeError, match="added by both mods"):
         esdmerge.merge(base, other, vanilla)
+
+
+def test_a_group_the_base_deleted_and_the_other_changed_says_which_happened():
+    """Boss Res deletes group 2147483563 outright, so this arm is one mod away
+    from firing for real. "added or deleted by both mods differently" would
+    send someone looking for an addition that isn't there."""
+    vanilla = _esd({1: [(0, None)], 85: [(0, 1), (1, None)]})
+    base = _esd({1: [(0, None)]})                                 # deleted 85
+    other = _esd({1: [(0, None)], 85: [(0, None), (1, None)]})    # changed it
+    with pytest.raises(esdmerge.EsdMergeError,
+                       match="deleted by the preferred mod and changed by the other"):
+        esdmerge.merge(base, other, vanilla)
+
+
+def test_a_group_the_other_deleted_and_the_base_changed_says_which_happened():
+    """The mirror image, and a different thing to go fix: here it is the other
+    mod's deletion that has to be argued with, not the preferred mod's."""
+    vanilla = _esd({1: [(0, None)], 85: [(0, 1), (1, None)]})
+    base = _esd({1: [(0, None)], 85: [(0, None), (1, None)]})     # changed it
+    other = _esd({1: [(0, None)]})                                # deleted 85
+    with pytest.raises(esdmerge.EsdMergeError,
+                       match="deleted by the other mod and changed by the preferred"):
+        esdmerge.merge(base, other, vanilla)
+
+
+def test_a_group_both_mods_deleted_stays_deleted():
+    """Agreement, not a conflict -- and it must not reach the group merge, which
+    has no version of the group to work from at all."""
+    vanilla = _esd({1: [(0, None)], 85: [(0, None)]})
+    base = _esd({1: [(0, None)]})
+    other = _esd({1: [(0, None)]})
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert _ids(merged) == [1]
+    assert notes == []
+
+
+def test_a_group_both_mods_added_identically_is_taken_once():
+    """Two mods shipping the same new machine is the other half of the
+    both-added case, and the half that is not a conflict."""
+    vanilla = _esd({1: [(0, None)]})
+    added = {1: [(0, None)], 1000: [(0, 1), (1, None)]}
+    merged, notes = esdmerge.merge(_esd(added), _esd(added), vanilla)
+    assert _ids(merged) == [1, 1000]
+    assert [s.id for s in _group(merged, 1000).states] == [0, 1]
+    assert notes == []
 
 
 def test_a_grafted_group_carries_no_leftover_order_and_survives_write():
@@ -637,6 +682,59 @@ def test_shared_group_notes_a_state_the_base_deleted():
     assert [s.id for s in _group(merged, 24).states] == [15, 26, 999]
 
 
+def test_a_state_neither_mod_kept_is_not_reported_as_a_kept_copy():
+    """"the preferred mod's copy was kept" is a claim about what shipped, and
+    when both mods dropped the state there is no copy to have kept. Someone
+    reading that note goes looking in the merged file for a state that is not
+    there, and concludes the report is lying about something else too.
+    """
+    def group(*states):
+        return esd.Esd(groups=(esd.StateGroup(24, states),),
+                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    hook = lambda target: esd.State(
+        0, conditions=(esd.Condition(target=target, evaluator=ALWAYS),))
+    distinctive = esd.State(2, conditions=(
+        esd.Condition(target=1, evaluator=GUARD_OR_GUARD),))
+
+    vanilla = group(hook(1), esd.State(1), distinctive)
+    # Both mods drop vanilla 2, and each changes something else, so the group
+    # still has to be merged state by state.
+    base = group(hook(1), esd.State(1),
+                 esd.State(8, conditions=(esd.Condition(target=1, evaluator=OTHER),)))
+    other = group(hook(3), esd.State(1),
+                  esd.State(3, conditions=(esd.Condition(target=1, evaluator=GUARD),)))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert 2 not in {s.id for s in _group(merged, 24).states}
+    assert [(n.state, n.reason) for n in notes] == \
+        [(2, esdmerge.Reason.NOT_IN_EITHER)]
+
+
+def test_a_state_only_the_other_mod_dropped_still_reports_the_kept_copy():
+    """The other half of the same branch: base's copy really is what shipped,
+    and saying so is the whole value of the note."""
+    def group(*states):
+        return esd.Esd(groups=(esd.StateGroup(24, states),),
+                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+
+    hook = lambda target: esd.State(
+        0, conditions=(esd.Condition(target=target, evaluator=ALWAYS),))
+    distinctive = esd.State(2, conditions=(
+        esd.Condition(target=1, evaluator=GUARD_OR_GUARD),))
+
+    vanilla = group(hook(1), esd.State(1), distinctive)
+    base = group(hook(1), esd.State(1), distinctive,
+                 esd.State(8, conditions=(esd.Condition(target=1, evaluator=OTHER),)))
+    other = group(hook(3), esd.State(1),
+                  esd.State(3, conditions=(esd.Condition(target=1, evaluator=GUARD),)))
+
+    merged, notes = esdmerge.merge(base, other, vanilla)
+    assert 2 in {s.id for s in _group(merged, 24).states}
+    assert [(n.state, n.reason) for n in notes] == \
+        [(2, esdmerge.Reason.NOT_IN_OTHER)]
+
+
 def test_a_grafted_state_gets_an_id_that_is_free_in_the_base():
     """Both sides added a state under the same id. Renumbering the graft is the
     only option, and every reference to it has to move with it."""
@@ -1080,7 +1178,9 @@ _MUST_SAY = {
     esdmerge.Reason.UNRESOLVED_IN_OTHER:
         (("several", "other mod's states", "not applied"), ("preferred",)),
     esdmerge.Reason.NOT_IN_OTHER:
-        (("the other mod", "no state matching"), ("several",)),
+        (("the other mod", "no state matching", "copy was kept"), ("several",)),
+    esdmerge.Reason.NOT_IN_EITHER:
+        (("neither mod", "state matching"), ("several", "was kept")),
     esdmerge.Reason.UNRESOLVED_IN_BASE:
         (("several", "preferred mod's states", "not applied"), ()),
     esdmerge.Reason.NOT_IN_BASE:
