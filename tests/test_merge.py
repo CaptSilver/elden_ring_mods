@@ -430,6 +430,27 @@ def test_esd_three_way_refuses_an_entry_only_the_other_side_has():
         merge.esd_three_way(base, other, vanilla)
 
 
+def test_esd_three_way_refuses_an_entry_vanilla_does_not_have():
+    """Without vanilla to compare an entry both sides carry against, there is
+    no way to tell "only the other side moved" from "base authored this and
+    vanilla simply doesn't happen to have it" -- picking one silently is how
+    the preferred mod's own content gets thrown away. fmg_three_way and
+    param_rows both refuse on any entry-set mismatch; esd-3way has to match,
+    not just check the direction that happens to be exercised by the extra-
+    entries test above."""
+    from ermlib.formats import esd
+    from tests.test_esdmerge import _esd
+
+    van = esd.write(_esd({1: [(0, None)]}))
+    base_only = esd.write(_esd({24: [(0, 1), (1, None)]}))
+    other_only = esd.write(_esd({24: [(0, 1), (1, None), (2, None)]}))
+    vanilla = _msgbnd_like({0: van})                       # no entry 6 at all
+    base = _msgbnd_like({0: van, 6: base_only})
+    other = _msgbnd_like({0: van, 6: other_only})
+    with pytest.raises(merge.MergeError, match="6"):
+        merge.esd_three_way(base, other, vanilla)
+
+
 def test_esd_three_way_leaves_an_untouched_entry_byte_identical():
     """An entry neither side changed must be copied through unrebuilt, not
     re-serialised through esd.read/write -- that's the same reasoning fmg-3way

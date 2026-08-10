@@ -316,6 +316,13 @@ def esd_three_way(base, other, vanilla, notes=None):
     cleanly -- passed in by the caller (conflicts.resolve, ultimately the apply
     report) rather than printed here, since a library function has no business
     deciding how its own diagnostics reach a user.
+
+    All three archives must declare the same BND4 entries, matching
+    fmg_three_way and param_rows: without vanilla to compare an entry against,
+    "only the other side moved" can't be told apart from "base authored this
+    and vanilla just doesn't happen to carry it", and guessing wrong means
+    silently discarding the preferred mod's own content in favour of the
+    other's.
     """
     from . import esdmerge
     from .formats import esd
@@ -325,18 +332,19 @@ def esd_three_way(base, other, vanilla, notes=None):
     other_entries = {e.id: e.data for e in bnd4.read(dcx.read(other))}
     van_entries = {e.id: e.data for e in bnd4.read(dcx.read(vanilla))}
 
-    extra = set(other_entries) - set(base_entries)
-    if extra:
+    if not (set(base_entries) == set(other_entries) == set(van_entries)):
         raise MergeError(
-            f"the other mod adds ESD entries the base doesn't have: {sorted(extra)}")
+            f"the three archives hold different BND4 entries (base "
+            f"{sorted(base_entries)}, other {sorted(other_entries)}, vanilla "
+            f"{sorted(van_entries)})")
 
     replacements = {}
     for eid, base_blob in base_entries.items():
-        other_blob = other_entries.get(eid)
-        van_blob = van_entries.get(eid)
-        if other_blob is None or other_blob == base_blob or other_blob == van_blob:
+        other_blob = other_entries[eid]
+        van_blob = van_entries[eid]
+        if other_blob == base_blob or other_blob == van_blob:
             continue                              # base's own edit, or nobody touched it
-        if van_blob is None or base_blob == van_blob:
+        if base_blob == van_blob:
             replacements[eid] = other_blob        # only the other side moved
             continue
         merged, entry_notes = esdmerge.merge(

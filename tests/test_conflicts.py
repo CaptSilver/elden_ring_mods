@@ -478,6 +478,31 @@ def test_a_strategy_not_needing_notes_is_still_called_with_two_or_three_argument
     assert notes == []
 
 
+def test_a_two_way_strategy_in_needs_notes_still_gets_a_notes_list(tmp_path, monkeypatch):
+    """NEEDS_NOTES and NEEDS_VANILLA are independent: a strategy can want notes
+    without wanting vanilla. Branching on "has vanilla" before ever looking at
+    NEEDS_NOTES would strand this combination -- a note appended to a `None`
+    the strategy was silently handed instead of the list the caller is reading
+    from, with no error anywhere to say so. tpf-union is the closest thing to
+    a live candidate for this today: it silently keeps base's copy of a shared
+    texture, with nowhere to say so once it's registered under NEEDS_NOTES."""
+    def strategy(base, other, notes=None):
+        if notes is not None:
+            notes.append("a two-way strategy's own note")
+        return base + other
+
+    monkeypatch.setitem(conflicts.STRATEGIES, "fake-2way-notes", strategy)
+    monkeypatch.setattr(conflicts, "NEEDS_NOTES", conflicts.NEEDS_NOTES | {"fake-2way-notes"})
+
+    _package(tmp_path, "a", {"msg/x.dcx": b"A"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"B"})
+    spec = [{"path": "msg/x.dcx", "mods": ["a", "b"], "prefer": "a",
+             "strategy": "fake-2way-notes"}]
+    notes = []
+    conflicts.resolve(tmp_path, ["a", "b"], spec, notes=notes)
+    assert notes == [("msg/x.dcx", "a two-way strategy's own note")]
+
+
 def test_a_two_way_strategy_still_takes_two_arguments(tmp_path):
     """fmg-union predates vanilla sourcing and must keep working untouched."""
     _package(tmp_path, "a", {"msg/x.dcx": b"1"})
@@ -530,3 +555,61 @@ def test_a_three_way_strategy_gets_vanilla_on_every_fold_step(tmp_path, monkeypa
     assert [s[2] for s in seen] == [b"VAN", b"VAN"]
     assert [s[1] for s in seen] == [b"B", b"C"]
     assert seen[1][0] == b"AB"          # the running result feeds the next step
+
+
+# --- the real esd-3way strategy, driven through resolve() itself -----------
+
+
+def test_resolve_drives_the_real_esd_three_way_strategy_and_returns_its_note(
+        tmp_path, monkeypatch):
+    """Every other test that reaches resolve() with a NEEDS_VANILLA/NEEDS_NOTES
+    strategy uses a fake whose signature the test itself wrote -- so renaming
+    esd_three_way's `notes` parameter would leave the whole suite green while a
+    real apply died with TypeError on the one hop this module exists to cover.
+    This drives the actual "esd-3way" strategy name, registered the normal
+    way, against the real Boss Res / Melina / vanilla .talkesdbnd.dcx blobs."""
+    from ermlib import esdmerge
+    from ermlib.formats import bnd4, dcx, esd
+    from tests.esd_fixtures import talkesd_container
+
+    # Read the real archives (relative to the repo's own vendor/) before
+    # chdir'ing into tmp_path -- talkesd_container looks under "vendor/"
+    # relative to the CWD, and _vanilla_zip/resolve() need that to be tmp_path.
+    boss_container = talkesd_container("bossres")
+    melina_container = talkesd_container("melina")
+    vanilla_container = talkesd_container("vanilla")
+    # These are Kraken-compressed, and ooz.py resolves its vendored source and
+    # build cache (vendor-src/, tools/ooz/) relative to CWD too -- decompress
+    # one now, while CWD is still the repo root, so the chdir below doesn't
+    # break the first real build/load of libooz.so. Once loaded it's cached
+    # in ooz._lib for the rest of the process regardless of CWD.
+    dcx.read(boss_container)
+
+    monkeypatch.chdir(tmp_path)
+    path = "script/talk/m00_00_00_00.talkesdbnd.dcx"
+    _package(tmp_path, "bossres", {path: boss_container})
+    _package(tmp_path, "melina", {path: melina_container})
+    lock = _vanilla_zip(tmp_path, "V/vanilla.talkesdbnd.dcx", vanilla_container, asset="van.zip")
+
+    spec = [{"path": path, "mods": ["bossres", "melina"], "prefer": "bossres",
+             "strategy": "esd-3way",
+             "vanilla": {"mod": "randomizer", "member": "V/vanilla.talkesdbnd.dcx"}}]
+    notes = []
+    merged = conflicts.resolve(tmp_path, ["bossres", "melina"], spec, lock=lock, notes=notes)
+
+    assert merged == [path]
+    # Melina's hook on vanilla state 26 collides with Boss Res deleting it --
+    # the one thing this real pair cannot compose cleanly (see esdmerge's own
+    # test_the_real_shared_group_replays_melina_onto_boss_res).
+    assert len(notes) == 1
+    rel, note = notes[0]
+    assert rel == path
+    assert note.group == 2147483624
+    assert note.state == 26
+    assert note.reason is esdmerge.Reason.NOT_IN_BASE
+
+    merged_bytes = (tmp_path / "mods" / conflicts.MERGED_ID / path).read_bytes()
+    entries = bnd4.read(dcx.read(merged_bytes))
+    assert len(entries) == 7
+    for entry in entries:
+        esdmerge.check(esd.read(entry.data))

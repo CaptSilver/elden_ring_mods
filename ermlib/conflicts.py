@@ -303,15 +303,20 @@ def resolve(me3_dir, mod_ids, merges, lock=None, notes=None):
         # be tagged with `rel` before joining the caller's list below -- a bare
         # note doesn't say which merged path it's about, and a profile can
         # merge more than one.
+        #
+        # vanilla and notes are independent axes -- NEEDS_VANILLA and
+        # NEEDS_NOTES are separate sets, and a strategy can be in either, both,
+        # or neither. Building the args/kwargs from scratch for each call
+        # (rather than branching on "has vanilla" first) is what keeps that
+        # true: a branch that checks vanilla first and only offers notes=
+        # inside the vanilla-having branch silently drops notes for any
+        # two-way, no-vanilla strategy that still wants to report one.
         path_notes = [] if spec["strategy"] in NEEDS_NOTES else None
         out = blobs[0]
         for extra in blobs[1:]:
-            if vanilla is None:
-                out = strategy(out, extra)
-            elif path_notes is not None:
-                out = strategy(out, extra, vanilla, notes=path_notes)
-            else:
-                out = strategy(out, extra, vanilla)
+            call_args = (out, extra) if vanilla is None else (out, extra, vanilla)
+            call_kwargs = {"notes": path_notes} if path_notes is not None else {}
+            out = strategy(*call_args, **call_kwargs)
         planned.append((rel, out, providers))
         if notes is not None and path_notes:
             notes.extend((rel, note) for note in path_notes)
