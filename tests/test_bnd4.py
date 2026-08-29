@@ -36,10 +36,15 @@ def _resolve_real_archive():
     return None
 
 
-def _synthetic_bnd4(entries, hash_table=b"\xAB\xCD\xEF\x01" * 4):
+def _synthetic_bnd4(entries, hash_table=b"\xAB\xCD\xEF\x01" * 4,
+                    version=b"07D7R6\x00\x00"):
     """Build a minimal BND4 for tests: header, entry headers, names, a stand-in
     hash table, then padded data. Mirrors the real layout closely enough to
-    prove the structural clone preserves everything it should."""
+    prove the structural clone preserves everything it should.
+
+    `version` is the 8-byte field a regulation.bin carries its build stamp in
+    (11701000 and friends); the default is the arbitrary string a plain BND4
+    ships."""
     count = len(entries)
     entry_header_size = 0x24
     names_off = 0x40 + count * entry_header_size
@@ -55,7 +60,7 @@ def _synthetic_bnd4(entries, hash_table=b"\xAB\xCD\xEF\x01" * 4):
     struct.pack_into("<i", out, 8, 0x00010000)
     struct.pack_into("<i", out, 0x0C, count)
     struct.pack_into("<q", out, 0x10, 0x40)
-    out[0x18:0x20] = b"07D7R6\x00\x00"
+    out[0x18:0x20] = version
     struct.pack_into("<q", out, 0x20, entry_header_size)
     struct.pack_into("<q", out, 0x28, data_off)
     out[0x30], out[0x31], out[0x32], out[0x33] = 1, 0x74, 4, 0

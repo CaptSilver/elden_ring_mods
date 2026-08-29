@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import zipfile
@@ -5,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from ermlib import cli, harden, me3profile, paths
+from ermlib import cli, gamebuild, harden, me3profile, paths
 from ermlib.errors import ErmError, NetworkError, PathError
 from ermlib.gamebuild import BuildId, GameBuildError
 from tests.conftest import REPO
+from tests.test_merge import SP, _regulation, _rows
 
 
 def _write_profile(profiles_dir, name, mods_toml, excludes=None):
@@ -279,30 +281,84 @@ def test_apply_warns_but_keeps_installed_mods_when_the_build_cannot_be_identifie
     assert "mod-a" in state and "mod-b" in state
 
 
-def _fake_baseline(tmp_path, data):
-    p = tmp_path / "fake-baseline.bin"
-    p.write_bytes(data)
-    return p
+_REGULATION_MERGE = (
+    '[[mods]]\n'
+    'id = "mod-x"\n'
+    'source = "nexus"\n'
+    'nexus_id = 1\n'
+    'kind = "gameplay"\n'
+    'install = "me3-package"\n'
+    '\n'
+    '[[mods]]\n'
+    'id = "mod-y"\n'
+    'source = "nexus"\n'
+    'nexus_id = 2\n'
+    'kind = "gameplay"\n'
+    'install = "me3-package"\n'
+    '\n'
+    '[[merges]]\n'
+    'path = "regulation.bin"\n'
+    'strategy = "param-rows"\n'
+    'mods = ["mod-x", "mod-y"]\n'
+    'prefer = "mod-x"\n'
+    'vanilla = { mod = "mod-v", member = "V/regulation.bin" }\n'
+)
 
 
-def test_apply_folds_merges_onto_the_game_when_it_has_been_patched(
-        tmp_path, monkeypatch, capsys, tmp_game):
-    game_dir = tmp_game
+def _seed_regulation_stack(tmp_path, game_dir, game_build="11701000",
+                           ancestor_build="11611000"):
+    """A profile whose two mods edit different rows of one param, the ancestor
+    they branched from in a vendor archive, and a game whose own regulation
+    carries row 999 that no mod has ever seen.
+
+    Returns the identity `gamebuild.identify` should report for that game --
+    with the real sha of the file on disk, so adopt_baseline's freshness check
+    runs for real.
+    """
+    def reg(rows, build):
+        return _regulation({1: (SP, rows, 8)}, version=build.encode())
+
+    shared = {1: b"\x01" * 8}
+    ancestor = reg({**shared, 100: b"\x00" * 8, 200: b"\x00" * 8}, ancestor_build)
+    mod_x = reg({**shared, 100: b"\xaa" * 8, 200: b"\x00" * 8}, ancestor_build)
+    mod_y = reg({**shared, 100: b"\x00" * 8, 200: b"\xbb" * 8}, ancestor_build)
+    game = reg({**shared, 100: b"\x00" * 8, 200: b"\x00" * 8, 999: b"\x99" * 8},
+               game_build)
+    (game_dir / "regulation.bin").write_bytes(game)
+
+    _write_profile(tmp_path / "profiles", "unit-rebase", _REGULATION_MERGE)
+    vendor = tmp_path / "vendor"
+    vendor.mkdir(exist_ok=True)
+    lock = ""
+    for mid, blob, member in (("mod-x", mod_x, "regulation.bin"),
+                              ("mod-y", mod_y, "regulation.bin"),
+                              ("mod-v", ancestor, "V/regulation.bin")):
+        lock += (f'[{mid}]\nversion = "1.0"\nasset = "{mid}.zip"\n'
+                 f'sha256 = "a"\nsource = "nexus"\n\n')
+        with zipfile.ZipFile(vendor / f"{mid}.zip", "w") as z:
+            z.writestr(member, blob)
+    (tmp_path / "mods.lock.toml").write_text(lock)
+    return BuildId(exe="2.7.0.0", app=gamebuild.app_version(game_build),
+                   regulation=game_build, steam_buildid="23850278",
+                   regulation_sha=hashlib.sha256(game).hexdigest())
+
+
+def _rebase_env(tmp_path, game_dir, monkeypatch, **kwargs):
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
-    _seed_two_mod_profile(tmp_path)
-    # A build stamped from a prior apply, older than what identify() reports
-    # below on every field a real patch moves -- this is what makes
-    # classify() see PATCHED rather than UNCHANGED.
-    stamped = BuildId(exe="2.6.2.0", app="1.16.0", regulation="11601000",
-                      steam_buildid="1", regulation_sha="b" * 64)
-    (tmp_path / "installed.json").write_text(
-        json.dumps({"_build": dict(stamped._asdict())}))
-    known = BuildId(exe="2.7.0.0", app="1.17.0", regulation="11701000",
-                    steam_buildid="23850278", regulation_sha="a" * 64)
+    known = _seed_regulation_stack(tmp_path, game_dir, **kwargs)
     monkeypatch.setattr(cli.gamebuild, "identify", lambda game, root: known)
+    return known
+
+
+MERGED_REGULATION = Path("tools") / "me3" / "mods" / "_merged" / "regulation.bin"
+
+
+def test_apply_folds_merges_onto_the_game_when_its_build_left_the_ancestor_behind(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    known = _rebase_env(tmp_path, tmp_game, monkeypatch)
 
     captured = {}
     real_resolve = cli.conflicts.resolve
@@ -312,31 +368,21 @@ def test_apply_folds_merges_onto_the_game_when_it_has_been_patched(
         return real_resolve(*args, **kwargs)
 
     monkeypatch.setattr(cli.conflicts, "resolve", _spy)
-    monkeypatch.setattr(cli.heal, "adopt_baseline",
-                        lambda game, live, base=None: _fake_baseline(tmp_path, b"GAME117"))
-    monkeypatch.setattr(cli.heal, "layout_gate", lambda base, mods: ())
 
-    rc = cli.cmd_apply(_apply_args("two-mod"))
-    capsys.readouterr()
+    rc = cli.cmd_apply(_apply_args("unit-rebase"))
+    out = capsys.readouterr().out
 
-    assert rc == 0
-    assert captured["bases"] == {"regulation.bin": b"GAME117"}
+    assert rc == 0, out
+    assert captured["bases"] == {
+        "regulation.bin": (tmp_game / "regulation.bin").read_bytes()}
+    assert f"rebasing merges onto the installed build {known.app}" in out, out
 
 
-def test_apply_on_an_unpatched_game_passes_no_bases(
+def test_apply_passes_no_bases_when_the_ancestor_is_the_installed_build(
         tmp_path, monkeypatch, capsys, tmp_game):
-    game_dir = tmp_game
-    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
-    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
-    _seed_two_mod_profile(tmp_path)
-    known = BuildId(exe="2.7.0.0", app="1.17.0", regulation="11701000",
-                    steam_buildid="23850278", regulation_sha="a" * 64)
-    # Stamped equal to what identify() reports -> no drift -> nothing to rebase.
-    (tmp_path / "installed.json").write_text(
-        json.dumps({"_build": dict(known._asdict())}))
-    monkeypatch.setattr(cli.gamebuild, "identify", lambda game, root: known)
+    # Same build on both sides: the mods branched from what is installed, so
+    # the merge folds onto the preferred mod as it always did.
+    _rebase_env(tmp_path, tmp_game, monkeypatch, ancestor_build="11701000")
 
     captured = {}
     real_resolve = cli.conflicts.resolve
@@ -347,11 +393,35 @@ def test_apply_on_an_unpatched_game_passes_no_bases(
 
     monkeypatch.setattr(cli.conflicts, "resolve", _spy)
 
-    rc = cli.cmd_apply(_apply_args("two-mod"))
-    capsys.readouterr()
+    rc = cli.cmd_apply(_apply_args("unit-rebase"))
+    out = capsys.readouterr().out
 
-    assert rc == 0
+    assert rc == 0, out
     assert not captured.get("bases")
+    assert "rebasing merges onto" not in out
+
+
+def test_a_second_apply_rebuilds_the_same_rebased_regulation(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """Two applies in a row must produce the same file. Keyed on build-stamp
+    drift this held for exactly one run: the first apply consumed the drift by
+    recording the build, and the second rebuilt the merge against the profile's
+    old ancestor -- silently reverting every row the patch added -- and
+    reported success."""
+    known = _rebase_env(tmp_path, tmp_game, monkeypatch)
+
+    outputs = []
+    for _ in range(2):
+        assert cli.cmd_apply(_apply_args("unit-rebase")) == 0, capsys.readouterr().out
+        capsys.readouterr()
+        outputs.append((tmp_path / MERGED_REGULATION).read_bytes())
+
+    assert outputs[0] == outputs[1]
+    for blob in outputs:
+        assert gamebuild.read_regulation_version(blob) == known.regulation
+    # Both mods' edits and the row only the patched game has.
+    assert _rows(outputs[1], 1) == {1: b"\x01" * 8, 100: b"\xaa" * 8,
+                                    200: b"\xbb" * 8, 999: b"\x99" * 8}
 
 
 def test_apply_seamless_only_backward_compat_uses_real_profile(

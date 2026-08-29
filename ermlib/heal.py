@@ -30,6 +30,10 @@ from .gamebuild import read_regulation_version
 # derived artifacts, not something a fresh clone should carry.
 BASELINE_DIR = Path("tools/baselines")
 
+# The game-relative path a regulation merge occupies -- the same string in the
+# profile's [[merges]] entry, in every mod's package, and in the game dir.
+REGULATION = "regulation.bin"
+
 
 class HealError(ErmError):
     """A heal could not be planned or completed."""
@@ -57,7 +61,7 @@ def adopt_baseline(game_dir, live, base=BASELINE_DIR):
     dest = baseline_path(live.regulation, base)
     if dest.exists():
         return dest
-    src = Path(game_dir) / "regulation.bin"
+    src = Path(game_dir) / REGULATION
     try:
         blob = src.read_bytes()
     except OSError as exc:
@@ -243,11 +247,21 @@ def verify_rebase(merged_blob, baseline_blob, mod_blobs, live):
     return tuple(problems)
 
 
-def prepare_rebase(game_dir, live, stamped, contributors, base=BASELINE_DIR):
+def prepare_rebase(game_dir, live, ancestor, contributors, base=BASELINE_DIR):
     """The per-path bases a merge should fold onto for the installed build.
 
-    Empty unless the game was actually patched -- an unstamped stack has
-    nothing to rebase from, and a first apply only stamps.
+    The question is whether the merge is about to be built against an ancestor
+    from a different game build than the one installed, so that is what gets
+    asked: `ancestor` is the regulation the profile declares its mods branched
+    from, and its build either is the installed one or it isn't. That answer is
+    a property of the files, so it survives being acted on and comes out the
+    same on every apply -- which is what makes a second apply reproduce the
+    first one's merge instead of quietly rebuilding it against the old
+    ancestor. Build-stamp drift cannot answer it: the first apply that records
+    a build consumes the drift, and every apply after it sees none.
+
+    Empty when nothing would consume the base -- no ancestor declared, or no
+    installed package shipping a regulation to fold.
 
     The adopted regulation becomes the merge's BASE, not its ancestor. The
     ancestor stays whatever the profile declares, because that is what the mods
@@ -255,7 +269,9 @@ def prepare_rebase(game_dir, live, stamped, contributors, base=BASELINE_DIR):
     file in the ancestor slot would read every row the patch added as a mod
     deletion.
     """
-    if gamebuild.classify(stamped, live) != gamebuild.PATCHED:
+    if ancestor is None or not contributors:
+        return {}
+    if read_regulation_version(ancestor) == live.regulation:
         return {}
     blob = adopt_baseline(game_dir, live, base).read_bytes()
     problems = layout_gate(blob, contributors)
@@ -264,7 +280,7 @@ def prepare_rebase(game_dir, live, stamped, contributors, base=BASELINE_DIR):
             "the game's param layout moved, so mod rows can't be transplanted "
             "onto it:\n  " + "\n  ".join(problems) +
             "\nThose mods need updates built for this game version.")
-    return {"regulation.bin": blob}
+    return {REGULATION: blob}
 
 
 class Action(NamedTuple):

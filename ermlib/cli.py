@@ -594,20 +594,28 @@ def cmd_apply(args):
         # copies it was written for and false of a prune that deliberately
         # gives up real content to settle a collision.
         r.info(f"pruned {pruned}")
-    # A patched game means the merged files were built against a game that no
-    # longer exists. Fold every mod onto the installed game's own regulation so
-    # the rows the patch added survive alongside the mods' edits.
+    # A game newer than the ancestor the mods branched from means the merge
+    # would be built out of game data the install no longer has. Fold every
+    # contributor onto the installed game's own regulation instead, so the rows
+    # the patch added survive alongside the mods' edits.
+    reg_contributors = [(m, (ME3_DIR / "mods" / m / heal.REGULATION).read_bytes())
+                        for m in package_ids
+                        if (ME3_DIR / "mods" / m / heal.REGULATION).is_file()]
+    # Only when a merge is actually going to fold them: one contributor is no
+    # collision, resolve() leaves it alone, and reading an ancestor archive
+    # nothing is about to consume would refuse applies that have no merge to do.
+    ancestor = (conflicts.declared_ancestor(profile.get("merges", []),
+                                            heal.REGULATION, lock)
+                if len(reg_contributors) > 1 else None)
     bases = {}
     try:
         live = gamebuild.identify(game, steam_root)
-        bases = heal.prepare_rebase(
-            game, live, state_mod.stamped_build(state),
-            [(m, (ME3_DIR / "mods" / m / "regulation.bin").read_bytes())
-             for m in package_ids
-             if (ME3_DIR / "mods" / m / "regulation.bin").exists()])
     except GameBuildError as exc:
+        live = None
         r.warn(f"could not check the game build ({exc}) — merging against the "
                "profile's declared ancestor")
+    if live is not None:
+        bases = heal.prepare_rebase(game, live, ancestor, reg_contributors)
     if bases:
         r.info(f"rebasing merges onto the installed build {live.app}")
     try:

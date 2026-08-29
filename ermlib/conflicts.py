@@ -228,6 +228,20 @@ def _load_vanilla(rel, spec, lock):
         raise ConflictError(f"{rel}: cannot read vanilla from {asset}: {exc}") from exc
 
 
+def declared_ancestor(merges, rel, lock):
+    """The bytes of the ancestor a declared merge of `rel` compares against, or
+    None when nothing declares that path as a three-way merge.
+
+    Apply asks for it before resolve() does, to find out whether the mods
+    branched from the game build that is installed. Same loader as the merge
+    itself uses, so the two can't end up judging different files.
+    """
+    spec = _declare_merges(merges).get(rel)
+    if spec is None or spec["strategy"] not in NEEDS_VANILLA:
+        return None
+    return _load_vanilla(rel, spec, lock)
+
+
 def resolve(me3_dir, mod_ids, merges, lock=None, notes=None, bases=None):
     """Merge every declared conflict and refuse any undeclared one.
 

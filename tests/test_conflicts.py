@@ -371,6 +371,31 @@ def fake_three_way(monkeypatch):
     return seen
 
 
+def test_declared_ancestor_reads_the_same_file_the_merge_compares_against(
+        tmp_path, monkeypatch, fake_three_way):
+    monkeypatch.chdir(tmp_path)
+    lock = _vanilla_zip(tmp_path, "diste/Vanilla/msg/x.dcx", b"vanilla bytes")
+    got = conflicts.declared_ancestor(
+        _three_way_spec("diste/Vanilla/msg/x.dcx"), "msg/x.dcx", lock)
+    assert got == b"vanilla bytes"
+
+
+def test_declared_ancestor_is_none_for_an_undeclared_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    lock = _vanilla_zip(tmp_path, "diste/Vanilla/msg/x.dcx", b"vanilla bytes")
+    assert conflicts.declared_ancestor(
+        _three_way_spec("diste/Vanilla/msg/x.dcx"), "regulation.bin", lock) is None
+
+
+def test_declared_ancestor_is_none_for_a_two_way_strategy(tmp_path, monkeypatch):
+    # A two-way merge names no ancestor and doesn't need one, so asking for it
+    # must not turn into "this profile forgot to declare a vanilla".
+    monkeypatch.chdir(tmp_path)
+    spec = _three_way_spec("diste/Vanilla/msg/x.dcx", strategy="tpf-union")
+    del spec[0]["vanilla"]
+    assert conflicts.declared_ancestor(spec, "msg/x.dcx", lock={}) is None
+
+
 def test_a_three_way_strategy_receives_the_declared_vanilla(tmp_path, monkeypatch, fake_three_way):
     monkeypatch.chdir(tmp_path)
     _package(tmp_path, "a", {"msg/x.dcx": b"base"})

@@ -153,14 +153,14 @@ from ermlib.formats import regulation                          # noqa: E402
 from tests.test_param import make_param                        # noqa: E402
 
 
-def _regulation(params):
+def _regulation(params, version=b"07D7R6\x00\x00"):
     """params: {entry_id: (param_type, {row_id: row_bytes}, stride)}"""
     entries = []
     for eid, (ptype, rows, stride) in sorted(params.items()):
         blob = make_param(sorted(rows), stride=stride, param_type=ptype,
                           fill=lambda rid, rows=rows: rows[rid])
         entries.append((eid, f"{ptype.decode()}.param", blob))
-    return regulation.pack(_synthetic_bnd4(entries), bytes(16))
+    return regulation.pack(_synthetic_bnd4(entries, version=version), bytes(16))
 
 
 def _rows(blob, eid):
