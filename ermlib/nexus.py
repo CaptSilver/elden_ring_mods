@@ -5,6 +5,7 @@ callers without a key should stick to the manual-download flow in cli.py
 and never reach this module at all.
 """
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -111,3 +112,40 @@ def download_url(mod_id, file_id, api_key):
     parts = urllib.parse.urlsplit(uri)
     path = urllib.parse.quote(parts.path, safe="/%")
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+# Nexus filenames come in two shapes:
+#   legacy   Name-<modid>-<dashed version>-<epoch>.ext
+#   current  Name <modid> <version> <ISO stamp> <token>.ext
+# Both bury the variant name in front of machine noise.
+_ARCHIVE_EXT = re.compile(r"\.(zip|7z|rar)$", re.I)
+_ISO_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}Z")
+_EPOCH = re.compile(r"\b\d{9,}\b")
+_TRAILING_TOKEN = re.compile(r"\s+[A-Za-z0-9]{9}\s*$")
+_SEPARATORS = re.compile(r"[\s\-]+")
+_VERSION_PARTS = re.compile(r"[.\-_]")
+
+
+def variant_key(file_name, mod_id, version):
+    """Which *variant* of a mod a file is, independent of its version.
+
+    Normalise, THEN tokenise. Order is load-bearing: splitting first shatters
+    an ISO stamp (2026-07-14T10-47Z) into 2026/07/14t10/47z, and those
+    fragments then read as ordinary name words -- which is how an earlier cut
+    of this matched none of map-for-goblins' nine variants instead of one.
+
+    Version components are dropped as whole tokens, never as substrings: a
+    mod whose version is "1" would otherwise lose every "1" in its name.
+    """
+    stem = _ARCHIVE_EXT.sub("", file_name)
+    stem = _ISO_STAMP.sub("", stem)
+    stem = _EPOCH.sub("", stem)
+    stem = _TRAILING_TOKEN.sub("", stem)
+    drop = {str(mod_id)}
+    if version:
+        v = str(version).lower()
+        drop.update({v, v.lstrip("v")})
+        drop.update(p for p in _VERSION_PARTS.split(v.lstrip("v")) if p)
+    words = [t.lower() for t in _SEPARATORS.split(stem) if t]
+    return " ".join(w for w in words
+                    if w not in drop and w.lstrip("v") not in drop).strip()

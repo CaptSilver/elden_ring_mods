@@ -143,3 +143,66 @@ def test_headers_never_include_the_key_in_a_readable_log_field():
     assert "SUPERSECRETKEY" not in h["User-Agent"]
     assert "SUPERSECRETKEY" not in h["Application-Name"]
     assert "SUPERSECRETKEY" not in h["Application-Version"]
+
+
+from tests import nexus_fixtures as fx
+
+
+def _by_id(files, file_id):
+    return next(f for f in files if f["file_id"] == file_id)
+
+
+def _key(files, file_id, mod_id):
+    f = _by_id(files, file_id)
+    return nexus.variant_key(f["file_name"], mod_id, f.get("version"))
+
+
+def test_an_iso_timestamp_never_leaks_into_the_variant_key():
+    # Regression: tokenising before stripping shatters 2026-07-14T10-47Z into
+    # 2026/07/14t10/47z, which then read as ordinary name words. That produced
+    # zero matches among map-for-goblins' nine variants instead of exactly one.
+    key = _key(fx.MAP_FOR_GOBLINS, 48311, 10062)
+    assert key == "vanilla or randomizer"
+    for fragment in ("2026", "07", "14t10", "47z", "zthtifwxr"):
+        assert fragment not in key
+
+
+def test_the_same_variant_matches_across_versions():
+    assert (_key(fx.MAP_FOR_GOBLINS, 48311, 10062)
+            == _key(fx.MAP_FOR_GOBLINS, 48939, 10062))
+
+
+def test_sibling_variants_stay_distinct():
+    assert _key(fx.MAP_FOR_GOBLINS, 48931, 10062) == "graceborne"
+    assert _key(fx.MAP_FOR_GOBLINS, 48931, 10062) != _key(fx.MAP_FOR_GOBLINS, 48939, 10062)
+
+
+def test_nofalldead_variants_stay_distinct():
+    # Flipping these would silently swap the Longtail Cat talisman version for
+    # the plain one -- same version number, different mod.
+    assert _key(fx.NOFALLDEAD, 48339, 10402) == "nofalldead"
+    assert _key(fx.NOFALLDEAD, 48340, 10402) == "nofalldead longtail cat version"
+
+
+def test_boss_resurrection_lite_is_not_the_full_version():
+    assert _key(fx.BOSS_RESURRECTION, 24924, 2790) == "boss resurrection"
+    assert _key(fx.BOSS_RESURRECTION, 24925, 2790) == "boss resurrection lite"
+
+
+def test_forever_buffs_variants_stay_distinct():
+    assert _key(fx.FOREVER_BUFFS, 39767, 8644) == "csv included to merge"
+    assert (_key(fx.FOREVER_BUFFS, 39807, 8644)
+            == "forever buffs n all kinds of buff included")
+
+
+def test_legacy_and_modern_filename_shapes_yield_the_same_key():
+    # 25.0 uses the old Name-modid-version-epoch shape, 26.1 the new
+    # Name modid version timestamp token shape. Same mod, same variant.
+    assert _key(fx.CLEVERS, 34558, 1928) == "moveset_modpack"
+    assert _key(fx.CLEVERS, 49639, 1928) == "moveset_modpack"
+
+
+def test_a_single_digit_version_does_not_eat_name_words():
+    # NoFallDead's version is "1". Removing it as a substring rather than a
+    # whole token would corrupt any name containing the digit.
+    assert "1" not in _key(fx.NOFALLDEAD, 48340, 10402).split()
