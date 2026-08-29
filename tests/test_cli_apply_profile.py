@@ -9,6 +9,7 @@ import pytest
 from ermlib import cli, gamebuild, harden, me3profile, paths
 from ermlib.errors import ErmError, NetworkError, PathError
 from ermlib.gamebuild import BuildId, GameBuildError
+from ermlib.heal import HealError
 from tests.conftest import REPO
 from tests.test_merge import SP, _regulation, _rows
 
@@ -422,6 +423,43 @@ def test_a_second_apply_rebuilds_the_same_rebased_regulation(
     # Both mods' edits and the row only the patched game has.
     assert _rows(outputs[1], 1) == {1: b"\x01" * 8, 100: b"\xaa" * 8,
                                     200: b"\xbb" * 8, 999: b"\x99" * 8}
+
+
+def _reship_mod_y(tmp_path, rows, build="11611000"):
+    """Replace mod-y's package archive with a regulation carrying `rows`."""
+    stride = len(next(iter(rows.values())))
+    blob = _regulation({1: (SP, rows, stride)}, version=build.encode())
+    with zipfile.ZipFile(tmp_path / "vendor" / "mod-y.zip", "w") as z:
+        z.writestr("regulation.bin", blob)
+
+
+def test_a_layout_gate_refusal_leaves_no_state_claiming_the_merged_package(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """The gate stops the apply well after clear_merged has wiped the merged
+    output -- which a successful merge leaves as the only copy of that file.
+    Aborting straight out of the rebase left installed.json and erm-coop.me3
+    both still naming a package whose directory is gone."""
+    from ermlib import conflicts
+
+    _rebase_env(tmp_path, tmp_game, monkeypatch)
+    assert cli.cmd_apply(_apply_args("unit-rebase")) == 0, capsys.readouterr().out
+    capsys.readouterr()
+    me3_profile = tmp_path / "tools" / "me3" / "erm-coop.me3"
+    assert conflicts.MERGED_ID in me3_profile.read_text()
+
+    # mod-y ships an update that lays its rows out twice as wide, so nothing in
+    # it can be transplanted onto the game's regulation.
+    _reship_mod_y(tmp_path, {1: b"\x01" * 16, 100: b"\x00" * 16, 200: b"\xbb" * 16})
+
+    with pytest.raises(HealError, match="stride"):
+        cli.cmd_apply(_apply_args("unit-rebase"))
+    capsys.readouterr()
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert conflicts.MERGED_ID not in state
+    assert conflicts.MERGED_ID not in me3_profile.read_text(), (
+        "erm-coop.me3 still names a merged package whose directory was wiped")
+    assert not (tmp_path / MERGED_REGULATION).exists()
 
 
 def test_apply_seamless_only_backward_compat_uses_real_profile(

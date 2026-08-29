@@ -598,15 +598,6 @@ def cmd_apply(args):
     # would be built out of game data the install no longer has. Fold every
     # contributor onto the installed game's own regulation instead, so the rows
     # the patch added survive alongside the mods' edits.
-    reg_contributors = [(m, (ME3_DIR / "mods" / m / heal.REGULATION).read_bytes())
-                        for m in package_ids
-                        if (ME3_DIR / "mods" / m / heal.REGULATION).is_file()]
-    # Only when a merge is actually going to fold them: one contributor is no
-    # collision, resolve() leaves it alone, and reading an ancestor archive
-    # nothing is about to consume would refuse applies that have no merge to do.
-    ancestor = (conflicts.declared_ancestor(profile.get("merges", []),
-                                            heal.REGULATION, lock)
-                if len(reg_contributors) > 1 else None)
     bases = {}
     try:
         live = gamebuild.identify(game, steam_root)
@@ -614,11 +605,25 @@ def cmd_apply(args):
         live = None
         r.warn(f"could not check the game build ({exc}) — merging against the "
                "profile's declared ancestor")
-    if live is not None:
-        bases = heal.prepare_rebase(game, live, ancestor, reg_contributors)
-    if bases:
-        r.info(f"rebasing merges onto the installed build {live.app}")
+    # Everything from here to the end of the block runs after clear_merged()
+    # wiped the merged package, so every exit -- not just an unresolvable
+    # collision -- has to leave state and the me3 profile agreeing with what
+    # is actually on disk. See the handler.
     try:
+        reg_contributors = [(m, (ME3_DIR / "mods" / m / heal.REGULATION).read_bytes())
+                            for m in package_ids
+                            if (ME3_DIR / "mods" / m / heal.REGULATION).is_file()]
+        # Ask for the ancestor only when a merge is going to fold onto it: one
+        # contributor is no collision, resolve() leaves it alone, and reading
+        # an archive nothing is about to consume would refuse applies that have
+        # no merge to do.
+        ancestor = (conflicts.declared_ancestor(profile.get("merges", []),
+                                                heal.REGULATION, lock)
+                    if len(reg_contributors) > 1 else None)
+        if live is not None:
+            bases = heal.prepare_rebase(game, live, ancestor, reg_contributors)
+        if bases:
+            r.info(f"rebasing merges onto the installed build {live.app}")
         # A declared merge's sources must be faithful before we let resolve()
         # near them: resolve() strips the merged path out of every contributor
         # once a merge succeeds, so a mod that isn't in reinstalled_packages
@@ -632,13 +637,13 @@ def cmd_apply(args):
         merge_notes = []
         merged = conflicts.resolve(ME3_DIR, package_ids, profile.get("merges", []),
                                    lock=lock, notes=merge_notes, bases=bases)
-    except ConflictError:
+    except ErmError:
         state_mod.write_state(Path("installed.json"), state)
         # The me3 profile is meant to be a pure function of state, and state has
         # already forgotten the merged package whose directory clear_merged()
         # wiped above. Regenerate here too, or the abort leaves erm-coop.me3
-        # naming a package that isn't on disk. Best-effort: the ConflictError is
-        # the thing the caller needs to see, so a profile-write failure must not
+        # naming a package that isn't on disk. Best-effort: the error is the
+        # thing the caller needs to see, so a profile-write failure must not
         # replace it.
         try:
             me3profile.reconcile(state, ME3_DIR, game)
