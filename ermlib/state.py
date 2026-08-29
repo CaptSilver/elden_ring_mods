@@ -4,6 +4,11 @@
 remove exactly what erm put there, instead of walking Game/ and guessing.
 Lives at installed.json in the repo cwd — machine state, not shared,
 gitignored.
+
+Not every key is a mod. The file also carries bookkeeping records — the build
+stamp under `_build`, the synthetic merged package — so iterate `mod_ids()`
+rather than the raw keys. Handing a bookkeeping key to code that expects a mod
+is how the build stamp got deleted by a profile switch.
 """
 import json
 from pathlib import Path

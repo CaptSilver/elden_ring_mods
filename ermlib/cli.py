@@ -372,7 +372,7 @@ def cmd_apply(args):
         except (OSError, ErmError):
             continue
         excluded_ids = {m["id"] for m in excluded_profile["mods"]}
-        clashing = sorted(excluded_ids & state.keys())
+        clashing = sorted(excluded_ids & set(state_mod.mod_ids(state)))
         if clashing:
             raise ErmError(
                 f"cannot apply '{args.profile}': it excludes '{exc_name}', which is "
@@ -1027,7 +1027,10 @@ def cmd_switch(args):
     game = paths.find_game_dir(paths.find_steam_root())
     state = state_mod.load_state()
     r = Report()
-    for mid in list(state.keys()):
+    # mod_ids, not every key: installed.json also holds bookkeeping records
+    # like the build stamp, and handing one to the uninstaller raises PathError
+    # — whose recovery is to forget the entry, which deletes the stamp.
+    for mid in state_mod.mod_ids(state):
         # One broken installed.json entry (empty file list, no vendor archive
         # to derive from) must not abort the whole switch. Warn, drop it from
         # state anyway — a PathError here means there was nothing on disk to
@@ -1122,7 +1125,8 @@ def cmd_tidy(args):
     checks, so this loop just acts on what it's handed."""
     game = paths.find_game_dir(paths.find_steam_root())
     state = state_mod.load_state()
-    recorded = {rel for meta in state.values() for rel in meta.get("files", [])}
+    recorded = {rel for mid in state_mod.mod_ids(state)
+                for rel in state[mid].get("files", [])}
     cruft = tidy.find_cruft(game, recorded)
     r = Report()
     if not cruft:

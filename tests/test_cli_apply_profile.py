@@ -2127,3 +2127,72 @@ def test_a_carried_merge_is_dropped_once_a_contributor_is_uninstalled(
 
     merged_file = tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID / "chr/c0000.anibnd.dcx"
     assert not merged_file.exists()
+
+
+_A_BUILD = {"exe": "2.7.0.0", "app": "1.17.0", "regulation": "11701000",
+            "steam_buildid": "23850278", "regulation_sha": "a" * 64}
+
+
+def _seed_stamped_state(tmp_path, game_dir):
+    (game_dir / "g.dll").write_bytes(b"\x00")
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "good-mod": {"version": "1.0", "archive": "g.zip", "files": ["g.dll"]},
+        "_build": dict(_A_BUILD),
+    }))
+
+
+def test_switch_keeps_the_build_stamp(tmp_path, tmp_game, monkeypatch, capsys):
+    # _build is bookkeeping, not a mod. Handed to the uninstaller it raises
+    # PathError, and the caller's recovery for that -- forget the entry --
+    # deletes the stamp, so the new stack comes up claiming it was never built
+    # and doctor reports "not recorded yet" over a stack that was just applied.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _seed_stamped_state(tmp_path, game_dir)
+    _write_profile(tmp_path / "profiles", "profile-b",
+        '[[mods]]\n'
+        'id = "mod-c"\n'
+        'source = "github"\n'
+        'repo_id = 3\n'
+        'kind = "test"\n'
+        'install = "game"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"mod-c": ("1.0", "mod-c.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    _zip_with(vendor / "mod-c.zip", "c.dll")
+
+    assert cli.cmd_switch(type("A", (), {"profile": "profile-b", "json": False})()) == 0
+    capsys.readouterr()
+
+    after = json.loads((tmp_path / "installed.json").read_text())
+    assert after.get("_build") == _A_BUILD
+    assert "good-mod" not in after
+
+
+def test_uninstalling_a_profile_keeps_the_build_stamp(tmp_path, tmp_game, monkeypatch, capsys):
+    # Uninstalling one profile doesn't unbuild the rest of the stack, and the
+    # stamp says which game build the install was made against -- still true
+    # after a profile's files go away.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _seed_stamped_state(tmp_path, game_dir)
+    _write_profile(tmp_path / "profiles", "profile-a",
+        '[[mods]]\n'
+        'id = "good-mod"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "test"\n'
+        'install = "game"\n'
+    )
+
+    assert cli.cmd_uninstall(type("A", (), {"mod": "profile-a", "json": False})()) == 0
+    capsys.readouterr()
+
+    after = json.loads((tmp_path / "installed.json").read_text())
+    assert after.get("_build") == _A_BUILD
+    assert "good-mod" not in after
