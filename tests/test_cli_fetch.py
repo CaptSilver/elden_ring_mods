@@ -6,6 +6,7 @@ import pytest
 
 from ermlib import cli, manifest, github, nexus
 from ermlib.errors import ErmError, IntegrityError
+from tests import nexus_fixtures as fx
 
 
 def _write_github_profile(base_dir, name="gh-only", mod_id="seamless-coop", repo_id=497113840):
@@ -472,3 +473,81 @@ def test_pinned_nexus_fetch_with_file_id_selects_by_id_not_version(tmp_path, mon
 
     assert updated["minimal-hud"]["asset"] == "Minimal HUD - Variant B.zip"
     assert (vendor / "Minimal HUD - Variant B.zip").read_bytes() == payload_b
+
+
+def _write_pinned_nexus_profile(base_dir, mod_id, nexus_id, file_id,
+                                name="pinned", freeze=False):
+    profiles_dir = Path(base_dir)
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    (profiles_dir / f"{name}.toml").write_text(
+        f'name = "{name}"\n'
+        'description = "test fixture: one pinned nexus mod"\n'
+        '\n'
+        '[[mods]]\n'
+        f'id = "{mod_id}"\n'
+        'source = "nexus"\n'
+        f'nexus_id = {nexus_id}\n'
+        f'file_id = {file_id}\n'
+        + ('freeze = true\n' if freeze else '')
+        + 'kind = "gameplay"\n'
+    )
+    return profiles_dir
+
+
+def _capture_chosen_file(monkeypatch, files):
+    """Stub the Nexus calls and record which file_id fetch actually asked for."""
+    chosen = {}
+
+    def _download_url(mod_id, file_id, api_key):
+        chosen["file_id"] = file_id
+        return "http://x/chosen.zip"
+
+    monkeypatch.setattr(nexus, "list_files", lambda mod_id, api_key: files)
+    monkeypatch.setattr(nexus, "download_url", _download_url)
+    monkeypatch.setattr(github, "_fetch_bytes", lambda url: b"archive-bytes")
+    return chosen
+
+
+def test_update_moves_a_superseded_explicit_pin(tmp_path, monkeypatch):
+    # clevers is pinned to 34558, which Nexus now tags OLD_VERSION. Under
+    # --update the pin should move to the sole MAIN, 26.1.
+    chosen = _capture_chosen_file(monkeypatch, fx.CLEVERS)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    profiles_dir = _write_pinned_nexus_profile(tmp_path / "profiles",
+                                               "clevers-moveset", 1928, 34558)
+    cli.fetch_profile("pinned", vendor, tmp_path / "mods.lock.toml",
+                      profiles_base=profiles_dir, nexus_api_key="k", update=True)
+    assert chosen["file_id"] == 49639
+
+
+def test_update_leaves_a_frozen_pin_alone(tmp_path, monkeypatch):
+    chosen = _capture_chosen_file(monkeypatch, fx.CLEVERS)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    profiles_dir = _write_pinned_nexus_profile(tmp_path / "profiles",
+                                               "clevers-moveset", 1928, 34558,
+                                               freeze=True)
+    cli.fetch_profile("pinned", vendor, tmp_path / "mods.lock.toml",
+                      profiles_base=profiles_dir, nexus_api_key="k", update=True)
+    assert chosen["file_id"] == 34558
+
+
+def test_update_does_not_flip_a_variant_pin(tmp_path, monkeypatch):
+    # Both NoFallDead files are MAIN at the same version. Moving off the pinned
+    # Longtail Cat variant would silently install a different mod.
+    chosen = _capture_chosen_file(monkeypatch, fx.NOFALLDEAD)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    profiles_dir = _write_pinned_nexus_profile(tmp_path / "profiles",
+                                               "nofalldead", 10402, 48340)
+    cli.fetch_profile("pinned", vendor, tmp_path / "mods.lock.toml",
+                      profiles_base=profiles_dir, nexus_api_key="k", update=True)
+    assert chosen["file_id"] == 48340
+
+
+def test_update_repins_to_the_matching_variant_among_many(tmp_path, monkeypatch):
+    chosen = _capture_chosen_file(monkeypatch, fx.MAP_FOR_GOBLINS)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    profiles_dir = _write_pinned_nexus_profile(tmp_path / "profiles",
+                                               "map-for-goblins", 10062, 48311)
+    cli.fetch_profile("pinned", vendor, tmp_path / "mods.lock.toml",
+                      profiles_base=profiles_dir, nexus_api_key="k", update=True)
+    assert chosen["file_id"] == 48939

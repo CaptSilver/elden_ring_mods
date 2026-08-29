@@ -219,31 +219,37 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                     digest = locked["sha256"]
                 else:
                     files = nexus.list_files(nid, nexus_api_key)
+                    current = None
                     if file_id is not None:
-                        # Profile names the exact variant — no guessing needed.
-                        f = nexus.find_file_by_id(files, file_id)
+                        current = nexus.find_file_by_id(files, file_id)
+                    choice = nexus.resolve_pin(current, files, nid,
+                                               frozen=bool(mod.get("freeze")))
+                    if choice.action == "ambiguous":
+                        # Ambiguity keeps the current pin: the worst outcome
+                        # must be a missed update visible in the report, never
+                        # a substituted mod.
+                        options = "\n".join(
+                            f"    id={c['file_id']}  {c['file_name']}"
+                            for c in choice.candidates)
+                        print(f"! {mod['id']}: {choice.reason} — "
+                              f"set `file_id` in the profile to one of:\n{options}"
+                              if choice.candidates else
+                              f"! {mod['id']}: {choice.reason} — keeping the current pin")
+                        skip = True
                     else:
-                        candidates = nexus.main_files(files)
-                        if len(candidates) > 1:
-                            # e.g. Minimal HUD #148's 32 numbered MAIN
-                            # variants — picking one (even by "highest
-                            # version") would silently install the wrong
-                            # file. List them and make the user choose via
-                            # `file_id` instead of guessing.
-                            options = "\n".join(
-                                f"    id={c['file_id']}  {c['file_name']}"
-                                for c in candidates)
-                            print(f"! {mod['id']} has multiple MAIN files on Nexus — "
-                                  f"set `file_id` in the profile to one of:\n{options}")
-                            skip = True
-                        else:
-                            # No pin and no upstream hash to check against:
-                            # trust on first use — download, then hash what
-                            # actually landed on disk and pin THAT. Every
-                            # later fetch (yours or a friend's, via the
-                            # shared lockfile) verifies against it.
-                            f = nexus.pick_main_file(files)
+                        f = choice.file
+                        if choice.action == "repin":
+                            print(f"• {mod['id']} repin {file_id} -> "
+                                  f"{f['file_id']} ({f.get('version')}) [{choice.reason}]")
+                            if mod.get("requires_all_players"):
+                                print(f"  ! {mod['id']} is required of all players — "
+                                      "your partner must pull the lockfile and re-apply")
                     if not skip:
+                        # No pin and no upstream hash to check against: trust
+                        # on first use — download, then hash what actually
+                        # landed on disk and pin THAT. Every later fetch
+                        # (yours or a friend's, via the shared lockfile)
+                        # verifies against it.
                         url = nexus.download_url(nid, f["file_id"], nexus_api_key)
                         dest = vendor / f["file_name"]
                         dest.write_bytes(github._fetch_bytes(url))
