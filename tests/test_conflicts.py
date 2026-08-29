@@ -371,6 +371,53 @@ def fake_three_way(monkeypatch):
     return seen
 
 
+@pytest.fixture
+def fake_game_base(monkeypatch):
+    """A strategy that records, per fold step, whether it was told its base is
+    the game's own file rather than another mod's."""
+    seen = []
+
+    def strategy(base, other, vanilla, base_is_game=False):
+        seen.append(base_is_game)
+        return base + other
+
+    monkeypatch.setitem(conflicts.STRATEGIES, "fake-base", strategy)
+    monkeypatch.setattr(conflicts, "NEEDS_VANILLA",
+                        conflicts.NEEDS_VANILLA | {"fake-base"})
+    monkeypatch.setattr(conflicts, "TAKES_GAME_BASE",
+                        conflicts.TAKES_GAME_BASE | {"fake-base"})
+    return seen
+
+
+def _game_base_spec():
+    return [{"path": "msg/x.dcx", "mods": ["a", "b", "c"], "prefer": "a",
+             "strategy": "fake-base",
+             "vanilla": {"mod": "randomizer", "member": "V/x.dcx"}}]
+
+
+def test_only_the_fold_that_leads_with_the_supplied_base_is_told_so(
+        tmp_path, monkeypatch, fake_game_base):
+    # After the first step the base is a merge of mods, so a row missing from
+    # vanilla says nothing about the game having added it.
+    monkeypatch.chdir(tmp_path)
+    for mod_id in ("a", "b", "c"):
+        _package(tmp_path, mod_id, {"msg/x.dcx": mod_id.encode()})
+    lock = _vanilla_zip(tmp_path, "V/x.dcx", b"vanilla")
+    conflicts.resolve(tmp_path, ["a", "b", "c"], _game_base_spec(), lock=lock,
+                      bases={"msg/x.dcx": b"GAME"})
+    assert fake_game_base == [True, False, False]
+
+
+def test_no_fold_is_told_its_base_is_the_game_without_a_supplied_base(
+        tmp_path, monkeypatch, fake_game_base):
+    monkeypatch.chdir(tmp_path)
+    for mod_id in ("a", "b", "c"):
+        _package(tmp_path, mod_id, {"msg/x.dcx": mod_id.encode()})
+    lock = _vanilla_zip(tmp_path, "V/x.dcx", b"vanilla")
+    conflicts.resolve(tmp_path, ["a", "b", "c"], _game_base_spec(), lock=lock)
+    assert fake_game_base == [False, False]
+
+
 def test_declared_ancestor_reads_the_same_file_the_merge_compares_against(
         tmp_path, monkeypatch, fake_three_way):
     monkeypatch.chdir(tmp_path)

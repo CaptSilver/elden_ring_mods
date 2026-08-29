@@ -286,9 +286,23 @@ def test_param_rows_keeps_the_mods_row_when_the_game_and_a_mod_each_invent_one()
     base = _regulation({1: (SP, {1: b"\xab" * 8, 101896: b"\x11" * 8}, 8)})
     other = _regulation({1: (SP, {1: b"\xab" * 8, 101896: b"\x22" * 8}, 8)})
     notes = []
-    out = merge.param_rows(base, other, van, notes=notes)
+    out = merge.param_rows(base, other, van, notes=notes, base_is_game=True)
     assert _rows(out, 1)[101896] == b"\x22" * 8
     assert notes == [merge.RowCollision(1, 101896)]
+
+
+def test_param_rows_refuses_when_two_mods_each_invent_the_same_row():
+    """Only the game gets its row dropped for a mod's. Between two mods there
+    is no reason to prefer either, and picking the last one folded discards a
+    mod's content with nothing but a note about a game blob that was never
+    involved."""
+    van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8, 500: b"\x11" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\xab" * 8, 500: b"\x22" * 8}, 8)})
+    notes = []
+    with pytest.raises(merge.MergeError, match="row 500"):
+        merge.param_rows(base, other, van, notes=notes)
+    assert notes == []
 
 
 def test_param_rows_keeps_a_row_only_the_game_added():
@@ -298,7 +312,7 @@ def test_param_rows_keeps_a_row_only_the_game_added():
     van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
     base = _regulation({1: (SP, {1: b"\xab" * 8, 99: b"\x33" * 8}, 8)})
     other = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
-    out = merge.param_rows(base, other, van)
+    out = merge.param_rows(base, other, van, base_is_game=True)
     assert _rows(out, 1)[99] == b"\x33" * 8
 
 
@@ -308,7 +322,7 @@ def test_param_rows_still_inserts_a_row_only_the_mod_added():
     van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
     base = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
     other = _regulation({1: (SP, {1: b"\xab" * 8, 99: b"\x44" * 8}, 8)})
-    out = merge.param_rows(base, other, van)
+    out = merge.param_rows(base, other, van, base_is_game=True)
     assert _rows(out, 1)[99] == b"\x44" * 8
 
 

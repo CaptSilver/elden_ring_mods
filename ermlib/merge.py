@@ -220,7 +220,8 @@ def _merge_row(base, other, vanilla, entry_id, rid):
     return bytes(out)
 
 
-def _merge_param(base_blob, other_blob, van_blob, entry_id, notes=None):
+def _merge_param(base_blob, other_blob, van_blob, entry_id, notes=None,
+                 base_is_game=False):
     """Three-way row merge of one param. Returns new bytes, or None if unchanged."""
     from .formats import param
     b, o, v = (param.read(x) for x in (base_blob, other_blob, van_blob))
@@ -240,13 +241,19 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id, notes=None):
         if not same_bv:
             if bd is not None and od is not None and _content_equal(bd, od):
                 continue                   # both sides made the same edit
-            if vd is None and bd is not None and od is not None:
+            if base_is_game and vd is None and bd is not None and od is not None:
                 # Neither side inherited this row: the game added one in a
                 # patch and a mod added a different one under the same id, so
                 # there is no ancestor to locate either edit against. The mod's
                 # wins. Renumbering the loser keeps its bytes and loses its
                 # behaviour -- a shop row is reached by id range, so a fresh id
                 # puts it outside the block that reaches it.
+                #
+                # Only against the game. Two mods each inventing a row under
+                # one id is the same shape and a different question: neither
+                # has a claim on the id, and dropping whichever folded first
+                # would lose a mod's content on nothing but fold order. That
+                # falls through to the refusal below.
                 if notes is not None:
                     notes.append(RowCollision(entry_id, rid))
                 overwrite[rid] = od
@@ -287,8 +294,13 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id, notes=None):
     return param.write(patched)
 
 
-def param_rows(base, other, vanilla, notes=None):
+def param_rows(base, other, vanilla, notes=None, base_is_game=False):
     """Transplant `other`'s param-row edits onto `base`'s regulation.bin.
+
+    `base_is_game` says the base is the installed game's own regulation, which
+    the caller supplied to lead the fold -- not another mod's file. It is the
+    only thing that can tell "the patch added this row" from "the mod folded
+    before this one added it", and the two want opposite answers.
 
     Which rows to move is derived from the data, never configured: a row the
     other side changed relative to vanilla is an edit, and everything else is
@@ -324,7 +336,8 @@ def param_rows(base, other, vanilla, notes=None):
         if base_blob == other_blob or other_blob == van_blob:
             continue
         try:
-            merged = _merge_param(base_blob, other_blob, van_blob, eid, notes=notes)
+            merged = _merge_param(base_blob, other_blob, van_blob, eid, notes=notes,
+                                  base_is_game=base_is_game)
         except ParamError:
             # A layout the reader refuses. If the other side is byte-identical to
             # vanilla it has no edit to lose and base wins by default; if base is
@@ -458,3 +471,7 @@ NEEDS_VANILLA = frozenset({"fmg-3way", "param-rows", "esd-3way"})
 # conflicts.py only threads a notes list through for these -- every other
 # strategy keeps the plain two/three-argument call it always had.
 NEEDS_NOTES = frozenset({"esd-3way", "param-rows"})
+# Strategies that can be told the base they were handed is the installed
+# game's own file. conflicts.py sets it on the one fold step that leads with
+# a caller-supplied base, and never infers it from the data.
+TAKES_GAME_BASE = frozenset({"param-rows"})

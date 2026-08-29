@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 
 from .errors import ErmError
-from .merge import NEEDS_NOTES, NEEDS_VANILLA, STRATEGIES
+from .merge import NEEDS_NOTES, NEEDS_VANILLA, STRATEGIES, TAKES_GAME_BASE
 from .paths import is_safe_relpath
 
 MERGED_ID = "_merged"
@@ -335,9 +335,15 @@ def resolve(me3_dir, mod_ids, merges, lock=None, notes=None, bases=None):
         # two-way, no-vanilla strategy that still wants to report one.
         path_notes = [] if spec["strategy"] in NEEDS_NOTES else None
         out = blobs[0]
-        for extra in blobs[1:]:
+        for step, extra in enumerate(blobs[1:]):
             call_args = (out, extra) if vanilla is None else (out, extra, vanilla)
             call_kwargs = {"notes": path_notes} if path_notes is not None else {}
+            # Only the first step leads with the base the caller supplied.
+            # After it, `out` is a merge of mods, and a strategy that treats
+            # its base as the game's file would read one mod's invented row as
+            # the game's and drop it for the next mod's.
+            if step == 0 and lead is not None and spec["strategy"] in TAKES_GAME_BASE:
+                call_kwargs["base_is_game"] = True
             out = strategy(*call_args, **call_kwargs)
         planned.append((rel, out, providers))
         if notes is not None and path_notes:
