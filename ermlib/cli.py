@@ -141,9 +141,13 @@ def cmd_refresh(args):
         r.info("dry run — nothing was changed")
         print(r.render(as_json=args.json))
         return r.exit_code
+    # Show the plan before refusing to run it: `erm refresh` with no flags is
+    # the obvious thing to type, and answering it with only an error teaches
+    # nothing about what the patched game actually needs.
+    print(r.render(as_json=args.json))
     raise ErmError(
-        "executing a heal is not wired up yet — run `erm refresh --dry-run` to "
-        "see the plan")
+        "executing a heal is not wired up yet — the plan above is what it "
+        "would do")
 
 
 def _default_nexus_api_key():

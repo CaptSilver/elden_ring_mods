@@ -429,14 +429,20 @@ def test_refresh_dry_run_prints_the_full_rebase_plan(tmp_path, monkeypatch, caps
     assert "dry run" in out.lower()
 
 
-def test_refresh_without_dry_run_raises_because_execute_is_not_wired_up(tmp_path, monkeypatch):
+def test_refresh_without_dry_run_prints_the_plan_then_raises(tmp_path, monkeypatch, capsys):
     # heal.execute() is deliberately not built yet -- this must stay a loud
-    # ErmError, never a stub that pretends the rebuild happened.
+    # ErmError, never a stub that pretends the rebuild happened. But `erm
+    # refresh` with no flags is the obvious first thing to type on a patched
+    # install, so the plan must still print before the refusal -- an error
+    # with no plan teaches the user nothing about what the game needs.
     _refresh_fixture(tmp_path, monkeypatch)
     _stamp(tmp_path, _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
                           steam_buildid="1", regulation_sha="b" * 64))
     with pytest.raises(ErmError, match="not wired up"):
         cli.cmd_refresh(_refresh_args(dry_run=False))
+    out = capsys.readouterr().out
+    for kind in ("adopt-baseline", "repin", "gate", "rebuild", "verify", "stamp"):
+        assert kind in out
 
 
 def test_refresh_no_reharden_flag_suppresses_the_reharden_step(tmp_path, monkeypatch, capsys):
