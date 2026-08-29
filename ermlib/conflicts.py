@@ -228,8 +228,13 @@ def _load_vanilla(rel, spec, lock):
         raise ConflictError(f"{rel}: cannot read vanilla from {asset}: {exc}") from exc
 
 
-def resolve(me3_dir, mod_ids, merges, lock=None, notes=None):
+def resolve(me3_dir, mod_ids, merges, lock=None, notes=None, bases=None):
     """Merge every declared conflict and refuse any undeclared one.
+
+    `bases` maps a merged path to bytes that lead the fold. A rebase onto a
+    patched game passes the game's own file there, so every mod -- `prefer`
+    included -- folds onto it, and `prefer` keeps only its job of settling
+    mod-versus-mod conflicts.
 
     Merged output goes to a synthetic package and the path is removed from its
     sources, so the merged file is the only one providing it. That sidesteps
@@ -295,6 +300,9 @@ def resolve(me3_dir, mod_ids, merges, lock=None, notes=None):
         # `prefer` wins genuine collisions, so it's the base the strategy builds on.
         ordered = [prefer] + [m for m in providers if m != prefer]
         blobs = [(_package_dir(me3_dir, m) / rel).read_bytes() for m in ordered]
+        lead = (bases or {}).get(rel)
+        if lead is not None:
+            blobs = [lead] + blobs
         # Three-way strategies need the common ancestor as well. Resolved once
         # per path, and only for strategies that ask for it, so a two-way
         # declaration never has to name a vanilla it wouldn't look at.

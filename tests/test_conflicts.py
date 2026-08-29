@@ -503,6 +503,50 @@ def test_a_two_way_strategy_in_needs_notes_still_gets_a_notes_list(tmp_path, mon
     assert notes == [("msg/x.dcx", "a two-way strategy's own note")]
 
 
+def test_a_supplied_base_leads_the_fold(tmp_path):
+    # Rebasing onto a patched game: the game's own file is what every mod folds
+    # onto, so it leads and `prefer` keeps only its mod-versus-mod job.
+    _package(tmp_path, "a", {"msg/x.dcx": b"A"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"B"})
+    spec = [{"path": "msg/x.dcx", "mods": ["a", "b"], "prefer": "a",
+             "strategy": "concat"}]
+    conflicts.STRATEGIES["concat"] = lambda base, other: base + other
+    try:
+        conflicts.resolve(tmp_path, ["a", "b"], spec,
+                          bases={"msg/x.dcx": b"GAME"})
+    finally:
+        del conflicts.STRATEGIES["concat"]
+    merged = tmp_path / "mods" / conflicts.MERGED_ID / "msg/x.dcx"
+    assert merged.read_bytes() == b"GAMEAB"
+
+
+def test_no_supplied_base_keeps_prefer_leading(tmp_path):
+    _package(tmp_path, "a", {"msg/x.dcx": b"A"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"B"})
+    spec = [{"path": "msg/x.dcx", "mods": ["a", "b"], "prefer": "a",
+             "strategy": "concat"}]
+    conflicts.STRATEGIES["concat"] = lambda base, other: base + other
+    try:
+        conflicts.resolve(tmp_path, ["a", "b"], spec)
+    finally:
+        del conflicts.STRATEGIES["concat"]
+    assert (tmp_path / "mods" / conflicts.MERGED_ID / "msg/x.dcx").read_bytes() == b"AB"
+
+
+def test_a_base_for_another_path_does_not_leak_into_this_merge(tmp_path):
+    _package(tmp_path, "a", {"msg/x.dcx": b"A"})
+    _package(tmp_path, "b", {"msg/x.dcx": b"B"})
+    spec = [{"path": "msg/x.dcx", "mods": ["a", "b"], "prefer": "a",
+             "strategy": "concat"}]
+    conflicts.STRATEGIES["concat"] = lambda base, other: base + other
+    try:
+        conflicts.resolve(tmp_path, ["a", "b"], spec,
+                          bases={"some/other.dcx": b"NOPE"})
+    finally:
+        del conflicts.STRATEGIES["concat"]
+    assert (tmp_path / "mods" / conflicts.MERGED_ID / "msg/x.dcx").read_bytes() == b"AB"
+
+
 def test_a_two_way_strategy_still_takes_two_arguments(tmp_path):
     """fmg-union predates vanilla sourcing and must keep working untouched."""
     _package(tmp_path, "a", {"msg/x.dcx": b"1"})
