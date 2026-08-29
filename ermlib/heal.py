@@ -16,6 +16,7 @@ Planning is separated from execution so a dry run costs nothing and the risky
 part is testable without a filesystem. This is the code that can quietly
 corrupt a regulation; it does not get to hide inside apply.
 """
+import hashlib
 import struct
 from pathlib import Path
 from typing import NamedTuple
@@ -47,6 +48,11 @@ def adopt_baseline(game_dir, live, base=BASELINE_DIR):
     Keyed by build version and never overwritten. Every historical baseline is
     kept so an old merge can be reproduced, and so a tampered install has
     something known-good to fall back to.
+
+    Before writing, the blob is re-hashed against `live.regulation_sha` -- the
+    digest it was identified by when the plan was built. Anything else means
+    the install changed underneath the heal between planning and adopting, and
+    the bytes in hand are no longer the ones that were classified as safe.
     """
     dest = baseline_path(live.regulation, base)
     if dest.exists():
@@ -56,6 +62,12 @@ def adopt_baseline(game_dir, live, base=BASELINE_DIR):
         blob = src.read_bytes()
     except OSError as exc:
         raise HealError(f"can't read {src}: {exc}") from exc
+    got = hashlib.sha256(blob).hexdigest()
+    if got != live.regulation_sha:
+        raise HealError(
+            f"{src} changed between planning and adopting (identified "
+            f"{live.regulation_sha[:12]}, read {got[:12]}) — re-run so the heal "
+            f"plans against the file as it now stands")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(blob)
     return dest
