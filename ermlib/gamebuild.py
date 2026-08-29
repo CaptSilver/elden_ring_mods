@@ -15,6 +15,7 @@ from typing import NamedTuple
 
 from .errors import ErmError
 from .formats import regulation
+from . import steam
 
 # VS_FIXEDFILEINFO's signature. Searching for it beats walking the PE resource
 # directory: the struct is fixed-layout, and an exe carries exactly one.
@@ -73,3 +74,85 @@ def read_regulation_version(blob):
     except UnicodeDecodeError as exc:
         raise GameBuildError(
             f"regulation version field is not ASCII: {raw!r}") from exc
+
+
+class BuildId(NamedTuple):
+    """Everything that identifies an installed build, from three sources.
+
+    They are kept separate rather than reduced to one number because their
+    disagreements are the signal -- see classify().
+    """
+    exe: str
+    app: str
+    regulation: str
+    steam_buildid: str
+    regulation_sha: str
+
+
+class Change(NamedTuple):
+    field: str
+    was: str
+    now: str
+
+
+# What the difference between two BuildIds means.
+UNCHANGED = "unchanged"     # nothing moved
+PATCHED = "patched"         # a real game patch: exe/buildid AND regulation
+REPACKAGED = "repackaged"   # depot update that left game data alone
+TAMPERED = "tampered"       # regulation moved on its own -- nobody patched anything
+
+_INSTALL_FIELDS = ("exe", "steam_buildid")
+_DATA_FIELDS = ("regulation", "regulation_sha")
+
+
+def identify(game_dir, steam_root):
+    """The build currently installed at `game_dir`."""
+    game_dir = Path(game_dir)
+    reg_path = game_dir / "regulation.bin"
+    try:
+        blob = reg_path.read_bytes()
+    except OSError as exc:
+        raise GameBuildError(f"can't read {reg_path}: {exc}") from exc
+    regver = read_regulation_version(blob)
+    return BuildId(
+        exe=read_exe_version(game_dir / "eldenring.exe"),
+        app=app_version(regver),
+        regulation=regver,
+        steam_buildid=str(steam.read_appmanifest(Path(steam_root)).get("buildid", "")),
+        regulation_sha=hashlib.sha256(blob).hexdigest(),
+    )
+
+
+def drift(stamped, live):
+    """Which identity fields moved between `stamped` and `live`.
+
+    An unstamped stack yields no drift: "unknown" is not "changed", and
+    reporting five phantom changes on a first run would be noise.
+    """
+    if stamped is None:
+        return ()
+    return tuple(Change(f, getattr(stamped, f), getattr(live, f))
+                 for f in BuildId._fields
+                 if getattr(stamped, f) != getattr(live, f))
+
+
+def classify(stamped, live):
+    """What kind of change happened, from which fields moved together.
+
+    A real patch moves the executable, the depot build and the game data at
+    once. Game data moving *on its own* means nobody patched anything -- some
+    other tool wrote to the install's regulation.bin. That distinction is the
+    whole reason erm can trust Game/regulation.bin as a merge baseline without
+    an external clean copy to compare against.
+    """
+    if stamped is None:
+        return UNCHANGED
+    install_moved = any(getattr(stamped, f) != getattr(live, f) for f in _INSTALL_FIELDS)
+    data_moved = any(getattr(stamped, f) != getattr(live, f) for f in _DATA_FIELDS)
+    if install_moved and data_moved:
+        return PATCHED
+    if install_moved:
+        return REPACKAGED
+    if data_moved:
+        return TAMPERED
+    return UNCHANGED
