@@ -8,7 +8,7 @@ import pytest
 
 from ermlib import cli, paths
 from ermlib import state as state_mod
-from ermlib.errors import ErmError, PathError
+from ermlib.errors import PathError
 from ermlib.gamebuild import BuildId
 
 _ERM = pathlib.Path(__file__).resolve().parent.parent / "erm"
@@ -440,20 +440,19 @@ def test_refresh_dry_run_prints_the_full_rebase_plan(tmp_path, monkeypatch, caps
     assert "dry run" in out.lower()
 
 
-def test_refresh_without_dry_run_prints_the_plan_then_raises(tmp_path, monkeypatch, capsys):
-    # heal.execute() is deliberately not built yet -- this must stay a loud
-    # ErmError, never a stub that pretends the rebuild happened. But `erm
-    # refresh` with no flags is the obvious first thing to type on a patched
-    # install, so the plan must still print before the refusal -- an error
-    # with no plan teaches the user nothing about what the game needs.
+def test_refresh_without_dry_run_points_at_apply(tmp_path, monkeypatch, capsys):
+    # `erm refresh` with no flags is the obvious thing to type on a patched
+    # install. It should print the plan and name the command that carries it
+    # out, rather than refusing with an error about something being unwired.
     _refresh_fixture(tmp_path, monkeypatch)
     _stamp(tmp_path, _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
                           steam_buildid="1", regulation_sha="b" * 64))
-    with pytest.raises(ErmError, match="not wired up"):
-        cli.cmd_refresh(_refresh_args(dry_run=False))
+    rc = cli.cmd_refresh(_refresh_args(dry_run=False))
     out = capsys.readouterr().out
+    assert rc == 0
     for kind in ("adopt-baseline", "repin", "gate", "rebuild", "verify", "stamp"):
         assert kind in out
+    assert "erm apply" in out
 
 
 def test_refresh_on_a_tampered_build_exits_on_the_refusal(tmp_path, monkeypatch, capsys):

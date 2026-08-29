@@ -159,13 +159,12 @@ def cmd_refresh(args):
         r.info("dry run — nothing was changed")
         print(r.render(as_json=args.json))
         return r.exit_code
-    # Show the plan before refusing to run it: `erm refresh` with no flags is
-    # the obvious thing to type, and answering it with only an error teaches
-    # nothing about what the patched game actually needs.
+    # `refresh` only reports; `apply` is what actually rebases every merge
+    # onto the installed build, as part of a normal install.
+    r.info("run `erm apply` to carry this out — it rebases every merge onto the "
+           "installed build as part of a normal install")
     print(r.render(as_json=args.json))
-    raise ErmError(
-        "executing a heal is not wired up yet — the plan above is what it "
-        "would do")
+    return r.exit_code
 
 
 def _default_nexus_api_key():
@@ -1252,7 +1251,7 @@ def register(subparsers):
     subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
     p_refresh = subparsers.add_parser(
         "refresh",
-        help="report what rebuilding the stack against the installed game build would take")
+        help="show what the installed game build needs rebased onto it — `erm apply` carries it out")
     p_refresh.add_argument("--dry-run", action="store_true",
                            help="print the plan without changing anything")
     p_refresh.add_argument("--no-reharden", action="store_true",
