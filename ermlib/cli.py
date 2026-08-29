@@ -8,7 +8,6 @@ from pathlib import Path
 from . import paths, steam, manifest, github, install, saves, nexus, harden, tidy, me3pkg, me3profile, launch, conflicts, merge
 from . import state as state_mod
 from .errors import ErmError, NetworkError, PathError
-from .conflicts import ConflictError
 from .report import Report
 from .savefile import SaveFile
 from .audit import audit_save
@@ -574,9 +573,9 @@ def cmd_apply(args):
         state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}", carried)
     # Forget any merged package from a PRIOR apply right away, in lockstep with
     # the physical dir clear_merged() just wiped — not after the resolve() call
-    # below. resolve() can raise ConflictError on a totally unrelated collision,
-    # and the except clause below writes state and re-raises; if forgetting
-    # waited until after that try/except, this path would never reach it, and
+    # below. resolve() can refuse a totally unrelated collision, and the except
+    # clause below writes state and re-raises; if forgetting waited until after
+    # that try/except, this path would never reach it, and
     # installed.json would keep claiming _merged is installed even though its
     # directory is already gone. Re-recorded below only if this run's merge
     # actually succeeds. Excluded from package_ids below for the same reason:
