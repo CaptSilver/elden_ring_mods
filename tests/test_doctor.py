@@ -210,6 +210,18 @@ def test_a_merge_ancestor_on_the_installed_build_is_not_warned(tmp_game, tmp_pat
     assert r.worst_level == "ok"
 
 
+def test_a_repackaged_build_names_the_fields_that_actually_moved(tmp_game):
+    # Steam re-packaged the depot: the exe and build id moved, the game data
+    # did not. Reporting only the app version says "1.17.0, game is 1.17.0".
+    stamped = _bid(exe="2.7.0.1", steam_buildid="1")
+    r = doctor.run_build_checks(tmp_game, stamped, _bid(), Report())
+    assert r.worst_level == "warn"
+    drift = [m for _, m in r.items if "drift" in m][0]
+    assert "exe" in drift and "steam_buildid" in drift
+    assert "2.7.0.1" in drift and "23850278" in drift
+    assert "1.17.0, game is 1.17.0" not in drift
+
+
 def test_build_drift_is_reported_as_a_warning(tmp_game):
     r = doctor.run_build_checks(tmp_game, _bid(app="1.16.0", regulation="11601000",
                                                exe="2.6.2.0", steam_buildid="1",

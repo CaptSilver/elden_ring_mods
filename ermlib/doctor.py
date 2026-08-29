@@ -215,8 +215,11 @@ def run_build_checks(game_dir, stamped, live, report, state=None, lock=None,
         if not changes:
             report.ok(f"stack was built for the installed build ({live.app})")
         else:
-            report.warn(f"game build drift: stack built for {stamped.app}, "
-                        f"game is {live.app} — run `erm apply`")
+            # Name the fields that moved. A depot re-package leaves the app
+            # version alone, and reporting only that reads "stack built for
+            # 1.17.0, game is 1.17.0" -- a warning that argues with itself.
+            moved = ", ".join(f"{c.field} {c.was} → {c.now}" for c in changes)
+            report.warn(f"game build drift: {moved} — run `erm apply`")
     _check_merged_regulation(state, live, report)
     _check_vanilla_ancestors(lock, live, report, profiles_base, vendor)
     stale = launcher_is_stale(game_dir)
