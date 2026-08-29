@@ -121,10 +121,10 @@ def merged_regulation_path(state):
 def _check_merged_regulation(state, live, report):
     """Compare the merged regulation on disk against the installed build.
 
-    The build stamp records when `erm apply` last ran, not what the merge was
-    built out of -- apply re-stamps every run while still composing against
-    whatever ancestor the profile names, so a fresh stamp can sit over game
-    data from two patches ago. Only the file itself settles it.
+    The build stamp records when `erm apply` last ran, not what the merge came
+    out as -- apply re-stamps every run whether or not the merged file was
+    rebuilt, so a fresh stamp can sit over game data from two patches ago.
+    Only the file itself settles it.
     """
     path = merged_regulation_path(state)
     if path is None:
@@ -173,11 +173,13 @@ def _declared_vanilla_regulations(profiles_base, report):
 def _check_vanilla_ancestors(lock, live, report, profiles_base, vendor):
     """Warn when a merge's declared ancestor is for a different game build.
 
-    This is the one re-running apply cannot fix: a three-way merge's output is
-    only as current as the vanilla file its edits were measured against, so an
-    old ancestor reproduces old game data every rebuild. Nothing is said about
-    an archive that isn't fetched -- there is no artifact on disk making a
-    claim to check.
+    Apply covers the gap by folding those merges onto the installed game's own
+    regulation, so the output is not stuck on old game data -- but the mods
+    were still built against that older build, and the fold only holds while
+    every param they touch keeps the same row layout. That is what the layout
+    gate decides on the next apply, and this is the condition it decides about.
+    Nothing is said about an archive that isn't fetched -- there is no artifact
+    on disk making a claim to check.
     """
     for mod_id, member in _declared_vanilla_regulations(profiles_base, report):
         asset = ((lock or {}).get(mod_id) or {}).get("asset")
@@ -196,8 +198,9 @@ def _check_vanilla_ancestors(lock, live, report, profiles_base, vendor):
         if got != live.regulation:
             report.warn(
                 f"merge ancestor {member} in {asset} is build {got}, game is "
-                f"{live.regulation} — merges rebuilt from it stay on the old "
-                f"game data")
+                f"{live.regulation} — apply rebases those merges onto the "
+                f"game's own regulation, which holds only while the mods' "
+                f"param layouts still fit this build")
 
 
 def run_build_checks(game_dir, stamped, live, report, state=None, lock=None,

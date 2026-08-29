@@ -194,8 +194,8 @@ def _vanilla_setup(tmp_path, version):
 
 
 def test_a_merge_ancestor_from_another_build_is_warned(tmp_game, tmp_path):
-    # Re-running apply cannot fix this one: every rebuild would compare against
-    # the same 1.16 ancestor and produce 1.16 game data again.
+    # The mods branched from 1.16, so every merge depends on the fold onto the
+    # game's own regulation -- and on their param layouts still fitting it.
     vendor, profiles, lock = _vanilla_setup(tmp_path, "11601000")
     r = doctor.run_build_checks(tmp_game, _bid(), _bid(), Report(), state={},
                                 lock=lock, profiles_base=profiles, vendor=vendor)

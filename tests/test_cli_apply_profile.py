@@ -425,6 +425,26 @@ def test_a_second_apply_rebuilds_the_same_rebased_regulation(
                                     200: b"\xbb" * 8, 999: b"\x99" * 8}
 
 
+def test_apply_stops_cleanly_when_a_mod_ships_an_unreadable_regulation(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # The gate has to decrypt every contributor to read its param layouts, so a
+    # truncated or wrong-keyed regulation raises out of the crypto layer, not
+    # out of the build reader. Same wipe has already happened either way, so it
+    # takes the same exit.
+    from ermlib import conflicts
+
+    _rebase_env(tmp_path, tmp_game, monkeypatch)
+    with zipfile.ZipFile(tmp_path / "vendor" / "mod-y.zip", "w") as z:
+        z.writestr("regulation.bin", b"not a regulation at all")
+
+    with pytest.raises(ErmError):
+        cli.cmd_apply(_apply_args("unit-rebase"))
+    capsys.readouterr()
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert conflicts.MERGED_ID not in state
+    assert "mod-y" in state
+
+
 def test_apply_refuses_a_merge_that_did_not_land_on_the_installed_build(
         tmp_path, monkeypatch, capsys, tmp_game):
     """A rebased merge is checked before anything mounts it: it has to claim

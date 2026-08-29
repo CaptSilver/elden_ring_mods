@@ -15,12 +15,20 @@ def _bid(**over):
     return BuildId(**base)
 
 
-def test_baseline_path_is_named_for_the_build(tmp_path):
-    assert heal.baseline_path("11701000", tmp_path).name == "regulation-11701000.bin"
-
-
 def _sha(blob):
     return hashlib.sha256(blob).hexdigest()
+
+
+def _game_with_regulation(tmp_path, blob=b"the 1.17 regulation"):
+    """A game dir holding `blob`, plus the identity that names those bytes."""
+    game = tmp_path / "Game"
+    game.mkdir()
+    (game / "regulation.bin").write_bytes(blob)
+    return game, _bid(regulation_sha=_sha(blob))
+
+
+def test_baseline_path_is_named_for_the_build(tmp_path):
+    assert heal.baseline_path("11701000", tmp_path).name == "regulation-11701000.bin"
 
 
 def test_adopting_copies_the_games_regulation(tmp_path):
@@ -82,15 +90,9 @@ def test_adopting_refuses_when_the_file_changed_since_it_was_identified(tmp_path
 
 
 def test_adopting_accepts_the_file_it_was_identified_from(tmp_path):
-    import hashlib
-    game = tmp_path / "Game"
-    game.mkdir()
-    blob = b"the 1.17 regulation"
-    (game / "regulation.bin").write_bytes(blob)
-    dest = heal.adopt_baseline(
-        game, _bid(regulation_sha=hashlib.sha256(blob).hexdigest()),
-        tmp_path / "baselines")
-    assert dest.read_bytes() == blob
+    game, live = _game_with_regulation(tmp_path)
+    dest = heal.adopt_baseline(game, live, tmp_path / "baselines")
+    assert dest.read_bytes() == b"the 1.17 regulation"
 
 
 def test_an_already_adopted_baseline_is_returned_without_reading_the_install(tmp_path):
@@ -364,14 +366,6 @@ def test_no_reharden_omits_it():
                    steam_buildid="1", regulation_sha="b" * 64)
     kinds = _kinds(heal.plan_heal(stamped, _bid(), reharden=False, launcher_stale=True))
     assert "reharden" not in kinds
-
-
-def _game_with_regulation(tmp_path, blob=b"the 1.17 regulation"):
-    """A game dir holding `blob`, plus the identity that names those bytes."""
-    game = tmp_path / "Game"
-    game.mkdir()
-    (game / "regulation.bin").write_bytes(blob)
-    return game, _bid(regulation_sha=_sha(blob))
 
 
 def test_prepare_rebase_is_empty_when_the_ancestor_is_the_installed_build(tmp_path):
