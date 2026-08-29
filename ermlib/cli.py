@@ -159,10 +159,13 @@ def cmd_refresh(args):
         r.info("dry run — nothing was changed")
         print(r.render(as_json=args.json))
         return r.exit_code
-    # `refresh` only reports; `apply` is what actually rebases every merge
-    # onto the installed build, as part of a normal install.
-    r.info("run `erm apply` to carry this out — it rebases every merge onto the "
-           "installed build as part of a normal install")
+    # `refresh` only reports. `apply` runs every step above except the repin:
+    # it adopts the baseline, gates the layouts, rebuilds each merge onto the
+    # installed build and verifies the result, all as part of a normal install.
+    r.info("run `erm apply` to rebase every merge onto the installed build — it "
+           "gates the param layouts first and verifies the rebase after. It does "
+           "not re-pin: run `erm update` first if a mod needs a newer version to "
+           "fit this build")
     print(r.render(as_json=args.json))
     return r.exit_code
 
@@ -637,6 +640,26 @@ def cmd_apply(args):
         merge_notes = []
         merged = conflicts.resolve(ME3_DIR, package_ids, profile.get("merges", []),
                                    lock=lock, notes=merge_notes, bases=bases)
+        if bases:
+            # Prove the rebase did what it claims before anything mounts it. By
+            # now the merged file is the only copy of every contributor's rows,
+            # and both ways it can go wrong are invisible from the outside: a
+            # merge that came out on the mods' old build reverts the patch's
+            # game data, and a dropped row shows up in-game only as something
+            # that never happens.
+            if heal.REGULATION not in merged:
+                raise heal.HealError(
+                    f"nothing merged {heal.REGULATION}, but this run rebased it "
+                    f"onto build {live.regulation} — the packages providing it "
+                    f"changed underneath the apply; re-run it")
+            problems = heal.verify_rebase(
+                (ME3_DIR / "mods" / conflicts.MERGED_ID / heal.REGULATION).read_bytes(),
+                bases[heal.REGULATION], reg_contributors, live)
+            if problems:
+                raise heal.HealError(
+                    f"the merged {heal.REGULATION} is not a faithful rebase onto "
+                    f"build {live.regulation}:\n  " + "\n  ".join(problems) +
+                    f"\nNothing was mounted — fix the mods and re-run `erm apply`.")
     except ErmError:
         state_mod.write_state(Path("installed.json"), state)
         # The me3 profile is meant to be a pure function of state, and state has

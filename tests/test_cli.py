@@ -455,6 +455,20 @@ def test_refresh_without_dry_run_points_at_apply(tmp_path, monkeypatch, capsys):
     assert "erm apply" in out
 
 
+def test_refresh_names_the_one_step_apply_does_not_carry_out(tmp_path, monkeypatch, capsys):
+    # apply adopts the baseline, gates, rebuilds, verifies and re-stamps -- but
+    # it never re-resolves a pin. Sending the user to it for "the plan" promises
+    # a step it doesn't run.
+    _refresh_fixture(tmp_path, monkeypatch)
+    _stamp(tmp_path, _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                          steam_buildid="1", regulation_sha="b" * 64))
+    rc = cli.cmd_refresh(_refresh_args(dry_run=False))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "erm apply" in out
+    assert "erm update" in out
+
+
 def test_refresh_on_a_tampered_build_exits_on_the_refusal(tmp_path, monkeypatch, capsys):
     # The plan is one refusal and nothing else, so the refusal IS the outcome.
     # Following it with "executing a heal is not wired up yet" points at the

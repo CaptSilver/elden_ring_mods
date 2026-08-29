@@ -425,6 +425,55 @@ def test_a_second_apply_rebuilds_the_same_rebased_regulation(
                                     200: b"\xbb" * 8, 999: b"\x99" * 8}
 
 
+def test_apply_refuses_a_merge_that_did_not_land_on_the_installed_build(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """A rebased merge is checked before anything mounts it: it has to claim
+    the installed build and keep every row. Nothing called that check, so a
+    merge that quietly came out on the mods' old build -- the exact failure
+    this feature exists to prevent -- reported success."""
+    from ermlib import conflicts
+
+    _rebase_env(tmp_path, tmp_game, monkeypatch)
+    real_resolve = cli.conflicts.resolve
+
+    def _stale(*args, **kwargs):
+        out = real_resolve(*args, **kwargs)
+        with zipfile.ZipFile(tmp_path / "vendor" / "mod-x.zip") as z:
+            (tmp_path / MERGED_REGULATION).write_bytes(z.read("regulation.bin"))
+        return out
+
+    monkeypatch.setattr(cli.conflicts, "resolve", _stale)
+
+    with pytest.raises(HealError, match="11611000"):
+        cli.cmd_apply(_apply_args("unit-rebase"))
+    capsys.readouterr()
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert conflicts.MERGED_ID not in state
+
+
+def test_apply_refuses_a_rebase_that_dropped_an_authored_row(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # Same check, the half that no build stamp can see: the file is on the
+    # right build and a mod's row is simply gone from it.
+    _rebase_env(tmp_path, tmp_game, monkeypatch)
+    real_resolve = cli.conflicts.resolve
+    game_rows = {1: b"\x01" * 8, 100: b"\x00" * 8, 200: b"\x00" * 8,
+                 999: b"\x99" * 8}
+
+    def _lossy(*args, **kwargs):
+        out = real_resolve(*args, **kwargs)
+        # The installed build, every game row, neither mod's edit.
+        (tmp_path / MERGED_REGULATION).write_bytes(
+            _regulation({1: (SP, game_rows, 8)}, version=b"11701000"))
+        return out
+
+    monkeypatch.setattr(cli.conflicts, "resolve", _lossy)
+
+    with pytest.raises(HealError, match="did not survive"):
+        cli.cmd_apply(_apply_args("unit-rebase"))
+    capsys.readouterr()
+
+
 def _reship_mod_y(tmp_path, rows, build="11611000"):
     """Replace mod-y's package archive with a regulation carrying `rows`."""
     stride = len(next(iter(rows.values())))
