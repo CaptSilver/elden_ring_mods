@@ -48,6 +48,39 @@ def test_truncated_version_resource_raises(tmp_path):
         gamebuild.read_exe_version(p)
 
 
+def test_a_coincidental_signature_hit_is_skipped_for_the_real_struct(tmp_path):
+    # eldenring.exe is ~100 MB, so four bytes matching VS_FIXEDFILEINFO's
+    # signature somewhere in it is not a remote possibility. dwStrucVersion
+    # tells the real struct from a stray match.
+    noise = struct.pack("<I", 0xFEEF04BD) + struct.pack("<I", 0xDEADBEEF) + b"\x00" * 16
+    p = tmp_path / "eldenring.exe"
+    p.write_bytes(_fake_exe(2, 7, 0, 0, prefix=b"MZ" + noise))
+    assert gamebuild.read_exe_version(p) == "2.7.0.0"
+
+
+def test_a_signature_without_the_struct_version_is_refused(tmp_path):
+    p = tmp_path / "eldenring.exe"
+    p.write_bytes(b"MZ" + struct.pack("<I", 0xFEEF04BD)
+                  + struct.pack("<I", 0xDEADBEEF) + b"\x00" * 32)
+    with pytest.raises(GameBuildError, match="struct version"):
+        gamebuild.read_exe_version(p)
+
+
+def test_a_payload_that_is_not_bnd4_is_refused(monkeypatch):
+    # A wrong key or a half-decrypted file yields plausible-looking bytes. The
+    # stamp slice would decode to nonsense that only fails later in
+    # app_version, pointing at the wrong thing.
+    monkeypatch.setattr(gamebuild.regulation, "unpack", lambda blob: b"JUNK" + b"\x00" * 0x40)
+    with pytest.raises(GameBuildError, match="BND4"):
+        gamebuild.read_regulation_version(b"anything")
+
+
+def test_a_payload_too_short_to_hold_the_stamp_is_refused(monkeypatch):
+    monkeypatch.setattr(gamebuild.regulation, "unpack", lambda blob: b"BND4" + b"\x00" * 8)
+    with pytest.raises(GameBuildError, match="too short"):
+        gamebuild.read_regulation_version(b"anything")
+
+
 def test_missing_exe_raises_rather_than_returning_none(tmp_path):
     with pytest.raises(GameBuildError):
         gamebuild.read_exe_version(tmp_path / "nope.exe")

@@ -21,6 +21,8 @@ from . import steam
 # VS_FIXEDFILEINFO's signature. Searching for it beats walking the PE resource
 # directory: the struct is fixed-layout, and an exe carries exactly one.
 _FIXEDFILEINFO_SIG = struct.pack("<I", 0xFEEF04BD)
+_STRUC_VERSION_AT = 4           # dwStrucVersion, right after the signature
+_STRUC_VERSION = 0x00010000     # the only value the struct has ever carried
 _VERSION_DWORDS_AT = 8          # past signature + struct version
 _REG_VERSION_AT = 0x18
 _REG_VERSION_LEN = 8
@@ -46,11 +48,23 @@ def read_exe_version(path):
     at = data.find(_FIXEDFILEINFO_SIG)
     if at < 0:
         raise GameBuildError(f"{path} carries no version resource")
-    fields_at = at + _VERSION_DWORDS_AT
-    if fields_at + 8 > len(data):
-        raise GameBuildError(f"{path} version resource is truncated")
-    ms, ls = struct.unpack_from("<II", data, fields_at)
-    return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+    # eldenring.exe runs to ~100 MB, so four bytes matching the signature
+    # somewhere in it is not a remote possibility -- and a stray match returns
+    # a wrong version rather than failing. dwStrucVersion tells the real struct
+    # from a coincidence, so keep scanning until one match carries both.
+    while at >= 0:
+        fields_at = at + _VERSION_DWORDS_AT
+        if fields_at + 8 > len(data):
+            raise GameBuildError(f"{path} version resource is truncated")
+        struc, = struct.unpack_from("<I", data, at + _STRUC_VERSION_AT)
+        if struc == _STRUC_VERSION:
+            ms, ls = struct.unpack_from("<II", data, fields_at)
+            return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+        at = data.find(_FIXEDFILEINFO_SIG, at + 1)
+    raise GameBuildError(
+        f"{path} has a VS_FIXEDFILEINFO signature but no struct version "
+        f"{_STRUC_VERSION:#010x} — the match is coincidental, not a version "
+        f"resource")
 
 
 def app_version(regver):
@@ -69,6 +83,16 @@ def read_regulation_version(blob):
         payload = regulation.unpack(blob)
     except (ErmError, ValueError, struct.error) as exc:
         raise GameBuildError(f"can't read regulation.bin: {exc}") from exc
+    # A wrong key or a partial decrypt still yields bytes. Without these two
+    # checks the stamp slice comes back as whatever happened to sit there and
+    # the run fails much later, in app_version, blaming the wrong thing.
+    if payload[:4] != b"BND4":
+        raise GameBuildError(
+            f"regulation.bin did not decrypt to a BND4 archive (starts {payload[:4]!r})")
+    if len(payload) < _REG_VERSION_AT + _REG_VERSION_LEN:
+        raise GameBuildError(
+            f"regulation.bin payload is too short to hold a build stamp "
+            f"({len(payload)} bytes)")
     raw = payload[_REG_VERSION_AT:_REG_VERSION_AT + _REG_VERSION_LEN]
     try:
         return raw.decode("ascii")
