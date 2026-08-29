@@ -235,7 +235,11 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                 continue
             locked = lock.get(mod["id"])
             pinned = not update and locked and locked.get("version")
-            file_id = mod.get("file_id")
+            # Once a repin has moved the pin the lockfile is where it lives;
+            # the profile's file_id is only where it started. Preferring the
+            # profile here would re-select the superseded file and fail it
+            # against the hash the repin locked.
+            file_id = (locked or {}).get("file_id") or mod.get("file_id")
             skip = False
             try:
                 if pinned:
@@ -297,7 +301,8 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
             if skip:
                 continue
             manifest.set_mod(lock, mod["id"], version=f["version"],
-                             asset=f["file_name"], sha256=digest, source="nexus")
+                             asset=f["file_name"], sha256=digest, source="nexus",
+                             file_id=f.get("file_id"))
             verb = "(pinned) verified" if pinned else "fetched"
             print(f"✓ {mod['id']} v{f['version']} {verb} → {f['file_name']}")
         else:

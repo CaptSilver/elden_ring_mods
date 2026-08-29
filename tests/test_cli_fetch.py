@@ -508,6 +508,55 @@ def _capture_chosen_file(monkeypatch, files):
     return chosen
 
 
+def _stub_nexus_per_file(monkeypatch, files):
+    """Like _capture_chosen_file, but each file downloads its own bytes.
+
+    A stub that returns one blob for every url can't tell a right pin from a
+    wrong one -- the locked hash matches either way.
+    """
+    chosen = {}
+
+    def _download_url(mod_id, file_id, api_key):
+        chosen["file_id"] = file_id
+        return f"http://x/{file_id}.zip"
+
+    monkeypatch.setattr(nexus, "list_files", lambda mod_id, api_key: files)
+    monkeypatch.setattr(nexus, "download_url", _download_url)
+    monkeypatch.setattr(github, "_fetch_bytes", lambda url: f"bytes of {url}".encode())
+    return chosen
+
+
+def test_a_repinned_mod_survives_the_next_plain_fetch(tmp_path, monkeypatch):
+    # The repin moves the pin, downloads the new file and locks its hash --
+    # but the profile still names the superseded file_id. Unless the lockfile
+    # carries the new id, the next plain fetch selects the old file and checks
+    # it against the new locked sha, which fails closed as a mutated asset.
+    # A co-op partner pulling the lockfile hits the same wall.
+    chosen = _stub_nexus_per_file(monkeypatch, fx.CLEVERS)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    lock_path = tmp_path / "mods.lock.toml"
+    profiles_dir = _write_pinned_nexus_profile(tmp_path / "profiles",
+                                               "clevers-moveset", 1928, 34558)
+    cli.fetch_profile("pinned", vendor, lock_path, profiles_base=profiles_dir,
+                      nexus_api_key="k", update=True)
+    assert chosen["file_id"] == 49639
+
+    cli.fetch_profile("pinned", vendor, lock_path, profiles_base=profiles_dir,
+                      nexus_api_key="k")
+    assert chosen["file_id"] == 49639
+
+
+def test_a_repin_records_the_new_file_id_in_the_lockfile(tmp_path, monkeypatch):
+    _stub_nexus_per_file(monkeypatch, fx.CLEVERS)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    lock_path = tmp_path / "mods.lock.toml"
+    profiles_dir = _write_pinned_nexus_profile(tmp_path / "profiles",
+                                               "clevers-moveset", 1928, 34558)
+    cli.fetch_profile("pinned", vendor, lock_path, profiles_base=profiles_dir,
+                      nexus_api_key="k", update=True)
+    assert manifest.load_lock(lock_path)["clevers-moveset"]["file_id"] == "49639"
+
+
 def test_update_moves_a_superseded_explicit_pin(tmp_path, monkeypatch):
     # clevers is pinned to 34558, which Nexus now tags OLD_VERSION. Under
     # --update the pin should move to the sole MAIN, 26.1.

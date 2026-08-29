@@ -286,3 +286,11 @@ def test_freeze_holds_a_pin_that_would_otherwise_move():
 def test_freeze_without_a_file_id_is_an_error():
     with pytest.raises(ErmError, match="file_id"):
         nexus.resolve_pin(None, fx.CLEVERS, 1928, frozen=True)
+
+
+def test_find_file_by_id_accepts_the_lockfiles_string_form():
+    # A profile writes file_id as a TOML integer, the lockfile as a string.
+    # Both have to select the same file or a repin can't be read back.
+    files = [{"file_id": 200, "file_name": "b.zip", "category_name": "MAIN"}]
+    assert nexus.find_file_by_id(files, "200")["file_name"] == "b.zip"
+    assert nexus.find_file_by_id(files, 200)["file_name"] == "b.zip"

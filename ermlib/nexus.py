@@ -93,8 +93,10 @@ def find_file_by_version(files, version):
 
 
 def find_file_by_id(files, file_id):
+    # Compared as text: the id arrives as an int from a profile and as a string
+    # from the lockfile, and the two have to select the same file.
     for f in files:
-        if f.get("file_id") == file_id:
+        if str(f.get("file_id")) == str(file_id):
             return f
     raise ErmError(f"file id {file_id} not found on Nexus for this mod")
 
