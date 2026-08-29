@@ -16,6 +16,7 @@ from .doctor import run_doctor
 from . import doctor as doctor_mod
 from . import gamebuild
 from .gamebuild import GameBuildError
+from . import heal
 # Re-exported so `cli.LAUNCH_OPTION` keeps resolving for tests.
 from .launch import LAUNCH_OPTION, LAUNCH_VALIDATOR, RESHADE_ENV
 
@@ -116,6 +117,33 @@ def cmd_doctor(args):
         doctor_mod.run_build_checks(game, stamped, live, r)
     print(r.render(as_json=args.json))
     return r.exit_code
+
+
+def cmd_refresh(args):
+    root = paths.find_steam_root()
+    game = paths.find_game_dir(root)
+    r = Report()
+    live = gamebuild.identify(game, root)
+    stamped = state_mod.stamped_build(state_mod.load_state())
+    actions = heal.plan_heal(stamped, live,
+                             reharden=not args.no_reharden,
+                             launcher_stale=bool(doctor_mod.launcher_is_stale(game)))
+    if not actions:
+        r.ok(f"stack is already built for {live.app} — nothing to do")
+        print(r.render(as_json=args.json))
+        return r.exit_code
+    for a in actions:
+        if a.kind == "refuse":
+            r.fail(a.detail)
+        else:
+            r.info(f"{a.kind}: {a.detail}")
+    if args.dry_run:
+        r.info("dry run — nothing was changed")
+        print(r.render(as_json=args.json))
+        return r.exit_code
+    raise ErmError(
+        "executing a heal is not wired up yet — run `erm refresh --dry-run` to "
+        "see the plan")
 
 
 def _default_nexus_api_key():
@@ -587,6 +615,14 @@ def cmd_apply(args):
             r.warn(f"{rel}: {merge.describe_note(note)}")
         for rel in carried:
             r.info(f"kept merged {rel} (declared by another profile)")
+    # Stamp the build this stack was applied against, where the rest of the
+    # install state is persisted. Without it nothing can tell that the game
+    # moved underneath the merged files.
+    try:
+        state_mod.record_build(state, gamebuild.identify(game, steam_root))
+    except GameBuildError as exc:
+        r.warn(f"could not record the game build ({exc}) — "
+               "a later game patch won't be detected")
     state_mod.write_state(Path("installed.json"), state)
     try:
         me3profile.reconcile(state, ME3_DIR, game)
@@ -1167,6 +1203,12 @@ def register(subparsers):
                      help="skip auto-harden even if the new profile loads mods via a proxy DLL/me3")
     sw.set_defaults(func=cmd_switch)
     subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
+    p_refresh = subparsers.add_parser("refresh", help="rebuild the stack against the installed game build")
+    p_refresh.add_argument("--dry-run", action="store_true",
+                           help="print the plan without changing anything")
+    p_refresh.add_argument("--no-reharden", action="store_true",
+                           help="skip re-copying the hardened launcher (avoids the sudo prompt)")
+    p_refresh.set_defaults(func=cmd_refresh)
     b = subparsers.add_parser("backup", help="snapshot the co-op save")
     b.add_argument("--label", default="")
     b.set_defaults(func=cmd_backup)

@@ -8,7 +8,8 @@ import pytest
 
 from ermlib import cli, paths
 from ermlib import state as state_mod
-from ermlib.errors import PathError
+from ermlib.errors import ErmError, PathError
+from ermlib.gamebuild import BuildId
 
 _ERM = pathlib.Path(__file__).resolve().parent.parent / "erm"
 _spec = importlib.util.spec_from_loader(
@@ -375,3 +376,87 @@ def test_launch_option_json_emits_no_prose(pinned_machine, capsys):
     out = _launch_out(capsys, json_mode=True)
     assert "Steam → ELDEN RING" not in out
     assert "Dual GPU" not in out
+
+
+def _bid(**over):
+    base = dict(exe="2.7.0.0", app="1.17.0", regulation="11701000",
+                steam_buildid="23850278", regulation_sha="a" * 64)
+    base.update(over)
+    return BuildId(**base)
+
+
+def _refresh_args(dry_run=False, no_reharden=False, json_out=False):
+    return type("A", (), {"dry_run": dry_run, "no_reharden": no_reharden, "json": json_out})()
+
+
+def _refresh_fixture(tmp_path, monkeypatch, live=None, launcher_stale=None):
+    """Pin everything cmd_refresh reads: the steam root/game dir (irrelevant
+    once identify() and launcher_is_stale() are stubbed), the live build, and
+    whether the hardened launcher is stale."""
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli.gamebuild, "identify", lambda game, root: live or _bid())
+    monkeypatch.setattr(cli.doctor_mod, "launcher_is_stale", lambda game: launcher_stale)
+
+
+def _stamp(tmp_path, build):
+    state = state_mod.load_state()
+    state_mod.record_build(state, build)
+    state_mod.write_state(tmp_path / "installed.json", state)
+
+
+def test_refresh_reports_nothing_to_do_when_unstamped(tmp_path, monkeypatch, capsys):
+    # No installed.json at all -> stamped_build() is None -> plan_heal(None, ...)
+    # plans nothing, which is correct: there is no prior build to have drifted
+    # from, not a bug.
+    _refresh_fixture(tmp_path, monkeypatch)
+    rc = cli.cmd_refresh(_refresh_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "nothing to do" in out.lower()
+
+
+def test_refresh_dry_run_prints_the_full_rebase_plan(tmp_path, monkeypatch, capsys):
+    _refresh_fixture(tmp_path, monkeypatch)
+    _stamp(tmp_path, _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                          steam_buildid="1", regulation_sha="b" * 64))
+    rc = cli.cmd_refresh(_refresh_args(dry_run=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    for kind in ("adopt-baseline", "repin", "gate", "rebuild", "verify", "stamp"):
+        assert kind in out
+    assert "dry run" in out.lower()
+
+
+def test_refresh_without_dry_run_raises_because_execute_is_not_wired_up(tmp_path, monkeypatch):
+    # heal.execute() is deliberately not built yet -- this must stay a loud
+    # ErmError, never a stub that pretends the rebuild happened.
+    _refresh_fixture(tmp_path, monkeypatch)
+    _stamp(tmp_path, _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                          steam_buildid="1", regulation_sha="b" * 64))
+    with pytest.raises(ErmError, match="not wired up"):
+        cli.cmd_refresh(_refresh_args(dry_run=False))
+
+
+def test_refresh_no_reharden_flag_suppresses_the_reharden_step(tmp_path, monkeypatch, capsys):
+    _refresh_fixture(tmp_path, monkeypatch, launcher_stale=("2.6.2.0", "2.7.0.0"))
+    _stamp(tmp_path, _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                          steam_buildid="1", regulation_sha="b" * 64))
+    cli.cmd_refresh(_refresh_args(dry_run=True, no_reharden=True))
+    assert "reharden" not in capsys.readouterr().out
+    cli.cmd_refresh(_refresh_args(dry_run=True, no_reharden=False))
+    assert "reharden" in capsys.readouterr().out
+
+
+def test_refresh_dry_run_reports_a_tampered_build_as_a_refusal(tmp_path, monkeypatch, capsys):
+    # exe/steam_buildid unchanged, only regulation.bin moved -> tampered, not a
+    # real patch. plan_heal must refuse rather than offer adopt-baseline, and
+    # cmd_refresh must surface that refusal as a failure, not an info line.
+    _refresh_fixture(tmp_path, monkeypatch)
+    _stamp(tmp_path, _bid(regulation_sha="b" * 64))
+    rc = cli.cmd_refresh(_refresh_args(dry_run=True))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Verify integrity" in out
+    assert "adopt-baseline" not in out

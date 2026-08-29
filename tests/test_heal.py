@@ -208,3 +208,60 @@ def test_verify_keeps_rows_the_new_baseline_added(monkeypatch):
     monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
     problems = heal.verify_rebase(b"merged", b"base", [("m", b"mod")], _bid())
     assert any("99" in p for p in problems)
+
+
+def _kinds(actions):
+    return [a.kind for a in actions]
+
+
+def test_no_drift_plans_nothing():
+    assert heal.plan_heal(_bid(), _bid()) == ()
+
+
+def test_an_unstamped_stack_plans_nothing():
+    assert heal.plan_heal(None, _bid()) == ()
+
+
+def test_a_patch_plans_the_full_rebase_in_order():
+    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                   steam_buildid="1", regulation_sha="b" * 64)
+    kinds = _kinds(heal.plan_heal(stamped, _bid()))
+    assert kinds == ["adopt-baseline", "repin", "gate", "rebuild", "verify", "stamp"]
+
+
+def test_the_gate_runs_after_fetching_not_before():
+    # An updated mod may be the thing that fixes a layout mismatch, so the
+    # question is whether THESE files merge onto THIS baseline.
+    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                   steam_buildid="1", regulation_sha="b" * 64)
+    kinds = _kinds(heal.plan_heal(stamped, _bid()))
+    assert kinds.index("repin") < kinds.index("gate")
+
+
+def test_a_repackaged_build_restamps_without_rebuilding():
+    stamped = _bid(exe="2.6.2.0", steam_buildid="1")
+    kinds = _kinds(heal.plan_heal(stamped, _bid()))
+    assert "rebuild" not in kinds
+    assert kinds[-1] == "stamp"
+
+
+def test_a_tampered_install_refuses_and_plans_nothing_else():
+    stamped = _bid(regulation_sha="b" * 64)
+    actions = heal.plan_heal(stamped, _bid())
+    assert _kinds(actions) == ["refuse"]
+    assert "Verify integrity" in actions[0].detail
+
+
+def test_a_stale_launcher_adds_a_reharden_step():
+    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                   steam_buildid="1", regulation_sha="b" * 64)
+    kinds = _kinds(heal.plan_heal(stamped, _bid(), launcher_stale=True))
+    assert "reharden" in kinds
+    assert kinds.index("reharden") < kinds.index("stamp")
+
+
+def test_no_reharden_omits_it():
+    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                   steam_buildid="1", regulation_sha="b" * 64)
+    kinds = _kinds(heal.plan_heal(stamped, _bid(), reharden=False, launcher_stale=True))
+    assert "reharden" not in kinds

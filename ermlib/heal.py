@@ -11,9 +11,11 @@ corrupt a regulation; it does not get to hide inside apply.
 """
 import struct
 from pathlib import Path
+from typing import NamedTuple
 
 from .errors import ErmError
 from .formats import param, regulation
+from . import gamebuild
 from .gamebuild import read_regulation_version
 
 # Lives under tools/, which is already gitignored runtime state -- these are
@@ -202,3 +204,49 @@ def verify_rebase(merged_blob, baseline_blob, mod_blobs, live):
                     f"baseline {table} row {rid} was dropped by the rebase")
 
     return tuple(problems)
+
+
+class Action(NamedTuple):
+    """One step of a heal. `data` carries whatever the executor needs."""
+    kind: str
+    detail: str
+    data: object = None
+
+
+def plan_heal(stamped, live, reharden=True, launcher_stale=False):
+    """The ordered steps that bring this stack back onto the installed build.
+
+    Pure: no filesystem, no network. A dry run is this function and nothing
+    else, which is why the risky ordering decisions are testable at all.
+    """
+    kind = gamebuild.classify(stamped, live)
+    if kind == gamebuild.UNCHANGED:
+        return ()
+    if kind == gamebuild.TAMPERED:
+        return (Action(
+            "refuse",
+            f"Game/regulation.bin changed but the game was not patched "
+            f"(exe {live.exe}, buildid {live.steam_buildid} unchanged) — "
+            f"something overwrote the install's regulation. Refusing to adopt "
+            f"it as vanilla. Run Steam → Verify integrity of game files, or "
+            f"heal against the last known-good baseline.",
+            stamped),)
+
+    actions = []
+    if kind == gamebuild.PATCHED:
+        actions.append(Action("adopt-baseline",
+                              f"take the {live.regulation} regulation as the merge baseline",
+                              live.regulation))
+    # Repin before the gate: an updated mod may be exactly what makes a mod's
+    # rows transplantable onto the new baseline.
+    actions.append(Action("repin", "re-resolve mod pins against upstream", None))
+    if kind == gamebuild.PATCHED:
+        actions.append(Action("gate", "check param row layouts against the baseline", None))
+        actions.append(Action("rebuild", "rebuild every merge against the new baseline", None))
+        actions.append(Action("verify", "check the rebase kept every authored row", None))
+    if reharden and launcher_stale:
+        actions.append(Action("reharden",
+                              "re-copy eldenring.exe over the stale hardened launcher (sudo)",
+                              None))
+    actions.append(Action("stamp", f"record build {live.app}", live))
+    return tuple(actions)

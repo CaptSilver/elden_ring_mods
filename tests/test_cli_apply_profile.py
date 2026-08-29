@@ -7,6 +7,7 @@ import pytest
 
 from ermlib import cli, harden, me3profile, paths
 from ermlib.errors import ErmError, NetworkError, PathError
+from ermlib.gamebuild import BuildId, GameBuildError
 from tests.conftest import REPO
 
 
@@ -224,6 +225,58 @@ def test_apply_two_mod_profile_installs_game_and_mods_targets_and_skips_manual(
     assert state["mod-a"]["files"] == ["mods/x.dll"]
     assert state["mod-b"]["files"] == ["mods/y.dll"]
     assert "me3" not in state       # manual mods are never recorded
+
+
+def test_apply_stamps_the_build_it_was_applied_against(tmp_path, monkeypatch, capsys, tmp_game):
+    # Without this stamp, stamped_build() always returns None, classify()
+    # always returns UNCHANGED, and plan_heal() always plans an empty heal --
+    # a later game patch would never be detected. gamebuild.identify reads
+    # real game files (eldenring.exe's PE header, regulation.bin's BND4
+    # header), so it's stubbed to a known BuildId here rather than exercised
+    # against tmp_game's placeholder bytes.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
+    known = BuildId(exe="2.7.0.0", app="1.17.0", regulation="11701000",
+                    steam_buildid="23850278", regulation_sha="a" * 64)
+    monkeypatch.setattr(cli.gamebuild, "identify", lambda game, root: known)
+    _seed_two_mod_profile(tmp_path)
+
+    rc = cli.cmd_apply(_apply_args("two-mod"))
+    capsys.readouterr()
+
+    assert rc == 0
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert state["_build"]["app"] == known.app
+    assert state["_build"]["regulation"] == known.regulation
+    assert state["_build"]["steam_buildid"] == known.steam_buildid
+
+
+def test_apply_warns_but_keeps_installed_mods_when_the_build_cannot_be_identified(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # The mods are already on disk by the time record_build runs, so a build
+    # erm can't identify (e.g. a mid-Steam-update install) must warn and keep
+    # going -- not roll back an apply that already wrote files.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
+    def boom(game, root):
+        raise GameBuildError("eldenring.exe carries no version resource")
+    monkeypatch.setattr(cli.gamebuild, "identify", boom)
+    _seed_two_mod_profile(tmp_path)
+
+    rc = cli.cmd_apply(_apply_args("two-mod"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "could not record the game build" in out.lower()
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "_build" not in state
+    assert "mod-a" in state and "mod-b" in state
 
 
 def test_apply_seamless_only_backward_compat_uses_real_profile(
