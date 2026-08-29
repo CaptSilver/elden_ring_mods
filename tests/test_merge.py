@@ -275,6 +275,33 @@ def test_param_rows_refuses_a_single_row_whose_extra_bytes_are_not_padding():
         merge.param_rows(base, other, van)
 
 
+def test_param_rows_refuses_a_row_both_sides_added_with_different_content():
+    """Rebasing onto a newer game build meets rows vanilla never had: the 1.17
+    patch and a mod both claim ShopLineupParam 101896 with different bytes.
+    There is no ancestor to locate either edit against, so neither can win."""
+    van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8, 101896: b"\x11" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\xab" * 8, 101896: b"\x22" * 8}, 8)})
+    with pytest.raises(merge.MergeError, match="101896"):
+        merge.param_rows(base, other, van)
+
+
+def test_param_rows_refuses_when_the_base_dropped_a_row_the_other_side_edited():
+    van = _regulation({1: (SP, {1: b"\xab" * 8, 2: b"\x00" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\xab" * 8, 2: b"\x77" * 8}, 8)})
+    with pytest.raises(merge.MergeError, match="row 2"):
+        merge.param_rows(base, other, van)
+
+
+def test_param_rows_refuses_when_the_other_side_dropped_a_row_the_base_edited():
+    van = _regulation({1: (SP, {1: b"\xab" * 8, 2: b"\x00" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8, 2: b"\x77" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    with pytest.raises(merge.MergeError, match="row 2"):
+        merge.param_rows(base, other, van)
+
+
 def test_param_rows_output_is_a_loadable_regulation():
     van = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
     base = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})

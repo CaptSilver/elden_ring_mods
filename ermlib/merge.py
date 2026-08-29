@@ -175,6 +175,18 @@ def _merge_row(base, other, vanilla, entry_id, rid):
     byte 260 and byte 262 of a weapon row, which are two separate single-byte
     fields (an enum and a bit-flag), not one integer.
     """
+    if base is None or other is None or vanilla is None:
+        # One side has no such row at all -- the row is new to both sides, or
+        # one deleted what the other edited. Byte-granularity merging needs
+        # three versions to say who moved which byte, and picking a survivor
+        # without that is the silent data loss the whole strategy avoids.
+        absent = " and ".join(
+            n for n, v in (("base", base), ("other", other), ("vanilla", vanilla))
+            if v is None)
+        raise MergeError(
+            f"entry {entry_id} row {rid}: both sides changed it, but the row is "
+            f"absent from {absent} — there is no common version to locate the "
+            f"edits against")
     if not (len(base) == len(other) == len(vanilla)):
         raise MergeError(
             f"entry {entry_id} row {rid}: both sides changed it and the rows are "
