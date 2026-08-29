@@ -85,6 +85,20 @@ def _derive_stride(offsets, strings_off, row_count):
     return deltas.pop()
 
 
+def strides_comparable(rows_a, rows_b):
+    """Whether two params' derived strides can be compared as a layout fact.
+
+    With one row there are no inter-row gaps, so `_derive_stride` falls back to
+    the distance to the strings block -- which includes however much alignment
+    the writing tool left. The game's own files round that to 16 and
+    SoulsFormats-derived tools to 8, so ten shipped one-row params measure
+    wider in Game/regulation.bin than in a mod's re-saved copy with not one
+    field moved. Comparing those widths reports a layout change that isn't
+    one; paramdef_data_version is the signal that survives the rounding.
+    """
+    return rows_a > 1 and rows_b > 1
+
+
 def read(data):
     """Parse a PARAM. Raises ParamError rather than returning a partial view."""
     if len(data) < HEADER_SIZE:

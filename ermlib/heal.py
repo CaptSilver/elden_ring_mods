@@ -56,8 +56,15 @@ def adopt_baseline(game_dir, live, base=BASELINE_DIR):
 _PARAMDEF_VERSION_AT = 0x08
 
 
+class Layout(NamedTuple):
+    """What a param's shape has to agree on before rows can be transplanted."""
+    rows: int
+    stride: int
+    paramdef: int
+
+
 def param_layouts(blob):
-    """{table name: (row stride, paramdef_data_version)}, None where unreadable.
+    """{table name: Layout}, None where the entry cannot be read.
 
     Three of vanilla's own entries carry a strings offset past the end of the
     file. FromSoft writes them that way and SoulsFormats normalises them on
@@ -77,7 +84,7 @@ def param_layouts(blob):
             out[name] = None
             continue
         pdv, = struct.unpack_from("<H", p.header, _PARAMDEF_VERSION_AT)
-        out[name] = (p.stride, pdv)
+        out[name] = Layout(len(p.rows), p.stride, pdv)
     return out
 
 
@@ -90,7 +97,13 @@ def layout_gate(baseline_blob, mod_blobs):
     is exactly the failure worth stopping the run for.
 
     Tables the baseline doesn't carry are skipped: that is a merge question,
-    not a transplant-safety one.
+    not a transplant-safety one. So is a table either side can't be read --
+    param_layouts records those as None and there is nothing to compare.
+
+    A one-row param's stride is NOT compared, only its paramdef version: with
+    no inter-row gap the width is the row plus alignment padding, and the game
+    and a mod's re-saved copy round that differently. See
+    param.strides_comparable.
     """
     base = param_layouts(baseline_blob)
     problems = []
@@ -104,9 +117,10 @@ def layout_gate(baseline_blob, mod_blobs):
                 # an unreadable entry differs on both sides, so alarming here
                 # would only fire every run on params nobody transplants.
                 continue
-            stride, pdv = layout
-            base_stride, base_pdv = base_layout
-            if stride != base_stride:
+            stride, pdv = layout.stride, layout.paramdef
+            base_stride, base_pdv = base_layout.stride, base_layout.paramdef
+            if (param.strides_comparable(layout.rows, base_layout.rows)
+                    and stride != base_stride):
                 problems.append(
                     f"{mod_id}: {name} row stride {stride} != baseline {base_stride} "
                     "— rows can't be transplanted, this mod needs an update for "

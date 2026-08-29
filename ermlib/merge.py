@@ -132,6 +132,28 @@ def _content_equal(a, b):
     return a == b if len(a) == len(b) else a[:min(len(a), len(b))] == b[:min(len(a), len(b))]
 
 
+def _fit_to_stride(row, base_row, stride, entry_id, rid):
+    """Re-widen a transplanted row to the base file's row width.
+
+    Only reachable where the two strides can't be compared -- a one-row param,
+    whose derived width is the row plus alignment padding. The content is the
+    overlap; the padding belongs to the file it came from, so the base keeps
+    its own. Excess that isn't zero is content rather than padding, and losing
+    it silently is exactly what the stride guard exists to prevent.
+    """
+    if len(row) == stride:
+        return row
+    if len(row) > stride:
+        if row[stride:].strip(b"\x00"):
+            raise MergeError(
+                f"entry {entry_id} row {rid} is {len(row)} bytes where the base "
+                f"lays rows out {stride} wide, and the extra bytes are not "
+                f"padding — the edit can't be fitted without a paramdef")
+        return row[:stride]
+    tail = (base_row or b"")[len(row):stride]
+    return row + tail + b"\x00" * (stride - len(row) - len(tail))
+
+
 def _merge_row(base, other, vanilla, entry_id, rid):
     """Three-way merge one row at byte granularity.
 
@@ -197,14 +219,22 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id):
             continue
         # Only the other side moved, so its version wins — but a row can only be
         # transplanted between files that lay rows out identically.
-        if od is not None and b.stride != o.stride:
-            raise MergeError(
-                f"entry {entry_id} row {rid} differs, but the two files disagree on "
-                f"row stride ({b.stride} vs {o.stride}) — the row can't be "
-                f"transplanted without a paramdef to reinterpret it")
         if od is None:
             delete.append(rid)
-        elif rid in br:
+            continue
+        if b.stride != o.stride:
+            if param.strides_comparable(len(b.rows), len(o.rows)):
+                raise MergeError(
+                    f"entry {entry_id} row {rid} differs, but the two files disagree on "
+                    f"row stride ({b.stride} vs {o.stride}) — the row can't be "
+                    f"transplanted without a paramdef to reinterpret it")
+            # A one-row param's width is the row plus whatever alignment the
+            # writer left, so a mismatch here says nothing about where the
+            # fields sit. Refusing would block every rebase onto the game's own
+            # regulation, where ten shipped params measure wider than the same
+            # table in a mod's re-saved copy.
+            od = _fit_to_stride(od, bd, b.stride, entry_id, rid)
+        if rid in br:
             overwrite[rid] = od
         else:
             insert[rid] = od

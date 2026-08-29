@@ -244,11 +244,34 @@ def test_param_rows_transplants_when_only_vanilla_has_the_padding():
 def test_param_rows_refuses_a_row_it_cannot_fit_into_the_base():
     # Base and other genuinely disagree on row width, so the other side's bytes
     # have no meaning in the base's layout. Writing them anyway would corrupt
-    # the row silently; a paramdef would be needed to reinterpret it.
+    # the row silently; a paramdef would be needed to reinterpret it. Two rows,
+    # because a width measured from a single row is padding, not a layout fact.
+    van = _regulation({1: (SP, {1: b"\xab" * 8, 2: b"\xcd" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8, 2: b"\xcd" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x99" * 12, 2: b"\xcd" * 12}, 12)})
+    with pytest.raises(merge.MergeError, match="stride"):
+        merge.param_rows(base, other, van)
+
+
+def test_param_rows_transplants_into_a_single_row_param_the_game_padded_wider():
+    """The base is the game's own file, where a one-row param's derived stride
+    carries alignment padding a mod's re-saved copy doesn't have. The mod's
+    edit still belongs in that row; the base keeps its own padding."""
+    van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8 + b"\x00" * 4}, 12)})
+    other = _regulation({1: (SP, {1: b"\x99" * 8}, 8)})
+    out = _rows(merge.param_rows(base, other, van), 1)
+    assert out[1] == b"\x99" * 8 + b"\x00" * 4
+
+
+def test_param_rows_refuses_a_single_row_whose_extra_bytes_are_not_padding():
+    """A wider incoming row is only safe to trim where the excess is padding.
+    Non-zero bytes past the base's width are content, and dropping them would
+    lose an edit without saying so."""
     van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
     base = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
     other = _regulation({1: (SP, {1: b"\x99" * 12}, 12)})
-    with pytest.raises(merge.MergeError, match="stride"):
+    with pytest.raises(merge.MergeError, match="padding"):
         merge.param_rows(base, other, van)
 
 

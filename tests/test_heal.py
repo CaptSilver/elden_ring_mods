@@ -58,7 +58,8 @@ def test_a_missing_game_regulation_raises(tmp_path):
 
 
 def test_layout_gate_passes_when_every_stride_matches(monkeypatch):
-    layouts = {"EquipParamWeapon.param": (1024, 3), "SpEffectParam.param": (512, 2)}
+    layouts = {"EquipParamWeapon.param": heal.Layout(200, 1024, 3),
+               "SpEffectParam.param": heal.Layout(90, 512, 2)}
     monkeypatch.setattr(heal, "param_layouts", lambda blob: layouts)
     assert heal.layout_gate(b"base", [("clevers", b"mod")]) == ()
 
@@ -66,8 +67,8 @@ def test_layout_gate_passes_when_every_stride_matches(monkeypatch):
 def test_layout_gate_names_the_table_and_mod_when_a_stride_moves(monkeypatch):
     def layouts(blob):
         if blob == b"base":
-            return {"EquipParamWeapon.param": (1032, 3)}
-        return {"EquipParamWeapon.param": (1024, 3)}
+            return {"EquipParamWeapon.param": heal.Layout(200, 1032, 3)}
+        return {"EquipParamWeapon.param": heal.Layout(200, 1024, 3)}
     monkeypatch.setattr(heal, "param_layouts", layouts)
     problems = heal.layout_gate(b"base", [("clevers", b"mod")])
     assert len(problems) == 1
@@ -78,7 +79,7 @@ def test_layout_gate_names_the_table_and_mod_when_a_stride_moves(monkeypatch):
 
 def test_layout_gate_catches_a_moved_paramdef_version(monkeypatch):
     def layouts(blob):
-        return {"SpEffectParam.param": (512, 4 if blob == b"base" else 2)}
+        return {"SpEffectParam.param": heal.Layout(90, 512, 4 if blob == b"base" else 2)}
     monkeypatch.setattr(heal, "param_layouts", layouts)
     problems = heal.layout_gate(b"base", [("nofalldead", b"mod")])
     assert len(problems) == 1
@@ -89,7 +90,7 @@ def test_a_table_the_baseline_lacks_is_not_a_layout_problem(monkeypatch):
     # A mod may ship a table the baseline doesn't carry. That is a merge
     # question, not a transplant-safety one -- the gate must not claim it.
     def layouts(blob):
-        return {} if blob == b"base" else {"Odd.param": (8, 1)}
+        return {} if blob == b"base" else {"Odd.param": heal.Layout(4, 8, 1)}
     monkeypatch.setattr(heal, "param_layouts", layouts)
     assert heal.layout_gate(b"base", [("weird", b"mod")]) == ()
 
@@ -97,8 +98,8 @@ def test_a_table_the_baseline_lacks_is_not_a_layout_problem(monkeypatch):
 def test_layout_gate_reports_every_mod_not_just_the_first(monkeypatch):
     def layouts(blob):
         if blob == b"base":
-            return {"A.param": (10, 1)}
-        return {"A.param": (12, 1)}
+            return {"A.param": heal.Layout(7, 10, 1)}
+        return {"A.param": heal.Layout(7, 12, 1)}
     monkeypatch.setattr(heal, "param_layouts", layouts)
     problems = heal.layout_gate(b"base", [("a", b"m1"), ("b", b"m2")])
     assert len(problems) == 2
@@ -106,14 +107,16 @@ def test_layout_gate_reports_every_mod_not_just_the_first(monkeypatch):
 
 def test_layout_gate_skips_a_table_the_baseline_cannot_read(monkeypatch):
     def layouts(blob):
-        return {"Cutscene.param": None} if blob == b"base" else {"Cutscene.param": (16, 1)}
+        return ({"Cutscene.param": None} if blob == b"base"
+                else {"Cutscene.param": heal.Layout(107, 16, 1)})
     monkeypatch.setattr(heal, "param_layouts", layouts)
     assert heal.layout_gate(b"base", [("clevers", b"mod")]) == ()
 
 
 def test_layout_gate_skips_a_table_the_mod_cannot_read(monkeypatch):
     def layouts(blob):
-        return {"Cutscene.param": (16, 1)} if blob == b"base" else {"Cutscene.param": None}
+        return ({"Cutscene.param": heal.Layout(107, 16, 1)} if blob == b"base"
+                else {"Cutscene.param": None})
     monkeypatch.setattr(heal, "param_layouts", layouts)
     assert heal.layout_gate(b"base", [("clevers", b"mod")]) == ()
 
@@ -127,6 +130,54 @@ def test_param_layouts_records_an_unreadable_table_as_none(monkeypatch):
         raise heal.param.ParamError("strings offset past the end of the file")
     monkeypatch.setattr(heal.param, "read", _boom)
     assert heal.param_layouts(b"anything") == {"Cutscene.param": None}
+
+
+def test_layout_gate_ignores_a_padding_only_stride_on_a_single_row_param(monkeypatch):
+    # A one-row param has no inter-row gap, so its "stride" is the row plus
+    # whatever alignment the writer left -- 16 in the game's own file, 8 in a
+    # re-saved mod copy. Ten real params differ that way with nothing moved.
+    def layouts(blob):
+        if blob == b"base":
+            return {"PlayerCommonParam.param": heal.Layout(1, 264, 1)}
+        return {"PlayerCommonParam.param": heal.Layout(1, 256, 1)}
+    monkeypatch.setattr(heal, "param_layouts", layouts)
+    assert heal.layout_gate(b"base", [("clevers", b"mod")]) == ()
+
+
+def test_layout_gate_still_compares_paramdef_version_on_a_single_row_param(monkeypatch):
+    # The stride is unusable there, but paramdef_data_version still says
+    # whether the fields inside the row moved -- so it is still checked.
+    def layouts(blob):
+        if blob == b"base":
+            return {"PlayerCommonParam.param": heal.Layout(1, 264, 2)}
+        return {"PlayerCommonParam.param": heal.Layout(1, 256, 1)}
+    monkeypatch.setattr(heal, "param_layouts", layouts)
+    problems = heal.layout_gate(b"base", [("clevers", b"mod")])
+    assert len(problems) == 1
+    assert "paramdef" in problems[0]
+
+
+def test_layout_gate_reports_a_stride_that_moved_on_a_multi_row_param(monkeypatch):
+    def layouts(blob):
+        if blob == b"base":
+            return {"SpEffectParam.param": heal.Layout(2, 264, 1)}
+        return {"SpEffectParam.param": heal.Layout(2, 256, 1)}
+    monkeypatch.setattr(heal, "param_layouts", layouts)
+    problems = heal.layout_gate(b"base", [("clevers", b"mod")])
+    assert len(problems) == 1
+    assert "row stride" in problems[0]
+
+
+def test_param_layouts_records_the_row_count(monkeypatch):
+    from tests.test_param import make_param
+
+    class _Entry:
+        name = "GR\\PlayerCommonParam.param"
+        data = make_param([1], stride=64)
+    monkeypatch.setattr(heal.regulation, "entries", lambda blob: [_Entry()])
+    got = heal.param_layouts(b"anything")["PlayerCommonParam.param"]
+    assert got.rows == 1
+    assert got.stride == 64
 
 
 def test_rows_by_table_skips_a_table_it_cannot_read(monkeypatch):
