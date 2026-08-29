@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .conflicts import MERGED_ID
 from .errors import ErmError
+from . import gamebuild
 
 DEFAULT_PATH = Path("installed.json")
 
@@ -112,3 +113,37 @@ def record_merged(state, package, paths=None):
     state[MERGED_ID] = {"version": "derived", "archive": None,
                         "kind": "me3-package", "package": package,
                         "derived": True, "paths": dict(paths or {})}
+
+
+BUILD_ID = "_build"
+# Keys in installed.json that are bookkeeping, not installed mods.
+_NON_MOD_IDS = (BUILD_ID,)
+
+
+def record_build(state, build):
+    """Stamp the game build this stack was applied against."""
+    state[BUILD_ID] = dict(build._asdict())
+    return state
+
+
+def stamped_build(state):
+    """The stamped build, or None if this stack was never stamped.
+
+    A *malformed* stamp raises instead of reading as None: treating it as
+    "never stamped" would skip the heal on exactly the stack most likely to
+    need one.
+    """
+    raw = state.get(BUILD_ID)
+    if not raw:
+        return None
+    try:
+        return gamebuild.BuildId(**raw)
+    except TypeError as exc:
+        raise ErmError(
+            f"installed.json's {BUILD_ID} record is malformed ({exc}) — "
+            f"delete it and re-apply") from exc
+
+
+def mod_ids(state):
+    """The installed mod ids, excluding bookkeeping records."""
+    return [k for k in state if k not in _NON_MOD_IDS]

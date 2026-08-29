@@ -3,6 +3,10 @@ import pytest
 from ermlib import state as state_mod
 from ermlib.state import load_state, record_install, write_state, forget
 from ermlib.errors import ErmError
+from ermlib.gamebuild import BuildId
+
+BUILD = BuildId(exe="2.7.0.0", app="1.17.0", regulation="11701000",
+                steam_buildid="23850278", regulation_sha="a" * 64)
 
 
 def test_record_load_write_round_trip(tmp_path):
@@ -92,3 +96,36 @@ def test_me3_packages_skips_entries_missing_package_key():
     # uncaught KeyError crashes the command.
     s = {"broken-mod": {"kind": "me3-package", "version": "1.0"}}
     assert state_mod.me3_packages(s) == []
+
+
+def test_record_and_read_back_a_build():
+    st = {}
+    state_mod.record_build(st, BUILD)
+    assert state_mod.stamped_build(st) == BUILD
+
+
+def test_an_unstamped_state_has_no_build():
+    assert state_mod.stamped_build({}) is None
+
+
+def test_the_build_record_survives_a_json_round_trip(tmp_path):
+    st = {}
+    state_mod.record_build(st, BUILD)
+    p = tmp_path / "installed.json"
+    state_mod.write_state(p, st)
+    assert state_mod.stamped_build(state_mod.load_state(p)) == BUILD
+
+
+def test_a_malformed_build_record_raises_rather_than_reading_as_unstamped():
+    # Reading a corrupt stamp as "never stamped" would silently skip the heal.
+    with pytest.raises(ErmError, match="_build"):
+        state_mod.stamped_build({"_build": {"exe": "2.7.0.0"}})
+
+
+def test_the_build_record_is_not_a_mod():
+    # cmd_status lists sorted(state) as installed mods; the stamp must not
+    # appear there as a phantom mod called "_build".
+    st = {"adjust-the-fov": {"version": "2.0"}}
+    state_mod.record_build(st, BUILD)
+    assert state_mod.BUILD_ID not in state_mod.mod_ids(st)
+    assert "adjust-the-fov" in state_mod.mod_ids(st)
