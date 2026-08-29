@@ -127,3 +127,84 @@ def test_param_layouts_records_an_unreadable_table_as_none(monkeypatch):
         raise heal.param.ParamError("strings offset past the end of the file")
     monkeypatch.setattr(heal.param, "read", _boom)
     assert heal.param_layouts(b"anything") == {"Cutscene.param": None}
+
+
+def test_rows_by_table_skips_a_table_it_cannot_read(monkeypatch):
+    # merge.param_rows never row-splices an unreadable entry -- it takes the
+    # whole entry from one side or raises MergeError -- so there are no
+    # transplanted rows in these tables to verify. Omitting them beats
+    # crashing on the three real regulation.bin tables FromSoft itself wrote
+    # with a strings offset past the end of the file.
+    class _Entry:
+        name = "GR\\Cutscene.param"
+        data = b"junk"
+    monkeypatch.setattr(heal.regulation, "entries", lambda blob: [_Entry()])
+    def _boom(data):
+        raise heal.param.ParamError("strings offset past the end of the file")
+    monkeypatch.setattr(heal.param, "read", _boom)
+    assert heal.rows_by_table(b"anything") == {}
+
+
+def test_verify_passes_when_every_authored_row_survived(monkeypatch):
+    base = {"A.param": {1: b"v", 2: b"v"}}
+    mod = {"A.param": {1: b"MOD", 2: b"v"}}
+    merged = {"A.param": {1: b"MOD", 2: b"v", 3: b"new"}}
+    blobs = {b"base": base, b"mod": mod, b"merged": merged}
+    monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
+    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
+    assert heal.verify_rebase(b"merged", b"base", [("m", b"mod")], _bid()) == ()
+
+
+def test_verify_catches_an_authored_row_lost_in_the_rebase(monkeypatch):
+    base = {"A.param": {1: b"v"}}
+    mod = {"A.param": {1: b"MOD"}}
+    merged = {"A.param": {1: b"v"}}          # mod's row silently reverted
+    blobs = {b"base": base, b"mod": mod, b"merged": merged}
+    monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
+    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
+    problems = heal.verify_rebase(b"merged", b"base", [("m", b"mod")], _bid())
+    assert len(problems) == 1
+    assert "A.param" in problems[0] and "row 1" in problems[0]
+
+
+def test_verify_ignores_rows_a_mod_did_not_author(monkeypatch):
+    base = {"A.param": {1: b"v"}}
+    mod = {"A.param": {1: b"v"}}             # identical to vanilla
+    merged = {"A.param": {}}                 # dropped, but nobody authored it
+    blobs = {b"base": base, b"mod": mod, b"merged": merged}
+    monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
+    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
+    assert heal.verify_rebase(b"merged", b"base", [("m", b"mod")], _bid()) == ()
+
+
+def test_verify_does_not_flag_a_row_two_mods_both_authored(monkeypatch):
+    # Contested rows are resolved by `prefer` and reported by the merge itself.
+    # Demanding both survive would fail every legitimate preferred merge.
+    base = {"A.param": {1: b"v"}}
+    merged = {"A.param": {1: b"ONE"}}
+    blobs = {b"base": base, b"one": {"A.param": {1: b"ONE"}},
+             b"two": {"A.param": {1: b"TWO"}}, b"merged": merged}
+    monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
+    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
+    assert heal.verify_rebase(b"merged", b"base",
+                              [("one", b"one"), ("two", b"two")], _bid()) == ()
+
+
+def test_verify_requires_the_merged_output_to_claim_the_installed_build(monkeypatch):
+    monkeypatch.setattr(heal, "rows_by_table", lambda b: {})
+    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11601000")
+    problems = heal.verify_rebase(b"merged", b"base", [], _bid())
+    assert any("11601000" in p and "11701000" in p for p in problems)
+
+
+def test_verify_keeps_rows_the_new_baseline_added(monkeypatch):
+    # 1.17 added 82 EquipParamWeapon rows. They come from the base and must
+    # still be there after a rebase.
+    base = {"A.param": {1: b"v", 99: b"new-in-1.17"}}
+    mod = {"A.param": {1: b"MOD"}}
+    merged = {"A.param": {1: b"MOD"}}        # base's new row went missing
+    blobs = {b"base": base, b"mod": mod, b"merged": merged}
+    monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
+    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
+    problems = heal.verify_rebase(b"merged", b"base", [("m", b"mod")], _bid())
+    assert any("99" in p for p in problems)

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .errors import ErmError
 from .formats import param, regulation
+from .gamebuild import read_regulation_version
 
 # Lives under tools/, which is already gitignored runtime state -- these are
 # derived artifacts, not something a fresh clone should carry.
@@ -113,4 +114,91 @@ def layout_gate(baseline_blob, mod_blobs):
                     f"{mod_id}: {name} paramdef version {pdv} != baseline {base_pdv} "
                     "— field layout moved, this mod needs an update for the new "
                     "game build")
+    return tuple(problems)
+
+
+def rows_by_table(blob):
+    """{table name: {row id: row bytes}} for every readable param in a regulation.
+
+    Three of vanilla's own entries carry a strings offset past the end of the
+    file -- FromSoft writes them that way and SoulsFormats normalises them on
+    re-save, so a mod's copy parses where the game's own does not. Those tables
+    are left out of the result rather than raising: merge.param_rows never
+    row-splices an unreadable entry, it takes the whole entry from one side or
+    raises MergeError, so there are no transplanted rows in them to verify.
+    """
+    out = {}
+    for entry in regulation.entries(blob):
+        if not entry.name.lower().endswith(".param"):
+            continue
+        try:
+            p = param.read(entry.data)
+        except param.ParamError:
+            continue
+        out[entry.name.rsplit("\\", 1)[-1]] = {r.id: r.data for r in p.rows}
+    return out
+
+
+def verify_rebase(merged_blob, baseline_blob, mod_blobs, live):
+    """Prove a rebase kept what it was supposed to keep.
+
+    Two properties, both machine-checkable, and both silent failures otherwise:
+
+    - the output claims the installed build, so a stale merge can't be mounted
+      over a patched game again;
+    - every row exactly one mod authored survives byte-identical, and every row
+      the new baseline contributed is still there.
+
+    Rows authored by SEVERAL mods are skipped: those are resolved by `prefer`
+    and reported by the merge itself, so demanding all of them survive would
+    fail every legitimate preferred merge. "The new baseline contributed it"
+    means the row is new to every mod, not merely unauthored -- see the
+    `claimed` comment below for why that distinction matters. Tables
+    rows_by_table could not read on either side are likewise absent from both
+    `base` and `merged`/`authored`, so they are silently skipped here too --
+    consistent with the same tables never being row-spliced by the merge in
+    the first place.
+    """
+    problems = []
+    got = read_regulation_version(merged_blob)
+    if got != live.regulation:
+        problems.append(
+            f"merged regulation.bin claims {got}, game is {live.regulation}")
+
+    base = rows_by_table(baseline_blob)
+    merged = rows_by_table(merged_blob)
+
+    # `claimed` is every row any mod's own file even mentions, authored or not.
+    # A mod ships a table in full, so an untouched row shows up identical to
+    # base -- that is not a baseline contribution, it is a row the mod already
+    # had an opinion on (silence), and its fate after the merge is between the
+    # mod and the merge, not something this check promises. Only a row no
+    # mod's file mentions at all -- because it didn't exist when that mod was
+    # built -- is purely "the new baseline contributed it".
+    authored = {}
+    claimed = set()
+    for mod_id, blob in mod_blobs:
+        for table, rows in rows_by_table(blob).items():
+            for rid, data in rows.items():
+                claimed.add((table, rid))
+                if base.get(table, {}).get(rid) == data:
+                    continue
+                authored.setdefault((table, rid), {})[mod_id] = data
+
+    for (table, rid), by_mod in sorted(authored.items()):
+        if len(by_mod) != 1:
+            continue
+        mod_id, data = next(iter(by_mod.items()))
+        if merged.get(table, {}).get(rid) != data:
+            problems.append(
+                f"{mod_id}: {table} row {rid} did not survive the rebase")
+
+    for table, rows in base.items():
+        for rid, data in rows.items():
+            if (table, rid) in claimed:
+                continue
+            if rid not in merged.get(table, {}):
+                problems.append(
+                    f"baseline {table} row {rid} was dropped by the rebase")
+
     return tuple(problems)
