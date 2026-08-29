@@ -45,9 +45,8 @@ requires_all_players = true
 # Held at 25.0 on purpose: it's the `prefer` mod in the six-way regulation
 # merge and `requires_all_players`, and 26.1 (file 49639) changes both
 # movesets and regulation contents. Taking it now would tangle two possible
-# failure sources into one. It moves on its
-# own, with its own in-game pass, once both players update together — drop
-# `freeze` when that happens.
+# failure sources into one. It moves on its own, with its own in-game pass,
+# once both players update together — drop `freeze` when that happens.
 [[mods]]
 id = "clevers-moveset"
 source = "nexus"
@@ -165,7 +164,8 @@ requires_all_players = true
 # bows instead of 1.2x. Confirmed in game 2026-08-09.
 #
 # 127 Bullet rows, 35 EquipParamWeapon, 1 GameSystemCommonParam. Its BND4 reports
-# 11611000 — exactly the current vanilla build.
+# 11611000, the build it was authored against — `erm doctor` says whether the
+# game has since moved past it.
 #
 # All 35 weapon rows are ALSO edited by Clever's or Forever Buffs, and the merge
 # composes them inside the row: every byte this mod authored survives alongside
@@ -209,7 +209,10 @@ prefer = "clevers-moveset"
 #
 # Both merges compare against the vanilla file the two mods branched from, taken
 # from the randomizer's bundled Vanilla/ directory. That archive is pinned in
-# mods.lock.toml and its regulation.bin is byte-identical to the game install's.
+# mods.lock.toml and its regulation.bin reports build 11611000 — the ancestor the
+# mods were authored against, not a copy of whatever the game currently ships.
+# Once the game patches past it, every rebuild still measures edits against that
+# older data, which is the gap `erm doctor`'s merge-ancestor warning reports.
 # Read from the vendor zip, not tools/, because tools/ only exists while the
 # randomizer profile is applied and this profile excludes it. Applying without
 # that archive fetched fails with a message saying so.
