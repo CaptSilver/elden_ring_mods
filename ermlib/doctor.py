@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from . import gamebuild
+from .gamebuild import GameBuildError
 from .harden import is_hardened
 
 _PROXY = ("dinput8.dll", "winhttp.dll")
@@ -73,4 +75,52 @@ def run_doctor(game_dir, report):
         report.warn(f"item-spawner mod present: {sp} — never take its save to vanilla online")
     if (game_dir / "ersc_launcher.exe").exists():
         report.ok("Seamless Co-op launcher present")
+    return report
+
+
+def launcher_is_stale(game_dir):
+    """(swapped, real) PE versions when the hardened swap is off the game build.
+
+    Only meaningful on a hardened install, where start_protected_game.exe is a
+    copy of eldenring.exe and the two are SUPPOSED to match. On an unhardened
+    install it is the real EAC launcher, a different product with its own
+    version, and comparing them would report a permanent false positive.
+
+    Steam patches eldenring.exe without touching the swap -- and the swap is
+    chattr +i, so it could not be replaced even if Steam tried.
+    """
+    game_dir = Path(game_dir)
+    if not is_hardened(game_dir):
+        return None
+    try:
+        swapped = gamebuild.read_exe_version(game_dir / "start_protected_game.exe")
+        real = gamebuild.read_exe_version(game_dir / "eldenring.exe")
+    except GameBuildError:
+        return None
+    return None if swapped == real else (swapped, real)
+
+
+def run_build_checks(game_dir, stamped, live, report):
+    """Report game-build drift. Offline: reads only local files."""
+    report.info(f"game build: {live.app} (regulation {live.regulation}, "
+                f"exe {live.exe}, steam buildid {live.steam_buildid})")
+    if stamped is None:
+        report.info("stack build: not recorded yet — `erm apply` will stamp it")
+    else:
+        changes = gamebuild.drift(stamped, live)
+        if not changes:
+            report.ok(f"stack was built for the installed build ({live.app})")
+        else:
+            report.warn(f"game build drift: stack built for {stamped.app}, "
+                        f"game is {live.app} — run `erm apply`")
+            if stamped.regulation != live.regulation:
+                report.warn(f"merged regulation.bin targets {stamped.regulation}, "
+                            f"game is {live.regulation}")
+    stale = launcher_is_stale(game_dir)
+    if stale:
+        swapped, real = stale
+        # A warning, not a failure: the swap still blocks EAC, it is just the
+        # wrong build. Failing here would make doctor exit 1 on a safe install.
+        report.warn(f"hardened launcher is stale: start_protected_game.exe {swapped}, "
+                    f"eldenring.exe {real} — re-run `erm unharden && erm harden`")
     return report

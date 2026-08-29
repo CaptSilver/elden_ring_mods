@@ -113,6 +113,21 @@ def test_identify_assembles_from_all_three_sources(tmp_path, monkeypatch):
     assert len(got.regulation_sha) == 64
 
 
+def test_identify_refuses_when_steam_has_no_buildid(tmp_path, monkeypatch):
+    # An empty buildid would compare as a changed value and could flip a
+    # tampered install into looking like a patched one.
+    game = tmp_path / "Game"
+    game.mkdir()
+    (game / "eldenring.exe").write_bytes(_fake_exe(2, 7, 0, 0))
+    (game / "regulation.bin").write_bytes(b"encrypted")
+    payload = bytearray(b"BND4" + b"\x00" * 0x40)
+    payload[0x18:0x20] = b"11701000"
+    monkeypatch.setattr(gamebuild.regulation, "unpack", lambda blob: bytes(payload))
+    monkeypatch.setattr(gamebuild.steam, "read_appmanifest", lambda root: {})
+    with pytest.raises(gamebuild.GameBuildError, match="build id"):
+        gamebuild.identify(game, tmp_path)
+
+
 def test_drift_is_empty_when_nothing_moved():
     assert gamebuild.drift(_build(), _build()) == ()
 

@@ -13,6 +13,9 @@ from .report import Report
 from .savefile import SaveFile
 from .audit import audit_save
 from .doctor import run_doctor
+from . import doctor as doctor_mod
+from . import gamebuild
+from .gamebuild import GameBuildError
 # Re-exported so `cli.LAUNCH_OPTION` keeps resolving for tests.
 from .launch import LAUNCH_OPTION, LAUNCH_VALIDATOR, RESHADE_ENV
 
@@ -60,6 +63,11 @@ def cmd_status(args):
     m = steam.read_appmanifest(root)
     r = Report()
     r.info(f"game installed: {m.get('installed')}  buildid={m.get('buildid')}")
+    try:
+        live = gamebuild.identify(paths.find_game_dir(root), root)
+        r.info(f"game build: {live.app} (regulation {live.regulation}, exe {live.exe})")
+    except (ErmError, GameBuildError) as exc:
+        r.warn(f"can't identify the game build: {exc}")
     for cs in steam.cloud_saves(root):
         r.info(f"cloud save: account {cs['account_id']} {cs['relpath']} ({cs['size']} B)")
     try:
@@ -68,8 +76,19 @@ def cmd_status(args):
         r.warn(str(exc))
         state = {}
     if state:
-        r.info(f"{len(state)} mod(s) installed:")
-        for mid in sorted(state):
+        mods = sorted(state_mod.mod_ids(state))
+        try:
+            stamped = state_mod.stamped_build(state)
+        except ErmError as exc:
+            # A corrupt stamp must not take the whole status listing down with
+            # it -- the mod list is exactly what you want to see when
+            # installed.json is in a bad way.
+            r.warn(str(exc))
+            stamped = None
+        if stamped:
+            r.info(f"stack built for: {stamped.app}")
+        r.info(f"{len(mods)} mod(s) installed:")
+        for mid in mods:
             e = state[mid]
             r.info(f"  {mid} {e.get('version', '?')} ({e.get('kind', 'game')})")
         if state_mod.has_me3_packages(state):
@@ -84,6 +103,17 @@ def cmd_doctor(args):
     root = paths.find_steam_root()
     game = paths.find_game_dir(root)
     r = run_doctor(game, Report())
+    try:
+        live = gamebuild.identify(game, root)
+    except GameBuildError as exc:
+        r.warn(f"can't identify the game build: {exc}")
+    else:
+        try:
+            stamped = state_mod.stamped_build(state_mod.load_state())
+        except ErmError as exc:
+            r.warn(str(exc))
+            stamped = None
+        doctor_mod.run_build_checks(game, stamped, live, r)
     print(r.render(as_json=args.json))
     return r.exit_code
 

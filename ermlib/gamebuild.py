@@ -114,11 +114,21 @@ def identify(game_dir, steam_root):
     except OSError as exc:
         raise GameBuildError(f"can't read {reg_path}: {exc}") from exc
     regver = read_regulation_version(blob)
+    manifest = steam.read_appmanifest(Path(steam_root))
+    buildid = str(manifest.get("buildid", "") or "")
+    # An absent or "0" buildid means Steam has no usable record of this install.
+    # Defaulting it to "" would be worse than failing: an empty value compares
+    # as a CHANGED one, which can flip a tampered install's classification to
+    # "patched" and let a modified regulation.bin be adopted as vanilla.
+    if not buildid or buildid == "0":
+        raise GameBuildError(
+            f"Steam has no build id for the game at {steam_root} — can't "
+            "identify the installed build")
     return BuildId(
         exe=read_exe_version(game_dir / "eldenring.exe"),
         app=app_version(regver),
         regulation=regver,
-        steam_buildid=str(steam.read_appmanifest(Path(steam_root)).get("buildid", "")),
+        steam_buildid=buildid,
         regulation_sha=hashlib.sha256(blob).hexdigest(),
     )
 

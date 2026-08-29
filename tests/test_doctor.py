@@ -1,6 +1,24 @@
+import struct
+
 from ermlib.report import Report
 from ermlib.doctor import scan_game_dir, run_doctor, eac_state
-from ermlib import harden
+from ermlib import doctor, harden
+from ermlib.gamebuild import BuildId
+
+
+def _fake_exe(major, minor, patch, build):
+    ms = (major << 16) | minor
+    ls = (patch << 16) | build
+    return (b"MZ" + b"\x00" * 64 + struct.pack("<I", 0xFEEF04BD)
+            + struct.pack("<I", 0x00010000) + struct.pack("<II", ms, ls)
+            + b"\x00" * 32)
+
+
+def _bid(**over):
+    base = dict(exe="2.7.0.0", app="1.17.0", regulation="11701000",
+                steam_buildid="23850278", regulation_sha="a" * 64)
+    base.update(over)
+    return BuildId(**base)
 
 
 def test_scan_flags_proxy_and_modengine(tmp_game):
@@ -76,3 +94,49 @@ def test_doctor_reports_hardened_as_safe_not_fail(tmp_game):
     r = run_doctor(tmp_game, Report())
     assert r.worst_level != "fail"
     assert any("hardened" in msg.lower() for _, msg in r.items)
+
+
+def test_stale_hardened_launcher_is_detected_by_version(tmp_game):
+    # The exact skew found on this machine: Steam patched eldenring.exe and
+    # left the swapped launcher on the old build.
+    (tmp_game / "start_protected_game.exe.erm-backup").write_bytes(b"\x00")
+    (tmp_game / "eldenring.exe").write_bytes(_fake_exe(2, 7, 0, 0))
+    (tmp_game / "start_protected_game.exe").write_bytes(_fake_exe(2, 6, 2, 0))
+    assert doctor.launcher_is_stale(tmp_game) == ("2.6.2.0", "2.7.0.0")
+
+
+def test_a_current_swap_is_not_stale(tmp_game):
+    (tmp_game / "start_protected_game.exe.erm-backup").write_bytes(b"\x00")
+    (tmp_game / "eldenring.exe").write_bytes(_fake_exe(2, 7, 0, 0))
+    (tmp_game / "start_protected_game.exe").write_bytes(_fake_exe(2, 7, 0, 0))
+    assert doctor.launcher_is_stale(tmp_game) is None
+
+
+def test_an_unswapped_launcher_is_not_reported_as_stale(tmp_game):
+    # The real EAC launcher is a different product (1.9.4.0) and is SUPPOSED to
+    # differ from eldenring.exe. Only a hardened install can be stale — do NOT
+    # create the erm-backup file here, or is_hardened() would be True and this
+    # test would compare two unrelated products' versions.
+    (tmp_game / "eldenring.exe").write_bytes(_fake_exe(2, 7, 0, 0))
+    (tmp_game / "start_protected_game.exe").write_bytes(_fake_exe(1, 9, 4, 0))
+    assert doctor.launcher_is_stale(tmp_game) is None
+
+
+def test_build_drift_is_reported_as_a_warning(tmp_game):
+    r = doctor.run_build_checks(tmp_game, _bid(app="1.16.0", regulation="11601000",
+                                               exe="2.6.2.0", steam_buildid="1",
+                                               regulation_sha="b" * 64),
+                                _bid(), Report())
+    assert r.worst_level == "warn"
+    assert any("1.16.0" in m and "1.17.0" in m for _, m in r.items)
+
+
+def test_no_drift_reports_the_build_and_stays_ok(tmp_game):
+    r = doctor.run_build_checks(tmp_game, _bid(), _bid(), Report())
+    assert r.worst_level == "ok"
+    assert any("1.17.0" in m for _, m in r.items)
+
+
+def test_an_unstamped_stack_is_reported_not_warned(tmp_game):
+    r = doctor.run_build_checks(tmp_game, None, _bid(), Report())
+    assert r.worst_level == "ok"
