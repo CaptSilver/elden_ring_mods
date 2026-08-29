@@ -9,6 +9,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import NamedTuple
 
 from . import __version__
 from .errors import ErmError
@@ -149,3 +150,54 @@ def variant_key(file_name, mod_id, version):
     words = [t.lower() for t in _SEPARATORS.split(stem) if t]
     return " ".join(w for w in words
                     if w not in drop and w.lstrip("v") not in drop).strip()
+
+
+class PinChoice(NamedTuple):
+    """What to do with one mod's pin.
+
+    `action` is "unchanged", "repin" or "ambiguous". `file` is the file to use
+    and is None only when ambiguous; `candidates` is populated only then.
+    """
+    action: str
+    file: dict
+    candidates: tuple
+    reason: str
+
+
+def resolve_pin(current_file, files, mod_id, frozen=False):
+    """Which file this mod should use now, never guessing between variants.
+
+    The safety property: anything ambiguous keeps the current pin. The worst
+    outcome is a missed update the report names, never a substituted mod --
+    which is what makes moving pins automatically acceptable at all.
+    """
+    if frozen:
+        if current_file is None:
+            raise ErmError(
+                f"mod {mod_id}: `freeze = true` needs a `file_id` — "
+                "there is nothing to freeze")
+        return PinChoice("unchanged", current_file, (), "frozen")
+
+    mains = main_files(files)
+    if not mains:
+        return PinChoice("ambiguous", None, (), "no MAIN file on Nexus")
+
+    if current_file is None:
+        if len(mains) == 1:
+            return PinChoice("unchanged", mains[0], (), "sole MAIN")
+        return PinChoice("ambiguous", None, tuple(mains),
+                         f"{len(mains)} MAIN files — set `file_id`")
+
+    if any(m["file_id"] == current_file["file_id"] for m in mains):
+        return PinChoice("unchanged", current_file, (), "pin is still a MAIN")
+
+    if len(mains) == 1:
+        return PinChoice("repin", mains[0], (), "sole MAIN supersedes the pin")
+
+    key = variant_key(current_file["file_name"], mod_id, current_file.get("version"))
+    matches = [m for m in mains
+               if variant_key(m["file_name"], mod_id, m.get("version")) == key]
+    if len(matches) == 1:
+        return PinChoice("repin", matches[0], (), f"variant {key!r}")
+    return PinChoice("ambiguous", None, tuple(mains),
+                     f"variant {key!r} matched {len(matches)} of {len(mains)} MAIN files")

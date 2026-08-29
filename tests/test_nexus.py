@@ -206,3 +206,83 @@ def test_a_single_digit_version_does_not_eat_name_words():
     # NoFallDead's version is "1". Removing it as a substring rather than a
     # whole token would corrupt any name containing the digit.
     assert "1" not in _key(fx.NOFALLDEAD, 48340, 10402).split()
+
+
+def test_a_superseded_pin_with_one_main_repins():
+    cur = _by_id(fx.CLEVERS, 34558)
+    got = nexus.resolve_pin(cur, fx.CLEVERS, 1928)
+    assert got.action == "repin"
+    assert got.file["file_id"] == 49639
+
+
+def test_a_superseded_pin_among_many_mains_repins_to_its_own_variant():
+    cur = _by_id(fx.MAP_FOR_GOBLINS, 48311)
+    got = nexus.resolve_pin(cur, fx.MAP_FOR_GOBLINS, 10062)
+    assert got.action == "repin"
+    assert got.file["file_id"] == 48939
+
+
+def test_a_pin_that_is_still_a_main_does_not_move():
+    cur = _by_id(fx.NOFALLDEAD, 48340)
+    got = nexus.resolve_pin(cur, fx.NOFALLDEAD, 10402)
+    assert got.action == "unchanged"
+    assert got.file["file_id"] == 48340
+
+
+def test_better_bows_stays_on_its_regulation_despite_a_higher_version_elsewhere():
+    # The page reads 1.5; the 1.5 files are CSV spreadsheets. Selecting on
+    # version would swap a working regulation.bin for a spreadsheet.
+    cur = _by_id(fx.BETTER_BOWS, 41004)
+    got = nexus.resolve_pin(cur, fx.BETTER_BOWS, 4628)
+    assert got.action == "unchanged"
+    assert got.file["file_id"] == 41004
+
+
+def test_an_unmatched_variant_keeps_the_pin():
+    cur = dict(_by_id(fx.MAP_FOR_GOBLINS, 48311))
+    cur["file_name"] = "Something Removed - v2.0.5 10062 v2.0.5 2026-07-14T10-47Z AAAAAAAAA.zip"
+    got = nexus.resolve_pin(cur, fx.MAP_FOR_GOBLINS, 10062)
+    assert got.action == "ambiguous"
+    assert "matched 0 of 9" in got.reason
+
+
+def test_two_variant_matches_keep_the_pin():
+    files = list(fx.MAP_FOR_GOBLINS) + [
+        {"file_id": 99999, "version": "v2.1.2", "category_name": "MAIN",
+         "file_name": "Vanilla or Randomizer - v2.1.2 10062 v2.1.2 2026-08-06T09-00Z BBBBBBBBB.zip"},
+    ]
+    got = nexus.resolve_pin(_by_id(files, 48311), files, 10062)
+    assert got.action == "ambiguous"
+    assert got.file is None
+
+
+def test_no_main_files_at_all_is_ambiguous_not_a_crash():
+    files = [dict(f, category_name="ARCHIVED") for f in fx.CLEVERS]
+    got = nexus.resolve_pin(_by_id(files, 34558), files, 1928)
+    assert got.action == "ambiguous"
+    assert "no MAIN" in got.reason
+
+
+def test_an_unpinned_mod_takes_the_sole_main():
+    got = nexus.resolve_pin(None, fx.CLEVERS, 1928)
+    assert got.action == "unchanged"
+    assert got.file["file_id"] == 49639
+
+
+def test_an_unpinned_mod_with_several_mains_is_ambiguous():
+    got = nexus.resolve_pin(None, fx.NOFALLDEAD, 10402)
+    assert got.action == "ambiguous"
+    assert len(got.candidates) == 2
+
+
+def test_freeze_holds_a_pin_that_would_otherwise_move():
+    cur = _by_id(fx.CLEVERS, 34558)
+    got = nexus.resolve_pin(cur, fx.CLEVERS, 1928, frozen=True)
+    assert got.action == "unchanged"
+    assert got.file["file_id"] == 34558
+    assert got.reason == "frozen"
+
+
+def test_freeze_without_a_file_id_is_an_error():
+    with pytest.raises(ErmError, match="file_id"):
+        nexus.resolve_pin(None, fx.CLEVERS, 1928, frozen=True)
