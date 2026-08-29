@@ -595,6 +595,22 @@ def cmd_apply(args):
         # copies it was written for and false of a prune that deliberately
         # gives up real content to settle a collision.
         r.info(f"pruned {pruned}")
+    # A patched game means the merged files were built against a game that no
+    # longer exists. Fold every mod onto the installed game's own regulation so
+    # the rows the patch added survive alongside the mods' edits.
+    bases = {}
+    try:
+        live = gamebuild.identify(game, steam_root)
+        bases = heal.prepare_rebase(
+            game, live, state_mod.stamped_build(state),
+            [(m, (ME3_DIR / "mods" / m / "regulation.bin").read_bytes())
+             for m in package_ids
+             if (ME3_DIR / "mods" / m / "regulation.bin").exists()])
+    except GameBuildError as exc:
+        r.warn(f"could not check the game build ({exc}) — merging against the "
+               "profile's declared ancestor")
+    if bases:
+        r.info(f"rebasing merges onto the installed build {live.app}")
     try:
         # A declared merge's sources must be faithful before we let resolve()
         # near them: resolve() strips the merged path out of every contributor
@@ -608,7 +624,7 @@ def cmd_apply(args):
             profile.get("merges", []), package_ids, reinstalled_packages)
         merge_notes = []
         merged = conflicts.resolve(ME3_DIR, package_ids, profile.get("merges", []),
-                                   lock=lock, notes=merge_notes)
+                                   lock=lock, notes=merge_notes, bases=bases)
     except ConflictError:
         state_mod.write_state(Path("installed.json"), state)
         # The me3 profile is meant to be a pure function of state, and state has

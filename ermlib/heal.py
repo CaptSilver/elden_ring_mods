@@ -243,6 +243,30 @@ def verify_rebase(merged_blob, baseline_blob, mod_blobs, live):
     return tuple(problems)
 
 
+def prepare_rebase(game_dir, live, stamped, contributors, base=BASELINE_DIR):
+    """The per-path bases a merge should fold onto for the installed build.
+
+    Empty unless the game was actually patched -- an unstamped stack has
+    nothing to rebase from, and a first apply only stamps.
+
+    The adopted regulation becomes the merge's BASE, not its ancestor. The
+    ancestor stays whatever the profile declares, because that is what the mods
+    branched from and it does not change when the game moves. Putting the new
+    file in the ancestor slot would read every row the patch added as a mod
+    deletion.
+    """
+    if gamebuild.classify(stamped, live) != gamebuild.PATCHED:
+        return {}
+    blob = adopt_baseline(game_dir, live, base).read_bytes()
+    problems = layout_gate(blob, contributors)
+    if problems:
+        raise HealError(
+            "the game's param layout moved, so mod rows can't be transplanted "
+            "onto it:\n  " + "\n  ".join(problems) +
+            "\nThose mods need updates built for this game version.")
+    return {"regulation.bin": blob}
+
+
 class Action(NamedTuple):
     """One step of a heal. `data` carries whatever the executor needs."""
     kind: str

@@ -279,6 +279,81 @@ def test_apply_warns_but_keeps_installed_mods_when_the_build_cannot_be_identifie
     assert "mod-a" in state and "mod-b" in state
 
 
+def _fake_baseline(tmp_path, data):
+    p = tmp_path / "fake-baseline.bin"
+    p.write_bytes(data)
+    return p
+
+
+def test_apply_folds_merges_onto_the_game_when_it_has_been_patched(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
+    _seed_two_mod_profile(tmp_path)
+    # A build stamped from a prior apply, older than what identify() reports
+    # below on every field a real patch moves -- this is what makes
+    # classify() see PATCHED rather than UNCHANGED.
+    stamped = BuildId(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                      steam_buildid="1", regulation_sha="b" * 64)
+    (tmp_path / "installed.json").write_text(
+        json.dumps({"_build": dict(stamped._asdict())}))
+    known = BuildId(exe="2.7.0.0", app="1.17.0", regulation="11701000",
+                    steam_buildid="23850278", regulation_sha="a" * 64)
+    monkeypatch.setattr(cli.gamebuild, "identify", lambda game, root: known)
+
+    captured = {}
+    real_resolve = cli.conflicts.resolve
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(cli.conflicts, "resolve", _spy)
+    monkeypatch.setattr(cli.heal, "adopt_baseline",
+                        lambda game, live, base=None: _fake_baseline(tmp_path, b"GAME117"))
+    monkeypatch.setattr(cli.heal, "layout_gate", lambda base, mods: ())
+
+    rc = cli.cmd_apply(_apply_args("two-mod"))
+    capsys.readouterr()
+
+    assert rc == 0
+    assert captured["bases"] == {"regulation.bin": b"GAME117"}
+
+
+def test_apply_on_an_unpatched_game_passes_no_bases(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
+    _seed_two_mod_profile(tmp_path)
+    known = BuildId(exe="2.7.0.0", app="1.17.0", regulation="11701000",
+                    steam_buildid="23850278", regulation_sha="a" * 64)
+    # Stamped equal to what identify() reports -> no drift -> nothing to rebase.
+    (tmp_path / "installed.json").write_text(
+        json.dumps({"_build": dict(known._asdict())}))
+    monkeypatch.setattr(cli.gamebuild, "identify", lambda game, root: known)
+
+    captured = {}
+    real_resolve = cli.conflicts.resolve
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(cli.conflicts, "resolve", _spy)
+
+    rc = cli.cmd_apply(_apply_args("two-mod"))
+    capsys.readouterr()
+
+    assert rc == 0
+    assert not captured.get("bases")
+
+
 def test_apply_seamless_only_backward_compat_uses_real_profile(
         tmp_path, monkeypatch, capsys, tmp_game):
     # Copy the REAL profiles/ dir (carrying the install= field this change

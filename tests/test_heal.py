@@ -360,3 +360,45 @@ def test_no_reharden_omits_it():
                    steam_buildid="1", regulation_sha="b" * 64)
     kinds = _kinds(heal.plan_heal(stamped, _bid(), reharden=False, launcher_stale=True))
     assert "reharden" not in kinds
+
+
+def test_prepare_rebase_is_empty_when_the_game_has_not_moved(tmp_path):
+    assert heal.prepare_rebase(tmp_path, _bid(), _bid(), []) == {}
+
+
+def test_prepare_rebase_is_empty_for_an_unstamped_stack(tmp_path):
+    # Nothing to rebase FROM. A first apply stamps; it does not rebase.
+    assert heal.prepare_rebase(tmp_path, _bid(), None, []) == {}
+
+
+def test_prepare_rebase_offers_the_adopted_baseline_for_a_patched_game(tmp_path, monkeypatch):
+    game = tmp_path / "Game"
+    game.mkdir()
+    import hashlib
+    blob = b"the 1.17 regulation"
+    (game / "regulation.bin").write_bytes(blob)
+    live = _bid(regulation_sha=hashlib.sha256(blob).hexdigest())
+    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                   steam_buildid="1", regulation_sha="b" * 64)
+    monkeypatch.setattr(heal, "layout_gate", lambda base, mods: ())
+    out = heal.prepare_rebase(game, live, stamped, [("clevers", b"mod")],
+                              base=tmp_path / "baselines")
+    assert out == {"regulation.bin": blob}
+
+
+def test_prepare_rebase_stops_the_apply_when_a_layout_moved(tmp_path, monkeypatch):
+    # A moved stride means rows cannot be transplanted. Warning and carrying on
+    # would write a corrupted regulation.
+    game = tmp_path / "Game"
+    game.mkdir()
+    import hashlib
+    blob = b"the 1.17 regulation"
+    (game / "regulation.bin").write_bytes(blob)
+    live = _bid(regulation_sha=hashlib.sha256(blob).hexdigest())
+    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                   steam_buildid="1", regulation_sha="b" * 64)
+    monkeypatch.setattr(heal, "layout_gate",
+                        lambda base, mods: ("clevers: X.param row stride 8 != baseline 16",))
+    with pytest.raises(HealError, match="stride"):
+        heal.prepare_rebase(game, live, stamped, [("clevers", b"mod")],
+                            base=tmp_path / "baselines")
