@@ -1,8 +1,13 @@
+import zipfile
 from pathlib import Path
 
-from . import gamebuild
+from . import gamebuild, manifest
+from .conflicts import MERGED_ID
+from .errors import ErmError
 from .gamebuild import GameBuildError
 from .harden import is_hardened
+
+MERGED_REGULATION = "regulation.bin"
 
 _PROXY = ("dinput8.dll", "winhttp.dll")
 _FORBIDDEN = _PROXY + ("modengine2.dll", "modengine.toml")
@@ -100,8 +105,107 @@ def launcher_is_stale(game_dir):
     return None if swapped == real else (swapped, real)
 
 
-def run_build_checks(game_dir, stamped, live, report):
-    """Report game-build drift. Offline: reads only local files."""
+def merged_regulation_path(state):
+    """Where the merged regulation.bin sits, per installed.json, or None.
+
+    None means the stack composed no regulation at all, so there is no merged
+    artifact whose build could have gone stale.
+    """
+    entry = (state or {}).get(MERGED_ID) or {}
+    package = entry.get("package")
+    if not package or MERGED_REGULATION not in (entry.get("paths") or {}):
+        return None
+    return Path(package) / MERGED_REGULATION
+
+
+def _check_merged_regulation(state, live, report):
+    """Compare the merged regulation on disk against the installed build.
+
+    The build stamp records when `erm apply` last ran, not what the merge was
+    built out of -- apply re-stamps every run while still composing against
+    whatever ancestor the profile names, so a fresh stamp can sit over game
+    data from two patches ago. Only the file itself settles it.
+    """
+    path = merged_regulation_path(state)
+    if path is None:
+        return
+    try:
+        got = gamebuild.read_regulation_version(path.read_bytes())
+    except (OSError, GameBuildError) as exc:
+        report.warn(f"can't read the build of merged regulation.bin ({exc}) — "
+                    "run `erm apply` to rebuild it")
+        return
+    if got == live.regulation:
+        report.ok(f"merged regulation.bin holds the installed build ({got})")
+    else:
+        report.warn(f"merged regulation.bin holds build {got}, game is "
+                    f"{live.regulation} — the merged file carries older game "
+                    f"data than the install")
+
+
+def _declared_vanilla_regulations(profiles_base, report):
+    """(mod id, member) for every regulation ancestor a profile declares.
+
+    Doctor doesn't know which profile is applied and doesn't need to: two
+    profiles declaring the same merged path have to agree or apply refuses
+    them, so whichever declares it names the same ancestor. Deduped, so one
+    declaration shared across the include graph is reported once.
+    """
+    out = []
+    base = Path(profiles_base)
+    for path in sorted(base.glob("*.toml")):
+        try:
+            prof = manifest.load_profile(path.stem, base=base)
+        except (OSError, ErmError, ValueError) as exc:
+            report.warn(f"can't read profile {path.name} ({exc})")
+            continue
+        for entry in prof.get("merges", []):
+            source = entry.get("vanilla") or {}
+            member = str(source.get("member", ""))
+            if not member.lower().endswith(MERGED_REGULATION):
+                continue
+            pair = (source.get("mod"), member)
+            if pair not in out:
+                out.append(pair)
+    return out
+
+
+def _check_vanilla_ancestors(lock, live, report, profiles_base, vendor):
+    """Warn when a merge's declared ancestor is for a different game build.
+
+    This is the one re-running apply cannot fix: a three-way merge's output is
+    only as current as the vanilla file its edits were measured against, so an
+    old ancestor reproduces old game data every rebuild. Nothing is said about
+    an archive that isn't fetched -- there is no artifact on disk making a
+    claim to check.
+    """
+    for mod_id, member in _declared_vanilla_regulations(profiles_base, report):
+        asset = ((lock or {}).get(mod_id) or {}).get("asset")
+        if not asset:
+            continue
+        archive = Path(vendor) / asset
+        if not archive.exists():
+            continue
+        try:
+            with zipfile.ZipFile(archive) as z:
+                blob = z.read(member)
+            got = gamebuild.read_regulation_version(blob)
+        except (OSError, KeyError, zipfile.BadZipFile, GameBuildError) as exc:
+            report.warn(f"can't read the merge ancestor {member} in {asset} ({exc})")
+            continue
+        if got != live.regulation:
+            report.warn(
+                f"merge ancestor {member} in {asset} is build {got}, game is "
+                f"{live.regulation} — merges rebuilt from it stay on the old "
+                f"game data")
+
+
+def run_build_checks(game_dir, stamped, live, report, state=None, lock=None,
+                     profiles_base=Path("profiles"), vendor=Path("vendor")):
+    """Report build drift and any merged artifact built for another build.
+
+    Offline: reads only local files.
+    """
     report.info(f"game build: {live.app} (regulation {live.regulation}, "
                 f"exe {live.exe}, steam buildid {live.steam_buildid})")
     if stamped is None:
@@ -113,9 +217,8 @@ def run_build_checks(game_dir, stamped, live, report):
         else:
             report.warn(f"game build drift: stack built for {stamped.app}, "
                         f"game is {live.app} — run `erm apply`")
-            if stamped.regulation != live.regulation:
-                report.warn(f"merged regulation.bin targets {stamped.regulation}, "
-                            f"game is {live.regulation}")
+    _check_merged_regulation(state, live, report)
+    _check_vanilla_ancestors(lock, live, report, profiles_base, vendor)
     stale = launcher_is_stale(game_dir)
     if stale:
         swapped, real = stale

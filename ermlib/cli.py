@@ -110,11 +110,17 @@ def cmd_doctor(args):
         r.warn(f"can't identify the game build: {exc}")
     else:
         try:
-            stamped = state_mod.stamped_build(state_mod.load_state())
+            state = state_mod.load_state()
+        except ErmError as exc:
+            r.warn(str(exc))
+            state = {}
+        try:
+            stamped = state_mod.stamped_build(state)
         except ErmError as exc:
             r.warn(str(exc))
             stamped = None
-        doctor_mod.run_build_checks(game, stamped, live, r)
+        doctor_mod.run_build_checks(game, stamped, live, r, state=state,
+                                    lock=manifest.load_lock("mods.lock.toml"))
     print(r.render(as_json=args.json))
     return r.exit_code
 
