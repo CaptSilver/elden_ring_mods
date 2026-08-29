@@ -53,13 +53,25 @@ def adopt_baseline(game_dir, live, base=BASELINE_DIR):
     kept so an old merge can be reproduced, and so a tampered install has
     something known-good to fall back to.
 
-    Before writing, the blob is re-hashed against `live.regulation_sha` -- the
-    digest it was identified by when the plan was built. Anything else means
-    the install changed underneath the heal between planning and adopting, and
-    the bytes in hand are no longer the ones that were classified as safe.
+    Whichever copy comes back is re-hashed against `live.regulation_sha` -- the
+    digest the install was identified by when the plan was built. For a fresh
+    adoption anything else means the install changed underneath the heal
+    between planning and adopting. For one already kept it means the file the
+    baseline was taken from is not the file installed now: the build stamp is
+    eight bytes and says nothing about the rest of a regulation, so two
+    different files can carry the same one, and folding a merge onto the wrong
+    one still produces output that claims the installed build.
     """
     dest = baseline_path(live.regulation, base)
     if dest.exists():
+        kept = hashlib.sha256(dest.read_bytes()).hexdigest()
+        if kept != live.regulation_sha:
+            raise HealError(
+                f"{dest} was kept as the baseline for build {live.regulation}, "
+                f"but it is not the regulation now installed (kept "
+                f"{kept[:12]}, installed {live.regulation_sha[:12]}) — run "
+                f"Steam → Verify integrity of game files, or move that baseline "
+                f"aside so this build's real file can be adopted")
         return dest
     src = Path(game_dir) / REGULATION
     try:

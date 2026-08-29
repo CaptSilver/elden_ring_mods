@@ -33,16 +33,20 @@ def test_adopting_copies_the_games_regulation(tmp_path):
     assert dest.name == "regulation-11701000.bin"
 
 
-def test_adopting_is_idempotent_and_keeps_the_first_copy(tmp_path):
+def test_adopting_refuses_a_second_file_under_one_build_and_keeps_the_first(tmp_path):
+    # Two different regulations carrying one build stamp. Re-copying would let
+    # a tampered install quietly replace a baseline already trusted; handing
+    # back the kept one would fold the merge onto bytes the game does not have,
+    # and the output would still claim the installed build. So: keep the copy,
+    # stop the run.
     game = tmp_path / "Game"
     game.mkdir()
     (game / "regulation.bin").write_bytes(b"first")
     base = tmp_path / "baselines"
-    heal.adopt_baseline(game, _bid(regulation_sha=_sha(b"first")), base)
+    dest = heal.adopt_baseline(game, _bid(regulation_sha=_sha(b"first")), base)
     (game / "regulation.bin").write_bytes(b"second")
-    dest = heal.adopt_baseline(game, _bid(regulation_sha=_sha(b"second")), base)
-    # Same build id -> same baseline. Re-copying would let a later tampered
-    # install quietly replace a baseline we already trusted.
+    with pytest.raises(HealError, match="not the regulation"):
+        heal.adopt_baseline(game, _bid(regulation_sha=_sha(b"second")), base)
     assert dest.read_bytes() == b"first"
 
 
@@ -89,16 +93,15 @@ def test_adopting_accepts_the_file_it_was_identified_from(tmp_path):
     assert dest.read_bytes() == blob
 
 
-def test_an_already_adopted_baseline_is_not_rehashed(tmp_path):
-    # The early return must come before any read of the game file, so a stale
-    # or mismatched install cannot invalidate a baseline already trusted.
+def test_an_already_adopted_baseline_is_returned_without_reading_the_install(tmp_path):
+    # Keyed by build and never overwritten: the kept copy is the answer, and
+    # the game file is not read again to produce it.
     game = tmp_path / "Game"
     game.mkdir()
-    (game / "regulation.bin").write_bytes(b"whatever")
     base = tmp_path / "baselines"
     base.mkdir()
     (base / "regulation-11701000.bin").write_bytes(b"already here")
-    dest = heal.adopt_baseline(game, _bid(regulation_sha="0" * 64), base)
+    dest = heal.adopt_baseline(game, _bid(regulation_sha=_sha(b"already here")), base)
     assert dest.read_bytes() == b"already here"
 
 
