@@ -9,6 +9,7 @@ calls 1.17). The app version comes out of regulation.bin, where the mapping is
 verified against every file we have. Don't cross them.
 """
 import hashlib
+import json
 import struct
 from pathlib import Path
 from typing import NamedTuple
@@ -76,6 +77,52 @@ def read_regulation_version(blob):
             f"regulation version field is not ASCII: {raw!r}") from exc
 
 
+# Decrypting the ~1.9 MB regulation in pure Python costs about five seconds,
+# and `erm status` and `erm doctor` both want its build stamp on every run.
+# Lives under tools/, already gitignored runtime state.
+CACHE_PATH = Path("tools/build-stamps.json")
+
+
+def _read_stamp_cache(path):
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_stamp_cache(path, cache):
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache, indent=2, sort_keys=True))
+    except OSError:
+        # A cache that can't be written costs the next run five seconds. It
+        # cannot make an answer wrong, so it is not worth failing a command
+        # that has everything it needs.
+        pass
+
+
+def cached_regulation_version(blob, cache_path=None):
+    """read_regulation_version, memoised on the sha256 of the encrypted bytes.
+
+    Hashing costs about a millisecond and changes the moment any byte of the
+    file does, so a regulation that moved cannot read its old answer back --
+    the cache is keyed by the thing being decoded, not by a path or an mtime.
+    A cache that can't be read or written makes a run slow, never wrong.
+    """
+    key = hashlib.sha256(blob).hexdigest()
+    path = Path(cache_path) if cache_path is not None else CACHE_PATH
+    cache = _read_stamp_cache(path)
+    hit = cache.get(key)
+    if isinstance(hit, str):
+        return hit
+    version = read_regulation_version(blob)
+    cache[key] = version
+    _write_stamp_cache(path, cache)
+    return version
+
+
 class BuildId(NamedTuple):
     """Everything that identifies an installed build, from three sources.
 
@@ -113,7 +160,7 @@ def identify(game_dir, steam_root):
         blob = reg_path.read_bytes()
     except OSError as exc:
         raise GameBuildError(f"can't read {reg_path}: {exc}") from exc
-    regver = read_regulation_version(blob)
+    regver = cached_regulation_version(blob)
     manifest = steam.read_appmanifest(Path(steam_root))
     buildid = str(manifest.get("buildid", "") or "")
     # An absent or "0" buildid means Steam has no usable record of this install.

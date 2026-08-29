@@ -2,6 +2,8 @@ import pathlib
 import shutil
 import pytest
 
+from ermlib import gamebuild
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 REAL_SAVE = REPO / "backups" / "pre-quarantine" / "ER0000.sl2.2025-02-15"
 
@@ -21,3 +23,9 @@ def tmp_game(tmp_path):
     (g / "eldenring.exe").write_bytes(b"\x00")
     (g / "start_protected_game.exe").write_bytes(b"\x00" * 16)
     return g
+
+
+@pytest.fixture(autouse=True)
+def _isolated_build_cache(tmp_path, monkeypatch):
+    """Keep the build-stamp cache out of the repo while tests run."""
+    monkeypatch.setattr(gamebuild, "CACHE_PATH", tmp_path / "build-stamps.json")

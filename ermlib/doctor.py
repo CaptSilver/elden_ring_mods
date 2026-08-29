@@ -130,7 +130,7 @@ def _check_merged_regulation(state, live, report):
     if path is None:
         return
     try:
-        got = gamebuild.read_regulation_version(path.read_bytes())
+        got = gamebuild.cached_regulation_version(path.read_bytes())
     except (OSError, GameBuildError) as exc:
         report.warn(f"can't read the build of merged regulation.bin ({exc}) — "
                     "run `erm apply` to rebuild it")
@@ -189,7 +189,7 @@ def _check_vanilla_ancestors(lock, live, report, profiles_base, vendor):
         try:
             with zipfile.ZipFile(archive) as z:
                 blob = z.read(member)
-            got = gamebuild.read_regulation_version(blob)
+            got = gamebuild.cached_regulation_version(blob)
         except (OSError, KeyError, zipfile.BadZipFile, GameBuildError) as exc:
             report.warn(f"can't read the merge ancestor {member} in {asset} ({exc})")
             continue

@@ -85,6 +85,64 @@ def test_undecryptable_regulation_raises(monkeypatch):
         gamebuild.read_regulation_version(b"anything")
 
 
+def _payload(version=b"11701000"):
+    payload = bytearray(b"BND4" + b"\x00" * 0x40)
+    payload[0x18:0x20] = version
+    return bytes(payload)
+
+
+def test_a_repeat_read_of_the_same_regulation_does_not_decrypt_again(tmp_path, monkeypatch):
+    # The whole point: decrypting the real 1.9 MB file costs seconds, and
+    # `erm status` and `erm doctor` both want the answer on every run.
+    calls = []
+    monkeypatch.setattr(gamebuild.regulation, "unpack",
+                        lambda blob: calls.append(blob) or _payload())
+    cache = tmp_path / "stamps.json"
+    assert gamebuild.cached_regulation_version(b"encrypted", cache) == "11701000"
+    assert gamebuild.cached_regulation_version(b"encrypted", cache) == "11701000"
+    assert len(calls) == 1
+
+
+def test_a_changed_regulation_misses_the_cache(tmp_path, monkeypatch):
+    cache = tmp_path / "stamps.json"
+    monkeypatch.setattr(gamebuild.regulation, "unpack", lambda blob: _payload(b"11601000"))
+    assert gamebuild.cached_regulation_version(b"old bytes", cache) == "11601000"
+    monkeypatch.setattr(gamebuild.regulation, "unpack", lambda blob: _payload(b"11701000"))
+    assert gamebuild.cached_regulation_version(b"new bytes", cache) == "11701000"
+
+
+def test_a_corrupt_cache_is_rebuilt_rather_than_fatal(tmp_path, monkeypatch):
+    cache = tmp_path / "stamps.json"
+    cache.write_text("{not json")
+    monkeypatch.setattr(gamebuild.regulation, "unpack", lambda blob: _payload())
+    assert gamebuild.cached_regulation_version(b"encrypted", cache) == "11701000"
+    assert gamebuild.cached_regulation_version(b"encrypted", cache) == "11701000"
+
+
+def test_a_cache_that_cannot_be_written_still_returns_the_right_answer(tmp_path, monkeypatch):
+    blocked = tmp_path / "nowhere"
+    blocked.write_text("i am a file, not a directory")
+    monkeypatch.setattr(gamebuild.regulation, "unpack", lambda blob: _payload())
+    assert gamebuild.cached_regulation_version(
+        b"encrypted", blocked / "stamps.json") == "11701000"
+
+
+def test_identify_reads_the_stamp_through_the_cache(tmp_path, monkeypatch):
+    game = tmp_path / "Game"
+    game.mkdir()
+    (game / "eldenring.exe").write_bytes(_fake_exe(2, 7, 0, 0))
+    (game / "regulation.bin").write_bytes(b"encrypted")
+    calls = []
+    monkeypatch.setattr(gamebuild.regulation, "unpack",
+                        lambda blob: calls.append(blob) or _payload())
+    monkeypatch.setattr(gamebuild.steam, "read_appmanifest",
+                        lambda root: {"buildid": "23850278"})
+    monkeypatch.setattr(gamebuild, "CACHE_PATH", tmp_path / "stamps.json")
+    assert gamebuild.identify(game, tmp_path).regulation == "11701000"
+    assert gamebuild.identify(game, tmp_path).regulation == "11701000"
+    assert len(calls) == 1
+
+
 from ermlib.gamebuild import BuildId
 
 
