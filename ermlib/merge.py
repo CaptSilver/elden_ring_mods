@@ -4,6 +4,8 @@ me3 mounts one file per path, last writer wins, so two mods shipping the same
 archive means one of them silently isn't there. Where the conflict is resolvable
 we merge; where it isn't, conflicts.py refuses to guess.
 """
+from typing import NamedTuple
+
 from .errors import ErmError
 from .formats import bnd4, dcx, fmg
 
@@ -22,6 +24,13 @@ class _Absent:
 
 
 ABSENT = _Absent()
+
+
+class RowCollision(NamedTuple):
+    """The game and a mod each added a different row under one id, with no
+    ancestor row to locate either edit against."""
+    entry_id: int
+    row_id: int
 
 
 def fmg_union(base, other):
@@ -211,7 +220,7 @@ def _merge_row(base, other, vanilla, entry_id, rid):
     return bytes(out)
 
 
-def _merge_param(base_blob, other_blob, van_blob, entry_id):
+def _merge_param(base_blob, other_blob, van_blob, entry_id, notes=None):
     """Three-way row merge of one param. Returns new bytes, or None if unchanged."""
     from .formats import param
     b, o, v = (param.read(x) for x in (base_blob, other_blob, van_blob))
@@ -231,6 +240,17 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id):
         if not same_bv:
             if bd is not None and od is not None and _content_equal(bd, od):
                 continue                   # both sides made the same edit
+            if vd is None and bd is not None and od is not None:
+                # Neither side inherited this row: the game added one in a
+                # patch and a mod added a different one under the same id, so
+                # there is no ancestor to locate either edit against. The mod's
+                # wins. Renumbering the loser keeps its bytes and loses its
+                # behaviour -- a shop row is reached by id range, so a fresh id
+                # puts it outside the block that reaches it.
+                if notes is not None:
+                    notes.append(RowCollision(entry_id, rid))
+                overwrite[rid] = od
+                continue
             merged = _merge_row(bd, od, vd, entry_id, rid)
             if merged == bd:
                 continue                   # everything the other side did, base already had
@@ -267,7 +287,7 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id):
     return param.write(patched)
 
 
-def param_rows(base, other, vanilla):
+def param_rows(base, other, vanilla, notes=None):
     """Transplant `other`'s param-row edits onto `base`'s regulation.bin.
 
     Which rows to move is derived from the data, never configured: a row the
@@ -304,7 +324,7 @@ def param_rows(base, other, vanilla):
         if base_blob == other_blob or other_blob == van_blob:
             continue
         try:
-            merged = _merge_param(base_blob, other_blob, van_blob, eid)
+            merged = _merge_param(base_blob, other_blob, van_blob, eid, notes=notes)
         except ParamError:
             # A layout the reader refuses. If the other side is byte-identical to
             # vanilla it has no edit to lose and base wins by default; if base is
@@ -417,9 +437,13 @@ def esd_three_way(base, other, vanilla, notes=None):
 def describe_note(note):
     """Render a strategy's structured note as the sentence an apply report shows.
 
-    Only esd-3way produces notes today; this indirection means a caller
-    displaying one doesn't need to import esdmerge itself to do it.
+    This indirection means a caller displaying a note doesn't need to import
+    esdmerge itself, or know which strategy produced it, to do it.
     """
+    if isinstance(note, RowCollision):
+        return (f"entry {note.entry_id} row {note.row_id}: the game and a mod "
+                f"each added a different row under this id — kept the mod's, "
+                f"dropped the game's")
     from . import esdmerge
     return esdmerge.describe(note)
 
@@ -433,4 +457,4 @@ NEEDS_VANILLA = frozenset({"fmg-3way", "param-rows", "esd-3way"})
 # Strategies that report back things they couldn't carry over cleanly.
 # conflicts.py only threads a notes list through for these -- every other
 # strategy keeps the plain two/three-argument call it always had.
-NEEDS_NOTES = frozenset({"esd-3way"})
+NEEDS_NOTES = frozenset({"esd-3way", "param-rows"})

@@ -275,15 +275,61 @@ def test_param_rows_refuses_a_single_row_whose_extra_bytes_are_not_padding():
         merge.param_rows(base, other, van)
 
 
-def test_param_rows_refuses_a_row_both_sides_added_with_different_content():
+def test_param_rows_keeps_the_mods_row_when_the_game_and_a_mod_each_invent_one():
     """Rebasing onto a newer game build meets rows vanilla never had: the 1.17
     patch and a mod both claim ShopLineupParam 101896 with different bytes.
-    There is no ancestor to locate either edit against, so neither can win."""
+    There is no ancestor to locate either edit against, so renumbering the
+    loser isn't an option either -- a shop row is reached by id range, and
+    101880-101920 is a full block with no free slot to move it to. The mod's
+    row wins and the drop is named so it reaches the apply report."""
     van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
     base = _regulation({1: (SP, {1: b"\xab" * 8, 101896: b"\x11" * 8}, 8)})
     other = _regulation({1: (SP, {1: b"\xab" * 8, 101896: b"\x22" * 8}, 8)})
-    with pytest.raises(merge.MergeError, match="101896"):
-        merge.param_rows(base, other, van)
+    notes = []
+    out = merge.param_rows(base, other, van, notes=notes)
+    assert _rows(out, 1)[101896] == b"\x22" * 8
+    assert notes == [merge.RowCollision(1, 101896)]
+
+
+def test_param_rows_keeps_a_row_only_the_game_added():
+    """18 of the 19 rows 1.17 added are in no mod's file at all. Losing them
+    to the new collision rule would silently strip the patch's own content --
+    the rule must only fire when a mod also claimed the same id."""
+    van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8, 99: b"\x33" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    out = merge.param_rows(base, other, van)
+    assert _rows(out, 1)[99] == b"\x33" * 8
+
+
+def test_param_rows_still_inserts_a_row_only_the_mod_added():
+    """The collision rule requires the game to have added a row under the same
+    id too -- it must not intercept the ordinary new-row insert path."""
+    van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\xab" * 8, 99: b"\x44" * 8}, 8)})
+    out = merge.param_rows(base, other, van)
+    assert _rows(out, 1)[99] == b"\x44" * 8
+
+
+def test_param_rows_still_merges_a_genuine_conflict_when_vanilla_has_the_row():
+    """The collision rule applies only when vanilla lacks the row entirely.
+    Here vanilla has it, so there IS a common version to locate each side's
+    edit against, and the ordinary byte-level merge must keep running instead
+    -- disjoint field edits are not a collision either way."""
+    van = _regulation({1: (SP, {5: bytes(8)}, 8)})
+    base = _regulation({1: (SP, {5: b"\xaa" + bytes(7)}, 8)})              # byte 0
+    other = _regulation({1: (SP, {5: bytes(4) + b"\xbb" + bytes(3)}, 8)})  # byte 4
+    notes = []
+    out = merge.param_rows(base, other, van, notes=notes)
+    assert _rows(out, 1)[5] == b"\xaa" + bytes(3) + b"\xbb" + bytes(3)
+    assert notes == []
+
+
+def test_describe_note_renders_a_row_collision():
+    text = merge.describe_note(merge.RowCollision(145, 101896))
+    assert "145" in text and "101896" in text
+    assert "mod" in text.lower() and "drop" in text.lower()
 
 
 def test_param_rows_refuses_when_the_base_dropped_a_row_the_other_side_edited():
