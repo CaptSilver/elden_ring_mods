@@ -122,12 +122,15 @@ def fmg_three_way(base, other, vanilla):
 def _content_equal(a, b):
     """Whether two rows hold the same content, tolerating a differing stride.
 
-    Ten shipped params derive a different row width per file: FromSoft's writer
-    emits trailing padding SoulsFormats does not, and the derived stride absorbs
-    it. Where the widths agree this is a plain byte comparison; where they don't,
-    only the overlap is content and the excess is container padding. That
-    tolerance is confined to the mismatched case on purpose — applying it
-    everywhere would hide a real edit that happens to sit in the tail.
+    Ten shipped params derive a different row width per file: the bytes between
+    the last row and the strings block — in practice the param type name, not
+    padding — fold into a one-row param's derived stride, so the same row can
+    measure a few bytes different from file to file. Where the widths agree
+    this is a plain byte comparison; where they don't, only the overlap is the
+    row's actual content, and the excess belongs to whichever file it came
+    from rather than being an edit. That tolerance is confined to the
+    mismatched case on purpose — applying it everywhere would hide a real edit
+    that happens to sit in the tail.
     """
     return a == b if len(a) == len(b) else a[:min(len(a), len(b))] == b[:min(len(a), len(b))]
 
@@ -135,11 +138,15 @@ def _content_equal(a, b):
 def _fit_to_stride(row, base_row, stride, entry_id, rid):
     """Re-widen a transplanted row to the base file's row width.
 
-    Only reachable where the two strides can't be compared -- a one-row param,
-    whose derived width is the row plus alignment padding. The content is the
-    overlap; the padding belongs to the file it came from, so the base keeps
-    its own. Excess that isn't zero is content rather than padding, and losing
-    it silently is exactly what the stride guard exists to prevent.
+    Reachable whenever the two strides aren't compared, which is whenever
+    either side has one row or fewer -- so a multi-row param on the other side
+    can land here too, not just a one-row param. The excess beyond the row
+    itself is whatever the base file keeps between the last row and the
+    strings block -- in practice the param type name -- and it must come from
+    the base, never be synthesised or zero-filled: it's the base file's own
+    content, so the base keeps its own tail. A non-zero excess on the
+    transplanted side refuses because it's real content rather than padding,
+    and losing it silently is exactly what the stride guard exists to prevent.
     """
     if len(row) == stride:
         return row
@@ -240,11 +247,12 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id):
                     f"entry {entry_id} row {rid} differs, but the two files disagree on "
                     f"row stride ({b.stride} vs {o.stride}) — the row can't be "
                     f"transplanted without a paramdef to reinterpret it")
-            # A one-row param's width is the row plus whatever alignment the
-            # writer left, so a mismatch here says nothing about where the
-            # fields sit. Refusing would block every rebase onto the game's own
-            # regulation, where ten shipped params measure wider than the same
-            # table in a mod's re-saved copy.
+            # A one-row param's derived width folds in whatever the base file
+            # keeps before the strings block -- the param type name, not
+            # alignment padding -- so a mismatch here says nothing about where
+            # the fields sit. Refusing would block every rebase onto the game's
+            # own regulation, where ten shipped params measure wider than the
+            # same table in a mod's re-saved copy.
             od = _fit_to_stride(od, bd, b.stride, entry_id, rid)
         if rid in br:
             overwrite[rid] = od

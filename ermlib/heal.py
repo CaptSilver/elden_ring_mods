@@ -111,8 +111,9 @@ def layout_gate(baseline_blob, mod_blobs):
     param_layouts records those as None and there is nothing to compare.
 
     A one-row param's stride is NOT compared, only its paramdef version: with
-    no inter-row gap the width is the row plus alignment padding, and the game
-    and a mod's re-saved copy round that differently. See
+    no inter-row gap the derived width folds in whatever the file keeps before
+    the strings block -- the param type name, not alignment padding -- and the
+    game and a mod's re-saved copy round that differently. See
     param.strides_comparable.
     """
     base = param_layouts(baseline_blob)

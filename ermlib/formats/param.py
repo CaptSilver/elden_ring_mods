@@ -70,10 +70,12 @@ class Param(NamedTuple):
 def _derive_stride(offsets, strings_off, row_count):
     """Row width, from the gaps between consecutive row-data offsets.
 
-    Deliberately NOT (strings_off - data_off) / row_count: that formula silently
-    absorbs any trailing alignment padding into the stride, which then slices
-    every row a few bytes wide. With one row there are no gaps to measure, so
-    that formula is the only option left and the padding risk is unavoidable.
+    Deliberately NOT (strings_off - data_off) / row_count: whatever the file
+    keeps between the last row and the strings block -- in practice the param
+    type name, not alignment padding -- would get divided across every row and
+    silently widen each one by a few bytes. With one row there are no gaps to
+    measure, so that formula is the only option left, and folding that excess
+    into the one row it derives is unavoidable.
     """
     if row_count == 1:
         return strings_off - offsets[0]
