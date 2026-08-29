@@ -66,7 +66,7 @@ Run `python3 erm fetch <profile>` to pick a profile other than the default.
 
 | Command | What it does |
 |---|---|
-| `erm doctor` | Read-only safety report: EAC armed/disarmed, forbidden DLLs or spawner mods in `Game/`, launch-option sanity. Run before every play session and after any Steam update. |
+| `erm doctor` | Read-only safety report: EAC armed/disarmed, forbidden DLLs or spawner mods in `Game/`, launch-option sanity. Also reports game-build drift — whether the installed build has moved since the stack was applied, whether the merged `regulation.bin` on disk holds the build the game is on, and whether the hardened launcher has fallen behind the exe. Run before every play session and after any Steam update. |
 | `erm fetch [profile]` | Downloads and sha256-verifies GitHub-sourced mods into `vendor/`, updates `mods.lock.toml`. Prints manual download steps for Nexus-sourced mods (scripted download would violate Nexus's ToS for free accounts, so `erm` never pretends to do it). |
 | `erm apply [profile]` | Installs the locked mod set into `Game/`. Re-injects `COOP_PASSWORD` into `ersc_settings.ini` every time, since an ERSC update blanks it. Idempotent. |
 | `erm verify` | Re-hashes everything in `vendor/` against `mods.lock.toml` and reports mismatches. Integrity check, not a ban-safety check. |
@@ -74,6 +74,7 @@ Run `python3 erm fetch <profile>` to pick a profile other than the default.
 | `erm backup [--label X]` | Snapshots the current `.co2` save to `backups/`. Steam Cloud does not back up `.co2`, so this is the only backup path for co-op saves. |
 | `erm restore <name>` | Restores a snapshot from `backups/`, taking a pre-restore backup of whatever's currently there first. |
 | `erm quarantine` | Moves `ER0000.sl2` (the vanilla save) out of the Steam prefix into `backups/quarantine/` and prints the Steam Cloud steps needed to stop it re-syncing. Refuses to run while Steam is up. |
+| `erm refresh [--dry-run]` | Prints what rebuilding the stack against the installed game build would take, in order — adopt the new regulation as the merge baseline, re-resolve pins, gate the param layouts, rebuild, verify, re-stamp. It only prints: running the rebuild is not built yet, and a build that changed without a patch is refused outright. |
 | `erm status` | One-screen summary: install state, cloud saves present, applied profile. |
 | `erm launch-option` | Prints the exact Steam launch-option string, plus a validator variant that dumps the real argv so you can confirm the substitution worked before trusting it. |
 

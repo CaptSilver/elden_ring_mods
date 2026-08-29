@@ -1,9 +1,16 @@
 """Rebuild the stack against the game build that is actually installed.
 
 The merge engine is already a rebase engine: param-rows transplants a mod's
-authored rows onto a base file. Swap the base for the patched game's own
+authored rows onto a base file. Swap that base for the patched game's own
 regulation.bin and every regulation mod forward-ports by itself -- provided no
 param's row layout moved, which is what the layout gate certifies.
+
+"Baseline" throughout this module means that base: merge.param_rows' `base`
+argument, the file rows are transplanted ONTO. It is never that function's
+`vanilla`, which stays the older regulation the mods were built against and is
+what says which rows a mod authored in the first place. The two arguments have
+opposite effects, and passing the new game's regulation as `vanilla` would
+read every row the patch changed as a mod edit and revert it.
 
 Planning is separated from execution so a dry run costs nothing and the risky
 part is testable without a filesystem. This is the code that can quietly
@@ -32,7 +39,10 @@ def baseline_path(regver, base=BASELINE_DIR):
 
 
 def adopt_baseline(game_dir, live, base=BASELINE_DIR):
-    """Take the installed game's regulation.bin as the vanilla merge baseline.
+    """Keep the installed game's regulation.bin as the merge baseline.
+
+    The baseline is what rows get transplanted onto, not what they are compared
+    against -- see the module docstring on why those must not be swapped.
 
     Keyed by build version and never overwritten. Every historical baseline is
     kept so an old merge can be reproduced, and so a tampered install has

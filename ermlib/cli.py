@@ -67,7 +67,7 @@ def cmd_status(args):
     try:
         live = gamebuild.identify(paths.find_game_dir(root), root)
         r.info(f"game build: {live.app} (regulation {live.regulation}, exe {live.exe})")
-    except (ErmError, GameBuildError) as exc:
+    except ErmError as exc:          # GameBuildError is one of these
         r.warn(f"can't identify the game build: {exc}")
     for cs in steam.cloud_saves(root):
         r.info(f"cloud save: account {cs['account_id']} {cs['relpath']} ({cs['size']} B)")
@@ -135,7 +135,13 @@ def cmd_refresh(args):
                              reharden=not args.no_reharden,
                              launcher_stale=bool(doctor_mod.launcher_is_stale(game)))
     if not actions:
-        r.ok(f"stack is already built for {live.app} — nothing to do")
+        if stamped is None:
+            # An unstamped stack plans nothing because there is no recorded
+            # build to have drifted from -- not because it is up to date.
+            r.info(f"stack build not recorded — can't tell whether this stack "
+                   f"matches build {live.app}. Run `erm apply` to stamp it.")
+        else:
+            r.ok(f"stack is already built for {live.app} — nothing to do")
         print(r.render(as_json=args.json))
         return r.exit_code
     for a in actions:
@@ -143,6 +149,12 @@ def cmd_refresh(args):
             r.fail(a.detail)
         else:
             r.info(f"{a.kind}: {a.detail}")
+    if all(a.kind == "refuse" for a in actions):
+        # Nothing to execute: the refusal is the whole outcome. Following it
+        # with "executing a heal is not wired up yet" would point at a missing
+        # feature nobody was asking for here.
+        print(r.render(as_json=args.json))
+        return r.exit_code
     if args.dry_run:
         r.info("dry run — nothing was changed")
         print(r.render(as_json=args.json))
@@ -1222,7 +1234,9 @@ def register(subparsers):
                      help="skip auto-harden even if the new profile loads mods via a proxy DLL/me3")
     sw.set_defaults(func=cmd_switch)
     subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
-    p_refresh = subparsers.add_parser("refresh", help="rebuild the stack against the installed game build")
+    p_refresh = subparsers.add_parser(
+        "refresh",
+        help="report what rebuilding the stack against the installed game build would take")
     p_refresh.add_argument("--dry-run", action="store_true",
                            help="print the plan without changing anything")
     p_refresh.add_argument("--no-reharden", action="store_true",

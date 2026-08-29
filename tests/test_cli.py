@@ -406,11 +406,22 @@ def _stamp(tmp_path, build):
     state_mod.write_state(tmp_path / "installed.json", state)
 
 
-def test_refresh_reports_nothing_to_do_when_unstamped(tmp_path, monkeypatch, capsys):
+def test_refresh_on_an_unstamped_stack_does_not_claim_the_build_matches(tmp_path, monkeypatch, capsys):
     # No installed.json at all -> stamped_build() is None -> plan_heal(None, ...)
     # plans nothing, which is correct: there is no prior build to have drifted
-    # from, not a bug.
+    # from. But "already built for 1.17.0" claims knowledge nothing has -- the
+    # stack could have been built against anything.
     _refresh_fixture(tmp_path, monkeypatch)
+    rc = cli.cmd_refresh(_refresh_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "already built for" not in out
+    assert "not recorded" in out
+
+
+def test_refresh_says_nothing_to_do_when_the_stamp_matches(tmp_path, monkeypatch, capsys):
+    _refresh_fixture(tmp_path, monkeypatch)
+    _stamp(tmp_path, _bid())
     rc = cli.cmd_refresh(_refresh_args())
     out = capsys.readouterr().out
     assert rc == 0
@@ -443,6 +454,19 @@ def test_refresh_without_dry_run_prints_the_plan_then_raises(tmp_path, monkeypat
     out = capsys.readouterr().out
     for kind in ("adopt-baseline", "repin", "gate", "rebuild", "verify", "stamp"):
         assert kind in out
+
+
+def test_refresh_on_a_tampered_build_exits_on_the_refusal(tmp_path, monkeypatch, capsys):
+    # The plan is one refusal and nothing else, so the refusal IS the outcome.
+    # Following it with "executing a heal is not wired up yet" points at the
+    # wrong thing -- there is nothing here anyone would want executed.
+    _refresh_fixture(tmp_path, monkeypatch)
+    _stamp(tmp_path, _bid(regulation_sha="b" * 64))
+    rc = cli.cmd_refresh(_refresh_args(dry_run=False))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Verify integrity" in out
+    assert "not wired up" not in out
 
 
 def test_refresh_no_reharden_flag_suppresses_the_reharden_step(tmp_path, monkeypatch, capsys):
