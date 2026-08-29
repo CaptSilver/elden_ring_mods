@@ -44,8 +44,8 @@ requires_all_players = true
 #
 # Held at 25.0 on purpose: it's the `prefer` mod in the six-way regulation
 # merge and `requires_all_players`, and 26.1 (file 49639) changes both
-# movesets and regulation contents. Taking it alongside the patch-adaptability
-# work would tangle two possible failure sources into one. It moves on its
+# movesets and regulation contents. Taking it now would tangle two possible
+# failure sources into one. It moves on its
 # own, with its own in-game pass, once both players update together — drop
 # `freeze` when that happens.
 [[mods]]
