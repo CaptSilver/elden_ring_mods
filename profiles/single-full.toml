@@ -23,6 +23,19 @@ asset_match = "me3-windows-amd64"
 kind = "loader"
 install = "me3"
 
+# The native Linux launcher: Steam runs THIS, and me3 builds the Proton command
+# itself. Same release as the Windows build above, different archive — the .zip
+# has no bin/me3. Installed to ~/.local/bin (and its Windows components to
+# ~/.local/share/me3/windows-bin), which is where the launch option points.
+[[mods]]
+id = "me3-host"
+source = "github"
+repo_id = 540883721
+asset_match = "me3-linux-amd64"
+asset_suffix = ".tar.gz"
+kind = "loader"
+install = "me3-host"
+
 # --- randomizer ---
 # item-enemy-randomizer DISABLED — Clever's Moveset (composed from gameplay-extras)
 # claims the single regulation.bin slot; only ONE regulation mod can be active.

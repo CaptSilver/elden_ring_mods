@@ -214,6 +214,10 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
         if mod["source"] == "github":
             locked = lock.get(mod["id"])
             pinned = not update and locked and locked.get("version")
+            # me3 publishes the Linux build as .tar.gz beside the Windows .zip,
+            # so the extension is per-mod. Defaulting it to .zip would fetch the
+            # wrong platform's build and report success.
+            suffix = mod.get("asset_suffix", ".zip")
             try:
                 if pinned:
                     # Reproducibility promise: everyone who clones the repo and
@@ -221,15 +225,15 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                     # newest. Verify against the sha we already trust — if
                     # upstream mutated the tagged asset, fail closed.
                     rel = github.release_by_tag(mod["repo_id"], locked["version"])
-                    asset = github.pick_asset(rel, suffix=".zip",
+                    asset = github.pick_asset(rel, suffix=suffix,
                                                name_hint=mod.get("asset_match"))
                     digest = locked.get("sha256") or ""
                 else:
                     rel = github.latest_release(mod["repo_id"])
-                    asset = github.pick_asset(rel, suffix=".zip",
+                    asset = github.pick_asset(rel, suffix=suffix,
                                                name_hint=mod.get("asset_match"))
                     digest = (asset.get("digest") or "").removeprefix("sha256:")
-                dest = vendor / f'{mod["id"]}-{rel["tag"]}.zip'
+                dest = vendor / f'{mod["id"]}-{rel["tag"]}{suffix}'
                 github.download_verified(asset["url"], dest, digest)
             except (OSError, urllib.error.URLError, ValueError, KeyError) as exc:
                 raise NetworkError(f"failed to fetch {mod['id']} from GitHub: {exc}") from exc
@@ -479,7 +483,23 @@ def cmd_apply(args):
                 continue
             r.ok(f"{mid}: extracted to tools/{mid}/ (loader — replaces the Steam launch-option method)")
             r.info("me3 profile is generated as tools/me3/erm-coop.me3 by erm — launch via me3 "
-                    "(see me3.help for the Linux setup)")
+                    "(`erm launch-option` prints the line)")
+            continue
+        if kind == "me3-host":
+            # The launch option runs the NATIVE binary, not the Windows build
+            # above: Steam starts me3 on the host and me3 builds the Proton
+            # command itself. Installed rather than merely unpacked, because the
+            # path Steam invokes is fixed and outside this repo.
+            try:
+                binary = me3pkg.install_me3_host(vpath, launch.ME3_BINDIR,
+                                                 launch.ME3_DATADIR)
+            except PathError as exc:
+                r.warn(str(exc))
+                continue
+            except (OSError, zipfile.BadZipFile) as exc:
+                r.warn(f"{mid}: install failed ({exc})")
+                continue
+            r.ok(f"{mid} {meta.get('version', '')} → {binary} (native launcher)")
             continue
         if kind == "me3-native":
             try:

@@ -1,7 +1,9 @@
+import re
+import subprocess
 import zipfile
 from pathlib import Path
 
-from . import gamebuild, manifest
+from . import gamebuild, launch, manifest
 from .conflicts import MERGED_ID
 from .errors import ErmError
 from .gamebuild import GameBuildError
@@ -203,6 +205,43 @@ def _check_vanilla_ancestors(lock, live, report, profiles_base, vendor):
                 f"param layouts still fit this build")
 
 
+def installed_me3_version():
+    """The version the me3 on this machine reports, or None if it isn't there.
+
+    Asks the binary rather than reading installed.json: this one is installed
+    outside the game and outside the repo, at the fixed path the Steam launch
+    option names, so what is actually on disk is the only thing worth trusting.
+    """
+    binary = launch.ME3_FALLBACK
+    if not binary.exists():
+        return None
+    try:
+        out = subprocess.run([str(binary), "--version"], check=True,
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = re.search(r"(\d+\.\d+\.\d+)", out)
+    return found.group(1) if found else None
+
+
+def _check_me3_host(lock, report):
+    """Warn when the launcher Steam runs is behind the release erm pinned.
+
+    Nothing else notices: the merged artifacts, the build stamp and the mod
+    versions can all be correct while the loader that mounts them is older than
+    the one the lockfile promises.
+    """
+    pinned = ((lock or {}).get("me3-host") or (lock or {}).get("me3") or {}).get("version")
+    if not pinned:
+        return
+    installed = installed_me3_version()
+    if installed is None:
+        return
+    if installed != pinned.lstrip("v"):
+        report.warn(f"me3 launcher is stale: {launch.ME3_FALLBACK} reports {installed}, "
+                    f"the lockfile pins {pinned} — run `erm apply` to update it")
+
+
 def run_build_checks(game_dir, stamped, live, report, state=None, lock=None,
                      profiles_base=Path("profiles"), vendor=Path("vendor")):
     """Report build drift and any merged artifact built for another build.
@@ -225,6 +264,7 @@ def run_build_checks(game_dir, stamped, live, report, state=None, lock=None,
             report.warn(f"game build drift: {moved} — run `erm apply`")
     _check_merged_regulation(state, live, report)
     _check_vanilla_ancestors(lock, live, report, profiles_base, vendor)
+    _check_me3_host(lock, report)
     stale = launcher_is_stale(game_dir)
     if stale:
         swapped, real = stale

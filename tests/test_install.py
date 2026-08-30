@@ -231,3 +231,33 @@ def test_extract_archive_does_not_strip_by_default(tmp_path):
     files = install.extract_archive(arc, game, "")
     assert (game / "mods" / "SkipTheIntro.dll").exists()
     assert files == ["mods/SkipTheIntro.dll"]
+
+
+def _tar_gz(path, members):
+    """A .tar.gz fixture. `members` maps arcname -> bytes."""
+    import io, tarfile
+    with tarfile.open(path, "w:gz") as tf:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return path
+
+
+def test_tar_gz_extracts_without_an_external_extractor(tmp_path, monkeypatch):
+    # .tar.gz is the shape me3 ships its Linux build in, and the stdlib reads it.
+    # Routing it through bsdtar would make the loader's own install depend on a
+    # tool that is routinely missing from a non-login PATH.
+    monkeypatch.setattr(install.shutil, "which", lambda _n: None)
+    arc = _tar_gz(tmp_path / "me3.tar.gz", {"./bin/me3": b"ELF", "./LICENSE": b"x"})
+    dest = tmp_path / "out"
+    files = install.extract_archive(arc, dest, "")
+    assert (dest / "bin" / "me3").read_bytes() == b"ELF"
+    assert any(f.endswith("bin/me3") for f in files)
+
+
+def test_tar_gz_refuses_a_member_that_escapes_the_destination(tmp_path):
+    arc = _tar_gz(tmp_path / "evil.tar.gz", {"../escaped": b"pwned"})
+    with pytest.raises(ErmError, match="unsafe path"):
+        install.extract_archive(arc, tmp_path / "out", "")
+    assert not (tmp_path / "escaped").exists()

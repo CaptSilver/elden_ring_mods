@@ -24,6 +24,19 @@ asset_match = "me3-windows-amd64"
 kind = "loader"
 install = "me3"
 
+# The native Linux launcher: Steam runs THIS, and me3 builds the Proton command
+# itself. Same release as the Windows build above, different archive — the .zip
+# has no bin/me3. Installed to ~/.local/bin (and its Windows components to
+# ~/.local/share/me3/windows-bin), which is where the launch option points.
+[[mods]]
+id = "me3-host"
+source = "github"
+repo_id = 540883721
+asset_match = "me3-linux-amd64"
+asset_suffix = ".tar.gz"
+kind = "loader"
+install = "me3-host"
+
 # --- randomizer (ALL players need the identical generated regulation.bin + seed) ---
 # item-enemy-randomizer DISABLED (not in use). It's the other regulation-slot mod,
 # and Clever's Moveset (in gameplay-extras) now claims that one slot. To re-enable,
@@ -36,7 +49,6 @@ install = "me3"
 # overrode Merchant Kale, hiding Clever's Moveset weapons behind its own list.
 # Pulled so Kale's real shop shows. To re-enable: uncomment and `erm apply
 # seamless-full`. Was: nexus_id=5192, kind="item-cheat", install="mods".
-
 [[mods]]
 id = "erd-tools"                  # GitHub only (author forbids Nexus reuploads)
 source = "github"

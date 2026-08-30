@@ -4,6 +4,7 @@ Every variant is built every time. What's installed on this machine only
 annotates the output, so a box missing ReShade still shows you the line it
 would use — you can copy a command for a machine you're not sitting at.
 """
+import os
 import shlex
 import shutil
 from pathlib import Path
@@ -12,7 +13,12 @@ from .report import Report
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROFILE = REPO_ROOT / "tools" / "me3" / "erm-coop.me3"
-ME3_FALLBACK = Path("~/.local/bin/me3").expanduser()
+# Where me3's own install-user.sh puts things, and so where erm puts them too:
+# the launch option names the binary by absolute path, and me3 loads its Windows
+# components out of the data dir at runtime.
+ME3_BINDIR = Path("~/.local/bin").expanduser()
+ME3_DATADIR = Path(os.environ.get("XDG_DATA_HOME") or "~/.local/share").expanduser()
+ME3_FALLBACK = ME3_BINDIR / "me3"
 
 LAUNCH_OPTION = (
     "bash -c 'exec \"${@/start_protected_game.exe/ersc_launcher.exe}\"' -- %command%"

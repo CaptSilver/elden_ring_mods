@@ -600,3 +600,52 @@ def test_update_repins_to_the_matching_variant_among_many(tmp_path, monkeypatch)
     cli.fetch_profile("pinned", vendor, tmp_path / "mods.lock.toml",
                       profiles_base=profiles_dir, nexus_api_key="k", update=True)
     assert chosen["file_id"] == 48939
+
+
+def _write_tarball_profile(base_dir, name="gh-tar"):
+    profiles_dir = Path(base_dir)
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    (profiles_dir / f"{name}.toml").write_text(
+        f'name = "{name}"\n'
+        'description = "test fixture: a github mod shipped as .tar.gz"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "me3-host"\n'
+        'source = "github"\n'
+        'repo_id = 540883721\n'
+        'asset_match = "me3-linux-amd64"\n'
+        'asset_suffix = ".tar.gz"\n'
+        'kind = "loader"\n'
+        'install = "me3-host"\n'
+    )
+    return profiles_dir
+
+
+def test_fetch_picks_the_asset_suffix_the_profile_declares(tmp_path, monkeypatch):
+    # me3 ships the Linux build as .tar.gz beside a .zip for Windows. Defaulting
+    # the suffix to .zip silently fetches the wrong platform's build.
+    monkeypatch.setattr(github, "latest_release", lambda rid: {
+        "tag": "v0.13.0",
+        "assets": [
+            {"name": "me3-windows-amd64.zip", "url": "http://x/win.zip",
+             "digest": "sha256:" + "b" * 64},
+            {"name": "me3-linux-amd64.tar.gz", "url": "http://x/linux.tar.gz",
+             "digest": "sha256:" + "c" * 64},
+        ],
+    })
+    grabbed = {}
+
+    def fake_download(url, dest, sha256):
+        grabbed["url"] = url
+        grabbed["dest"] = Path(dest)
+        Path(dest).write_bytes(b"tar-bytes")
+
+    monkeypatch.setattr(github, "download_verified", fake_download)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    lock = tmp_path / "mods.lock.toml"
+    profiles_dir = _write_tarball_profile(tmp_path / "profiles")
+    cli.fetch_profile("gh-tar", vendor, lock, profiles_base=profiles_dir,
+                      nexus_api_key="")
+    assert grabbed["url"] == "http://x/linux.tar.gz"
+    assert grabbed["dest"].name.endswith(".tar.gz"), grabbed["dest"].name
+    assert manifest.load_lock(lock)["me3-host"]["version"] == "v0.13.0"

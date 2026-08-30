@@ -163,3 +163,51 @@ def install_me3_package(archive_path, mod_id, me3_dir, subdir=None):
     shutil.rmtree(staging, ignore_errors=True)
     has_regulation = (dest / "regulation.bin").exists()
     return str(dest), has_regulation
+
+
+# What me3's own install-user.sh puts where. me3 resolves these two at runtime
+# out of the data dir, so the native binary alone is not a working install --
+# updating one without the other leaves a launcher that cannot start the game.
+ME3_HOST_BINARY = "bin/me3"
+ME3_WINDOWS_BIN = ("bin/win64/me3-launcher.exe", "bin/win64/me3_mod_host.dll")
+
+
+def install_me3_host(archive_path, bindir, datadir):
+    """Install me3's native Linux build: the binary into `bindir`, the Windows
+    components it chainloads into <datadir>/me3/windows-bin/. Returns the
+    installed binary's path.
+
+    Mirrors the release's install-user.sh for the parts that matter to a Steam
+    launch. The desktop entry, MIME type, icon and example profiles it also
+    writes are skipped: erm launches through Steam's launch options and
+    generates its own .me3 profile, so none of them are on the path that runs
+    the game.
+    """
+    archive_path = Path(archive_path)
+    bindir, datadir = Path(bindir), Path(datadir)
+    staging = datadir / ".me3-staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    try:
+        install.extract_archive(archive_path, staging, "")
+        src = staging / ME3_HOST_BINARY
+        if not src.is_file():
+            raise PathError(
+                f"{archive_path.name} has no {ME3_HOST_BINARY} — that is the native "
+                f"Linux build's layout, so this is probably the Windows archive")
+        bindir.mkdir(parents=True, exist_ok=True)
+        binary = bindir / "me3"
+        shutil.copyfile(src, binary)
+        binary.chmod(0o755)
+        windows_bin = datadir / "me3" / "windows-bin"
+        windows_bin.mkdir(parents=True, exist_ok=True)
+        for rel in ME3_WINDOWS_BIN:
+            component = staging / rel
+            if not component.is_file():
+                raise PathError(
+                    f"{archive_path.name} has no {rel} — me3 loads it into the game "
+                    f"at launch, so installing without it would break the loader")
+            shutil.copyfile(component, windows_bin / Path(rel).name)
+        return str(binary)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)

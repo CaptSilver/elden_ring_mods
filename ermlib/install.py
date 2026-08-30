@@ -7,6 +7,7 @@ group silently loses connection until someone notices.
 import re
 import shutil
 import subprocess
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -79,6 +80,31 @@ def _extract_other(archive, dest, names):
     return [n for n in names if (dest / n).is_file()]
 
 
+def _tar_names(archive):
+    """Member names inside a tarball, normalized to plain relative paths.
+
+    me3 writes its members as "./bin/me3"; the leading "./" is noise that would
+    otherwise show up in installed.json and in every uninstall comparison.
+    """
+    with tarfile.open(archive) as tf:
+        names = []
+        for m in tf.getmembers():
+            if not m.isfile():
+                continue
+            names.append(m.name[2:] if m.name.startswith("./") else m.name)
+        return names
+
+
+def _extract_tar(archive, dest, names):
+    dest.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive) as tf:
+        # `data` refuses absolute paths, `..` escapes, links out of the tree and
+        # device nodes. The name guard above already ran; this closes the gap
+        # between a member's name and what extraction actually writes.
+        tf.extractall(dest, filter="data")
+    return [n for n in names if (dest / n).is_file()]
+
+
 def _wrapper_dir(names):
     """The single top-level directory every member sits under, or None.
 
@@ -125,7 +151,16 @@ def extract_archive(zip_path, game_dir, subdir="", strip_wrapper=False):
     # absolute path or one with a `..` component BEFORE extracting anything, so
     # a bad archive is never partially written. The returned list is then
     # guaranteed safe relative paths.
-    if z is None:
+    if z is None and tarfile.is_tarfile(zip_path):
+        # Read tarballs with the stdlib rather than libarchive: me3 ships its
+        # Linux build as .tar.gz, and making the loader's own install depend on
+        # bsdtar being on PATH is how it silently fails to update.
+        names = _tar_names(zip_path)
+        for name in names:
+            if not is_safe_relpath(name):
+                raise ErmError(f"unsafe path in mod archive (refusing to install): {name}")
+        rels = _extract_tar(zip_path, dest, names)
+    elif z is None:
         names = _list_archive(zip_path)
         for name in names:
             if not is_safe_relpath(name):

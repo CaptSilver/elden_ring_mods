@@ -926,7 +926,9 @@ def test_apply_me3_extracts_scaffolds_profile_and_not_recorded(
     assert (tmp_path / "tools" / "me3" / "bin" / "me3.exe").exists()
     prof = tmp_path / "tools" / "me3" / "erm-coop.me3"
     assert prof.exists()
-    assert "me3.help" in out
+    # Apply has to say how to launch what it just unpacked; erm prints the line
+    # itself now rather than sending the reader to the upstream docs.
+    assert "launch-option" in out
 
     state = json.loads((tmp_path / "installed.json").read_text())
     assert "me3" not in state           # a loader/tool, not a Game/ mod

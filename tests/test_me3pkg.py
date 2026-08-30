@@ -1,7 +1,8 @@
 import zipfile
 import pytest
 from pathlib import Path
-from ermlib.me3pkg import find_package_root, install_me3_package, list_option_dirs
+from ermlib.me3pkg import (find_package_root, install_me3_host, install_me3_package,
+                           list_option_dirs)
 from ermlib.errors import PathError
 
 
@@ -192,3 +193,58 @@ def test_install_unrecognizable_archive_keeps_generic_message(tmp_path):
         install_me3_package(arc, "weird", me3_dir)
     msg = str(exc.value)
     assert "option" not in msg.lower()
+
+
+def _me3_tarball(path, with_binary=True, with_win64=True):
+    """A stand-in for me3-linux-amd64.tar.gz, laid out the way me3 ships it."""
+    import io, tarfile
+    members = {"./LICENSE-MIT": b"x", "./install-user.sh": b"#!/bin/sh\n"}
+    if with_binary:
+        members["./bin/me3"] = b"\x7fELF-native"
+    if with_win64:
+        members["./bin/win64/me3-launcher.exe"] = b"MZ-launcher"
+        members["./bin/win64/me3_mod_host.dll"] = b"MZ-host"
+        members["./bin/win64/me3.exe"] = b"MZ-cli"
+    with tarfile.open(path, "w:gz") as tf:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return path
+
+
+def test_host_install_places_the_binary_and_its_windows_components(tmp_path):
+    # me3 resolves me3-launcher.exe and me3_mod_host.dll out of the data dir at
+    # runtime, so installing the binary alone yields a launcher that cannot
+    # start the game. Both halves move together or the update is broken.
+    arc = _me3_tarball(tmp_path / "me3-linux-amd64.tar.gz")
+    bindir, datadir = tmp_path / "bin", tmp_path / "share"
+    binary = install_me3_host(arc, bindir, datadir)
+
+    assert Path(binary) == bindir / "me3"
+    assert (bindir / "me3").read_bytes() == b"\x7fELF-native"
+    win = datadir / "me3" / "windows-bin"
+    assert (win / "me3-launcher.exe").read_bytes() == b"MZ-launcher"
+    assert (win / "me3_mod_host.dll").read_bytes() == b"MZ-host"
+
+
+def test_host_install_makes_the_binary_executable(tmp_path):
+    arc = _me3_tarball(tmp_path / "me3.tar.gz")
+    binary = install_me3_host(arc, tmp_path / "bin", tmp_path / "share")
+    assert Path(binary).stat().st_mode & 0o111, "installed me3 is not executable"
+
+
+def test_host_install_refuses_an_archive_with_no_native_binary(tmp_path):
+    # The Windows zip has no bin/me3. Pointing the host install at it would
+    # otherwise leave ~/.local/bin/me3 untouched and report success.
+    arc = _me3_tarball(tmp_path / "wrong.tar.gz", with_binary=False)
+    with pytest.raises(PathError, match="bin/me3"):
+        install_me3_host(arc, tmp_path / "bin", tmp_path / "share")
+
+
+def test_host_install_replaces_an_older_binary_in_place(tmp_path):
+    bindir, datadir = tmp_path / "bin", tmp_path / "share"
+    bindir.mkdir(); (bindir / "me3").write_bytes(b"old-0.11.0")
+    arc = _me3_tarball(tmp_path / "me3.tar.gz")
+    install_me3_host(arc, bindir, datadir)
+    assert (bindir / "me3").read_bytes() == b"\x7fELF-native"

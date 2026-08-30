@@ -240,3 +240,33 @@ def test_no_drift_reports_the_build_and_stays_ok(tmp_game):
 def test_an_unstamped_stack_is_reported_not_warned(tmp_game):
     r = doctor.run_build_checks(tmp_game, None, _bid(), Report())
     assert r.worst_level == "ok"
+
+
+def test_reports_a_host_me3_older_than_the_pinned_one(tmp_game, monkeypatch):
+    # erm fetches me3 but the binary Steam actually launches lives in ~/.local/bin
+    # and is installed separately, so it drifts silently. Nothing else notices:
+    # the merged artifacts and the build stamp all look correct while the loader
+    # running them is two releases behind.
+    monkeypatch.setattr(doctor, "installed_me3_version", lambda: "0.11.0")
+    r = Report()
+    doctor.run_build_checks(tmp_game, None, _bid(), r,
+                            lock={"me3": {"version": "v0.13.0"}})
+    text = r.render()
+    assert "me3" in text and "0.11.0" in text and "0.13.0" in text
+
+
+def test_says_nothing_when_the_host_me3_matches_the_pin(tmp_game, monkeypatch):
+    monkeypatch.setattr(doctor, "installed_me3_version", lambda: "0.13.0")
+    r = Report()
+    doctor.run_build_checks(tmp_game, None, _bid(), r,
+                            lock={"me3": {"version": "v0.13.0"}})
+    assert "me3" not in r.render()
+
+
+def test_stays_quiet_when_no_me3_is_installed(tmp_game, monkeypatch):
+    # Not every profile launches through me3; absence is not staleness.
+    monkeypatch.setattr(doctor, "installed_me3_version", lambda: None)
+    r = Report()
+    doctor.run_build_checks(tmp_game, None, _bid(), r,
+                            lock={"me3": {"version": "v0.13.0"}})
+    assert "me3" not in r.render()
