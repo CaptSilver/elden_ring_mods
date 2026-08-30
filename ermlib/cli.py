@@ -143,6 +143,12 @@ def cmd_refresh(args):
             r.ok(f"stack is already built for {live.app} — nothing to do")
         print(r.render(as_json=args.json))
         return r.exit_code
+    if stamped is None and not all(a.kind == "refuse" for a in actions):
+        # Still worth saying even though something IS planned: the plan below
+        # may be about the launcher alone, which tells the reader nothing about
+        # whether the stack itself was built for this game.
+        r.info(f"stack build not recorded — can't tell whether this stack "
+               f"matches build {live.app}. Run `erm apply` to stamp it.")
     for a in actions:
         if a.kind == "refuse":
             r.fail(a.detail)
@@ -161,10 +167,19 @@ def cmd_refresh(args):
     # `refresh` only reports. `apply` runs every step above except the repin:
     # it adopts the baseline, gates the layouts, rebuilds each merge onto the
     # installed build and verifies the result, all as part of a normal install.
-    r.info("run `erm apply` to rebase every merge onto the installed build — it "
-           "gates the param layouts first and verifies the rebase after. It does "
-           "not re-pin: run `erm update` first if a mod needs a newer version to "
-           "fit this build")
+    if all(a.kind == "reharden" for a in actions):
+        # apply cannot carry this one out: it only hardens an install that is
+        # not hardened yet, and the swap is chattr +i so it could not overwrite
+        # the stale copy anyway. Naming apply here would send the reader in a
+        # circle.
+        r.info("run `erm unharden && erm harden` to put the hardened launcher back "
+               "on the game's build — `erm apply` can't: it only hardens an install "
+               "that isn't hardened yet, and the swap is immutable")
+    else:
+        r.info("run `erm apply` to rebase every merge onto the installed build — it "
+               "gates the param layouts first and verifies the rebase after. It does "
+               "not re-pin: run `erm update` first if a mod needs a newer version to "
+               "fit this build")
     print(r.render(as_json=args.json))
     return r.exit_code
 
@@ -363,6 +378,24 @@ _MANUAL_NOTES = {
 
 
 def cmd_apply(args):
+    """Install a profile, printing what was found even if the run aborts.
+
+    Everything apply notices accumulates in one Report. That Report is a local,
+    so an abort used to take every warning with it and surface the exception
+    alone -- including on the refusal whose own text points at "a failed install
+    reported above", which the reader then could not find.
+    """
+    r = Report()
+    try:
+        return _apply(args, r)
+    except ErmError:
+        rendered = r.render(as_json=getattr(args, "json", False))
+        if rendered.strip():
+            print(rendered)
+        raise
+
+
+def _apply(args, r):
     """Install every auto-installable mod in a profile into Game/ (or Game/mods/,
     per each mod's `install` field) and record what landed where in installed.json.
 
@@ -397,7 +430,6 @@ def cmd_apply(args):
                 f"can be active at a time (both edit regulation.bin)."
             )
     password = install.read_secret(Path("secrets.env")) if Path("secrets.env").exists() else ""
-    r = Report()
     # Auto-fetch anything the profile needs that isn't on disk yet, so apply/switch
     # works without a separate `erm fetch` first. Only the MISSING mods are pulled
     # (only_missing=True) — present, pinned ones are left untouched, so a fully

@@ -503,3 +503,27 @@ def test_refresh_dry_run_reports_a_tampered_build_as_a_refusal(tmp_path, monkeyp
     assert rc == 1
     assert "Verify integrity" in out
     assert "adopt-baseline" not in out
+
+
+def test_refresh_reports_a_stale_launcher_on_an_unstamped_stack(tmp_path, monkeypatch, capsys):
+    # refresh already computes launcher_is_stale() and hands it to plan_heal.
+    # Dropping it left doctor warning about a launcher a build behind while
+    # refresh -- the command whose whole job is "what needs bringing forward"
+    # -- said nothing.
+    _refresh_fixture(tmp_path, monkeypatch, launcher_stale=("2.6.2.0", "2.7.0.0"))
+    rc = cli.cmd_refresh(_refresh_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "reharden" in out
+    assert "not recorded" not in out or "reharden" in out
+
+
+def test_refresh_points_a_launcher_only_plan_at_harden_not_apply(tmp_path, monkeypatch, capsys):
+    # apply cannot carry this one out: it only auto-hardens an install that is
+    # not already hardened, and the swap is chattr +i. Offering it would send
+    # the reader in a circle.
+    _refresh_fixture(tmp_path, monkeypatch, launcher_stale=("2.6.2.0", "2.7.0.0"))
+    cli.cmd_refresh(_refresh_args())
+    out = capsys.readouterr().out
+    assert "unharden" in out
+    assert "rebase every merge" not in out

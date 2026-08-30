@@ -2450,3 +2450,38 @@ def test_uninstalling_a_profile_keeps_the_build_stamp(tmp_path, tmp_game, monkey
     after = json.loads((tmp_path / "installed.json").read_text())
     assert after.get("_build") == _A_BUILD
     assert "good-mod" not in after
+
+
+def test_an_aborted_apply_prints_the_warnings_it_already_collected(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # Everything apply notices lands in a Report local to the frame, so an abort
+    # used to surface the exception alone. That is what made a real refusal
+    # unreadable: it advised fixing "a failed install reported above" while the
+    # line naming the failure had been thrown away with the frame.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _write_profile(tmp_path / "profiles", "aborts",
+        '[[mods]]\n'
+        'id = "mod-a"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "test"\n'
+        'install = "mods"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"mod-a": ("1.0", "mod-a.zip")})
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "mod-a.zip").write_bytes(b"not an archive at all")
+
+    def boom(*a, **kw):
+        raise ErmError("the me3 profile could not be regenerated")
+    monkeypatch.setattr(cli.me3profile, "reconcile", boom)
+
+    with pytest.raises(ErmError):
+        cli.cmd_apply(_apply_args("aborts"))
+
+    out = capsys.readouterr().out
+    assert "mod-a" in out
+    assert "install failed" in out

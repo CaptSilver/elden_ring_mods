@@ -428,3 +428,23 @@ def test_prepare_rebase_stops_the_apply_when_a_layout_moved(tmp_path, monkeypatc
     with pytest.raises(HealError, match="stride"):
         heal.prepare_rebase(game, live, _regulation_blob("11611000"),
                             [("clevers", b"mod")], base=tmp_path / "baselines")
+
+
+def test_a_stale_launcher_is_planned_even_when_the_build_has_not_moved():
+    # Whether a build stamp was ever recorded says nothing about whether the
+    # hardened launcher is a build behind. Gating the reharden on drift means an
+    # unstamped stack -- what a fresh install is -- drops a finding doctor
+    # reports, and that launcher is the binary Steam actually runs.
+    assert _kinds(heal.plan_heal(None, _bid(), launcher_stale=True)) == ["reharden"]
+
+
+def test_a_stale_launcher_is_planned_on_a_stack_already_built_for_this_game():
+    assert _kinds(heal.plan_heal(_bid(), _bid(), launcher_stale=True)) == ["reharden"]
+
+
+def test_a_current_launcher_on_an_unchanged_build_still_plans_nothing():
+    assert heal.plan_heal(_bid(), _bid(), launcher_stale=False) == ()
+
+
+def test_no_reharden_still_omits_it_when_nothing_else_is_planned():
+    assert heal.plan_heal(None, _bid(), reharden=False, launcher_stale=True) == ()

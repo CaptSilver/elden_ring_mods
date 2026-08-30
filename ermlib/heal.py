@@ -302,6 +302,12 @@ class Action(NamedTuple):
     data: object = None
 
 
+def _reharden_action():
+    return Action("reharden",
+                  "re-copy eldenring.exe over the stale hardened launcher (sudo)",
+                  None)
+
+
 def plan_heal(stamped, live, reharden=True, launcher_stale=False):
     """The ordered steps that bring this stack back onto the installed build.
 
@@ -309,8 +315,14 @@ def plan_heal(stamped, live, reharden=True, launcher_stale=False):
     else, which is why the risky ordering decisions are testable at all.
     """
     kind = gamebuild.classify(stamped, live)
+    stale_launcher = bool(reharden and launcher_stale)
     if kind == gamebuild.UNCHANGED:
-        return ()
+        # Nothing about the build moved, so there is nothing to rebuild or
+        # restamp. A launcher a build behind is a separate fact, though, and
+        # deciding it from build drift is what let an unstamped stack -- what a
+        # fresh install is -- plan nothing while doctor warned about the very
+        # same launcher. Steam runs that binary.
+        return (_reharden_action(),) if stale_launcher else ()
     if kind == gamebuild.TAMPERED:
         return (Action(
             "refuse",
@@ -333,9 +345,7 @@ def plan_heal(stamped, live, reharden=True, launcher_stale=False):
         actions.append(Action("gate", "check param row layouts against the baseline", None))
         actions.append(Action("rebuild", "rebuild every merge against the new baseline", None))
         actions.append(Action("verify", "check the rebase kept every authored row", None))
-    if reharden and launcher_stale:
-        actions.append(Action("reharden",
-                              "re-copy eldenring.exe over the stale hardened launcher (sudo)",
-                              None))
+    if stale_launcher:
+        actions.append(_reharden_action())
     actions.append(Action("stamp", f"record build {live.app}", live))
     return tuple(actions)
