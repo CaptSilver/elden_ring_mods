@@ -2,54 +2,63 @@
 
 [adjust-the-fov]
 version = "2.0"
+file_id = "5087"
 asset = "AdjustTheFov-325-2-0-1653830963.zip"
 sha256 = "339a27e94780c1550380d0fbc81026265da0539f95cfd004b012ec5c99c8323b"
 source = "nexus"
 
 [better-bows-and-arrows]
 version = "1.2"
+file_id = "41004"
 asset = "Regulation.bin-4628-1-2-1760355506.7z"
 sha256 = "6fc23b7c52464f6c59285b51b608c5dec4479b955d354222b352fa66e2a126c0"
 source = "nexus"
 
 [boss-resurrection-lite]
 version = "2.0.1"
+file_id = "24925"
 asset = "Boss Resurrection - Lite-2790-2-0-1-1720450846.zip"
 sha256 = "669ca5ab38227f84073265f0b37d615a9520f7973078c23e92f4b81d8f2a5d5f"
 source = "nexus"
 
 [camera-fix]
 version = "3.0"
+file_id = "4412"
 asset = "FixTheCamera-118-3-0-1652303340.zip"
 sha256 = "749174278e9147fb099c37592f98811c9e737645c913d12fe64b9b94bd03250d"
 source = "nexus"
 
 [clevers-moveset]
-version = "25.0"
-asset = "moveset_modpack 25.0-1928-25-0-1738532654.zip"
-sha256 = "9ccfedc32901c89c3b12135988e2d7119aae028e34818ecda0b8fdb01444f03a"
+version = "26.2"
+file_id = "49812"
+asset = "moveset_modpack 26.2 1928 26.2 2026-08-29T15-47Z cjDpA47eb.zip"
+sha256 = "33fa0a85da2bc61f89b48af3ef0377a2fe01bac5dcc122203a0fc682e5e794e5"
 source = "nexus"
 
 [damage-competition]
-version = "1.6a"
-asset = "Damage Competition 10461 1.6a 2026-08-04T14-33Z EFcQetJUe.7z"
-sha256 = "429eb1683ab04dbbac9933d7ec69affec87f0e3d1f14f4a3c0335c8c8ee14b67"
+version = "1.8c"
+file_id = "49644"
+asset = "Damage Competition 10461 1.8c 2026-08-28T03-02Z sVKWduz4E.7z"
+sha256 = "e356cee8526f424d43492e7cf2cf99936c6cf43bc1cef56cafd8122930f9e861"
 source = "nexus"
 
 [disable-rune-loss]
 version = "2.0"
+file_id = "11378"
 asset = "DisableRuneLoss-376-2-0-1670867876.zip"
 sha256 = "6d69b51cde189b8ebedcd858aa5b25bb394c49e8e1df79c207a28d46ce0ccf6b"
 source = "nexus"
 
 [drop-rate-100]
 version = "1"
+file_id = "46821"
 asset = "100 Percent Drop Rate Mod-9929-1-1779608568.zip"
 sha256 = "47fd4f92484e86ce6edb926bbf7c97d835a790ef19d63329e249c84e3fdbd154"
 source = "nexus"
 
 [elden-mod-loader]
 version = "3.2"
+file_id = "8919"
 asset = "EldenModLoader-117-3-2-1662569069.zip"
 sha256 = "41d90de7506474689fd711ac421897642a3f5ff0391c313773263a43a83af66d"
 source = "nexus"
@@ -62,30 +71,35 @@ source = "github"
 
 [erdyes]
 version = "1.1.6"
+file_id = "37187"
 asset = "erdyes-6927-1-1-6-1748492795.zip"
 sha256 = "a1226c29382b9cb3a616a79a5cf30a3cdd54cc97e51be2f1363aaa580ba5a774"
 source = "nexus"
 
 [ertransmogrify]
 version = "2.4.13"
+file_id = "44563"
 asset = "ertransmogrify-3596-2-4-13-1773526503.zip"
 sha256 = "8b684ccb0f391224b1951c7c75aa665e47f916145dd3ddfd9e1515159d9db848"
 source = "nexus"
 
 [expanded-talisman-slots]
-version = "1.1.2"
-asset = "Expanded Talisman Slots 10481 1.1.2 2026-07-30T14-09Z Ls9Xqlxsk.rar"
-sha256 = "c70467c2f863544e7d70a118bedcd18f79fe060221973de5f0c8588dff7ddde9"
+version = "1.1.3"
+file_id = "49012"
+asset = "Expanded Talisman Slots 10481 1.1.3 2026-08-10T05-37Z V3eOrwB1I.zip"
+sha256 = "45faa5f445c3286568b3c3b40d99e2142034e93d6be4e52eaf97ca4deee79899"
 source = "nexus"
 
 [faster-respawn]
 version = "2.0"
+file_id = "13203"
 asset = "FasterRespawn-501-2-0-1676655598.zip"
 sha256 = "e6b7ca15063ddd5c7e1eca9410f28635f320a3a6b86c9e1764971a162a8c3ffd"
 source = "nexus"
 
 [forever-buffs]
 version = "v1.0"
+file_id = "39767"
 asset = "CSV Included to merge-8644-v1-0-1756694897.rar"
 sha256 = "790fdd776a7d8bf9dbfbfdfcb06dec112d187218d626aff5a006990f3894729c"
 source = "nexus"
@@ -98,12 +112,14 @@ source = "nexus"
 
 [great-rune-overhaul]
 version = "1.1.6"
+file_id = "31870"
 asset = "Great Rune Overhaul-2869-1-1-6-1729540057.rar"
 sha256 = "e5e9c4db0917f1c533da8ac3f5f8265cdac6e04e8ecb85f801eb28f683aa2491"
 source = "nexus"
 
 [increase-animation-distance]
 version = "3.0"
+file_id = "4406"
 asset = "IncreaseAnimationDistance-349-3-0-1652302425.zip"
 sha256 = "4a120852e5eb71e42abd2d7180a7fbf0a4eb8fbcda797d4cbba54c865b1dc4af"
 source = "nexus"
@@ -116,36 +132,47 @@ source = "nexus"
 
 [journey-with-melina]
 version = "1.1"
+file_id = "47405"
 asset = "Journey With Melina V1.1 10079 1.1 2026-06-12T09-51Z n7XrmU9K3.zip"
 sha256 = "c7981869c2f2ae983cb08e9f1cb2448472a87654ae3a67de00b3c6ec3fde7b3e"
 source = "nexus"
 
 [map-for-goblins]
-version = "v2.0.5"
-asset = "Vanilla or Randomizer - v2.0.5 10062 v2.0.5 2026-07-14T10-47Z ZTHtIFwXR.zip"
-sha256 = "896a82fcb1d739491edbf56683e71cc20cef8146ae8618140010a83881ca3ec1"
+version = "v2.1.2"
+file_id = "48939"
+asset = "Vanilla or Randomizer - v2.1.2 10062 v2.1.2 2026-08-06T08-53Z 6Ms7ahY3W.zip"
+sha256 = "9fe4ffe6fc7157a14b2f2f7c98064f1d736eef048ac1417fa5c11acd9bda0268"
 source = "nexus"
 
 [me3]
-version = "v0.11.0"
-asset = "me3-v0.11.0.zip"
-sha256 = "1ddc6c3d9468aa6c7f99bd6b080aa94977e0d6fab771368ca89387a1c8cda4b7"
+version = "v0.13.0"
+asset = "me3-v0.13.0.zip"
+sha256 = "a8b693c574106f20532ab1e8b58b2452f37370679b938a884fe75f87f9b68c2b"
+source = "github"
+
+[me3-host]
+version = "v0.13.0"
+asset = "me3-host-v0.13.0.tar.gz"
+sha256 = "f31579deebf75b4702059694b664bdd8917c4773ab0c266715ca8f92e1e93fc1"
 source = "github"
 
 [no-weight]
 version = "2.1"
+file_id = "15130"
 asset = "NoWeight-481-2-1-1681740990.zip"
 sha256 = "8992b80201a84bde963c625ffdbab1bdd4e54ca2dd7119b7984a998d8ac6e52c"
 source = "nexus"
 
 [nofalldead]
 version = "1"
+file_id = "48340"
 asset = "NoFallDead Longtail Cat Version 10402 1 2026-07-15T04-00Z HqR4yjEgC.zip"
 sha256 = "b5fd952ab267f43cc6ce066608a33d36a93215df1885ed057b3c63d6a16761be"
 source = "nexus"
 
 [quest-log]
 version = "v1.1.3"
+file_id = "44145"
 asset = "ERQuestLog v1.1.3 (DLL Version)-3585-v1-1-3-1772125971.rar"
 sha256 = "9d935d332cdcba9d6b873c45c0c6e7ead7380323e177c9d0fd5ec6be56eb9c22"
 source = "nexus"
@@ -158,30 +185,35 @@ source = "nexus"
 
 [radialmenu]
 version = "1.3.1"
+file_id = "46913"
 asset = "RadialMenu-9832-1-3-1-1779978112.zip"
 sha256 = "38d08f45e7363dc0c2f00b01fb31921965bf76b458804a834c38656641736243"
 source = "nexus"
 
 [remove-chromatic-aberration]
 version = "3.0"
+file_id = "4409"
 asset = "RemoveChromaticAberration-179-3-0-1652302959.zip"
 sha256 = "2b9725dbc9c0825bb7f366bc8d01e659d62db4bc12d89ceb4d55287a3c23d13f"
 source = "nexus"
 
 [remove-vignette]
 version = "3.0"
+file_id = "4410"
 asset = "RemoveVignette-177-3-0-1652303041.zip"
 sha256 = "cdd9a3faf127d7f6fdf57e0e3772d1e849603b2c20ad32a41b8883fb6e3600d6"
 source = "nexus"
 
 [seamless-coop]
 version = "1.9.9"
+file_id = "45761"
 asset = "Seamless Co-op v1.9.9-510-1-9-9-1776812412.zip"
 sha256 = "95e9db8fcec02c9148eee42d0d20234eae0729ded5f91b2bedb17d84037e0dfa"
 source = "nexus"
 
 [skip-the-intro]
 version = "4.0"
+file_id = "32781"
 asset = "SkipTheIntro-421-4-0-1732388874.zip"
 sha256 = "c660891df61628a93632c8ccbf460ff473139f68acd4a5b0e97ac3733c215a75"
 source = "nexus"

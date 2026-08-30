@@ -42,17 +42,17 @@ requires_all_players = true
 # SHARED: every player needs the identical pack. Turn OFF ray tracing in-game
 # for stability (per the mod page).
 #
-# Held at 25.0 on purpose: it's the `prefer` mod in the six-way regulation
-# merge and `requires_all_players`, and 26.1 (file 49639) changes both
-# movesets and regulation contents. Taking it now would tangle two possible
-# failure sources into one. It moves on its own, with its own in-game pass,
-# once both players update together — drop `freeze` when that happens.
+# On 26.x, the author's own 1.17 build: 26.1 is "Updated to work with version
+# 1.17 and Tarnished Edition", 26.2 fixes that update. That beats holding 25.0
+# and rebasing 1.16-era rows onto the patched game, since the pack itself is
+# built for the build being played. Still `requires_all_players` — it changes
+# movesets and regulation contents together, so both players move at once or
+# co-op desyncs.
 [[mods]]
 id = "clevers-moveset"
 source = "nexus"
 nexus_id = 1928
-file_id = 34558                   # "moveset_modpack 25.0"
-freeze = true
+file_id = 34558                   # where it started; the lockfile carries the live pin
 kind = "overhaul"
 install = "me3-package"
 requires_all_players = true
