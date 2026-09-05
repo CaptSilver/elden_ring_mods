@@ -228,6 +228,33 @@ def test_resolve_is_atomic_on_a_later_path_failure(tmp_path):
     assert not (tmp_path / "mods" / conflicts.MERGED_ID).exists()
 
 
+def test_clear_merged_removes_everything_the_caller_did_not_keep(tmp_path):
+    """`keep` spares merged output this run won't rebuild; everything else has
+    to go, or a withdrawn merge's file stays in _merged/ and me3 mounts the
+    whole directory, so the game loads output built from mods the active
+    profile doesn't include."""
+    _package(tmp_path, conflicts.MERGED_ID,
+             {"chr/keep.dcx": b"K", "script/talk/gone.dcx": b"G"})
+    conflicts.clear_merged(tmp_path, keep={"chr/keep.dcx"})
+    root = tmp_path / "mods" / conflicts.MERGED_ID
+    assert (root / "chr/keep.dcx").read_bytes() == b"K"
+    assert not (root / "script/talk/gone.dcx").exists()
+    assert not (root / "script").exists()          # pruned once emptied, parent too
+    assert (root / "chr").is_dir()                 # still holds the kept file
+
+
+def test_clear_merged_keeps_the_package_root_when_nothing_survives(tmp_path):
+    """installed.json can name a merged path whose bytes went away out of band
+    -- an interrupted run, a manual delete -- so `keep` can spare nothing that
+    is actually there. The root still stays: an empty package directory is what
+    says the package exists."""
+    _package(tmp_path, conflicts.MERGED_ID, {"chr/a.dcx": b"A", "msg/b.dcx": b"B"})
+    conflicts.clear_merged(tmp_path, keep={"regulation.bin"})
+    root = tmp_path / "mods" / conflicts.MERGED_ID
+    assert list(root.rglob("*")) == []
+    assert root.is_dir()
+
+
 def test_clear_merged_after_a_failed_resolve_allows_a_clean_retry(tmp_path):
     """Covers clear_merged, and specifically the interaction with a failed
     resolve(): after a strategy blows up mid-run, clear_merged() must be safe

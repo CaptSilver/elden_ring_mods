@@ -19,18 +19,9 @@ import pytest
 
 from ermlib import cli, paths
 from ermlib import state as state_mod
+from tests.ersc_fixtures import make_ersc_zip
 
 ME3_PROFILE = Path("tools") / "me3" / "erm-coop.me3"
-
-
-def _make_ersc_zip(path):
-    # Same shape as the real Seamless Co-op release archive, mirroring the
-    # _make_ersc_zip helper in test_cli_uninstall.py.
-    with zipfile.ZipFile(path, "w") as z:
-        z.writestr("ersc_launcher.exe", b"\x00")
-        z.writestr("SeamlessCoop/ersc.dll", b"\x00")
-        z.writestr("SeamlessCoop/ersc_settings.ini",
-                   "[PASSWORD]\ncooppassword = \n[SAVE]\nsave_file_extension = co2\n")
 
 
 def _write_profile(profiles_dir, name, mods_toml):
@@ -83,7 +74,7 @@ def _seed_lock(tmp_path):
 def _seed_vendor(tmp_path):
     vendor = tmp_path / "vendor"
     vendor.mkdir(exist_ok=True)
-    _make_ersc_zip(vendor / "seamless-coop.zip")
+    make_ersc_zip(vendor / "seamless-coop.zip")
     # A real DVDBND asset tree (parts/) so me3pkg.find_package_root resolves it.
     with zipfile.ZipFile(vendor / "cosmetic-mod.zip", "w") as z:
         z.writestr("parts/wp_a.dcx", b"x")

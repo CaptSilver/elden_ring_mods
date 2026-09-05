@@ -18,6 +18,11 @@ session — which is exactly what `erm doctor` and `erm quarantine` exist to sto
 
 ## Quick start
 
+You need **Python 3.11+** (erm reads the lockfile with `tomllib`). Two tools are optional
+until something needs them: **bsdtar** to unpack `.rar`/`.7z` mod archives, and **g++**,
+used once to build the Kraken decompressor that reads the game's compressed archives.
+Either way erm names the missing tool at the point it needs it.
+
 ```bash
 cp secrets.env.example secrets.env
 # edit secrets.env, set COOP_PASSWORD to your group's shared password

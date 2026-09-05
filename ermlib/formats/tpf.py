@@ -14,6 +14,7 @@ import struct
 from typing import NamedTuple
 
 from ..errors import ErmError
+from ._util import read_utf16z
 
 MAGIC = b"TPF\0"
 HEADER_SIZE = 0x10
@@ -55,11 +56,10 @@ def _decode_name(data, offset, encoding):
     if encoding == 1:
         # UTF-16LE, so the terminator is two zero bytes on an even boundary --
         # scanning for a single 0x00 stops on the high byte of the first ASCII
-        # character and yields a one-letter name.
-        end = offset
-        while end + 1 < len(data) and data[end:end + 2] != b"\0\0":
-            end += 2
-        return data[offset:end].decode("utf-16-le", "replace")
+        # character and yields a one-letter name. The shared helper is what
+        # refuses a name with no terminator instead of absorbing the padding
+        # and texture bytes that follow it into the name.
+        return read_utf16z(data, offset, TpfError, "unterminated texture name")
     end = data.find(b"\0", offset)
     if end < 0:
         raise TpfError("unterminated texture name")

@@ -1,7 +1,26 @@
 import tomllib
 from pathlib import Path
 
-from .errors import PathError
+from .errors import ErmError, PathError
+
+
+def _load_toml(path):
+    """Parse a TOML file, turning a bad one into an error main() can print.
+
+    Both failure modes are ValueErrors — tomllib's TOMLDecodeError and
+    read_text()'s UnicodeDecodeError — so neither is caught by the OSError and
+    ErmError handlers between here and the top, and both escape as a raw
+    traceback. The message names the file because tomllib's own carries only a
+    line and column, and a stack has eleven candidate TOML files in it.
+
+    OSError deliberately passes through: the CLI turns a missing profile into
+    "unknown profile '<name>'" and that wording is worth keeping.
+    """
+    path = Path(path)
+    try:
+        return tomllib.loads(path.read_text())
+    except ValueError as exc:
+        raise ErmError(f"{path} is not valid TOML ({exc}) — fix the file and re-run") from exc
 
 
 def _entry_key(entry):
@@ -55,7 +74,7 @@ def load_profile(name, base=Path("profiles"), _seen=None):
     _seen = _seen or ()
     if name in _seen:
         raise PathError("profile include cycle: " + " -> ".join(_seen + (name,)))
-    data = tomllib.loads((base / f"{name}.toml").read_text())
+    data = _load_toml(base / f"{name}.toml")
     merged, index = [], {}
     excludes, excludes_seen = [], set()
     merges, prunes, renames = [], [], []
@@ -139,7 +158,7 @@ def load_lock(path):
     p = Path(path)
     if not p.exists():
         return {}
-    return tomllib.loads(p.read_text())
+    return _load_toml(p)
 
 
 def set_mod(lock, mod_id, version, asset, sha256, source, file_id=None):

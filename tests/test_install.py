@@ -256,8 +256,125 @@ def test_tar_gz_extracts_without_an_external_extractor(tmp_path, monkeypatch):
     assert any(f.endswith("bin/me3") for f in files)
 
 
+def test_tar_gz_on_an_interpreter_without_the_extraction_filter(tmp_path):
+    # tarfile's `data` filter (and the `filter` kwarg extractall takes) arrived
+    # in 3.11.4 / 3.12; Debian 12 ships 3.11.2 as its system Python. Without it
+    # extractall raises TypeError halfway through apply, which escapes the
+    # per-mod handler and kills the run before installed.json is written — so
+    # the mod is on disk with nothing recording it. Skip this one archive the
+    # way a missing bsdtar is skipped, and let the rest of the run finish.
+    import tarfile
+    arc = _tar_gz(tmp_path / "me3.tar.gz", {"./bin/me3": b"ELF"})
+    saved = tarfile.data_filter
+    del tarfile.data_filter
+    try:
+        with pytest.raises(zipfile.BadZipFile) as exc:
+            install.extract_archive(arc, tmp_path / "out", "")
+    finally:
+        tarfile.data_filter = saved
+    assert "me3.tar.gz" in str(exc.value) and "3.11.4" in str(exc.value)
+    assert not (tmp_path / "out" / "bin").exists()
+
+
 def test_tar_gz_refuses_a_member_that_escapes_the_destination(tmp_path):
     arc = _tar_gz(tmp_path / "evil.tar.gz", {"../escaped": b"pwned"})
     with pytest.raises(ErmError, match="unsafe path"):
         install.extract_archive(arc, tmp_path / "out", "")
     assert not (tmp_path / "escaped").exists()
+
+
+def _wrapper_zip(path):
+    """The one wrapper shape with both a nested dir and a top-level file under
+    it — erquestlog's layout, which drives every re-apply collision case."""
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("questlog/erquestlog.dll", b"MZ")
+        z.writestr("questlog/questlog_lang/english.lang", b"en")
+    return path
+
+
+def test_extract_archive_strip_replaces_a_colliding_directory(tmp_path):
+    # apply never uninstalls before extracting, so a second `erm apply` lands on
+    # the first one's output. The wrapper's dirs have to replace what's there —
+    # move refuses to write over an existing dir, and a leftover file from an
+    # older release must not survive the upgrade.
+    arc = _wrapper_zip(tmp_path / "m.zip")
+    game = tmp_path / "Game"
+    install.extract_archive(arc, game, "mods", strip_wrapper=True)
+    stale = game / "mods" / "questlog_lang" / "deutsch.lang"
+    stale.write_bytes(b"old")
+    (game / "mods" / "erquestlog.dll").write_bytes(b"OLD")
+
+    files = install.extract_archive(arc, game, "mods", strip_wrapper=True)
+    assert not stale.exists()
+    assert (game / "mods" / "erquestlog.dll").read_bytes() == b"MZ"
+    assert (game / "mods" / "questlog_lang" / "english.lang").read_bytes() == b"en"
+    assert sorted(files) == ["mods/erquestlog.dll", "mods/questlog_lang/english.lang"]
+
+
+def test_extract_archive_strip_replaces_a_file_where_a_directory_now_goes(tmp_path):
+    # A release that turned a plain file into a directory (a lang file becoming
+    # a lang/ folder) leaves the old file sitting exactly where the new dir has
+    # to land; renaming a directory onto it fails outright.
+    arc = _wrapper_zip(tmp_path / "m.zip")
+    game = tmp_path / "Game"
+    install.extract_archive(arc, game, "mods", strip_wrapper=True)
+    clash = game / "mods" / "questlog_lang"
+    shutil.rmtree(clash)
+    clash.write_bytes(b"old single-file release")
+
+    install.extract_archive(arc, game, "mods", strip_wrapper=True)
+    assert (clash / "english.lang").read_bytes() == b"en"
+
+
+def test_extract_archive_strip_unlinks_a_colliding_symlink_without_following_it(tmp_path):
+    # If the destination is a symlink to a directory, the tree it points at is
+    # outside the game dir and is not ours to delete — drop the link, keep the
+    # target.
+    arc = _wrapper_zip(tmp_path / "m.zip")
+    game = tmp_path / "Game"
+    install.extract_archive(arc, game, "mods", strip_wrapper=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "keepme.txt").write_bytes(b"not ours")
+    link = game / "mods" / "questlog_lang"
+    shutil.rmtree(link)
+    link.symlink_to(outside, target_is_directory=True)
+
+    install.extract_archive(arc, game, "mods", strip_wrapper=True)
+    assert (outside / "keepme.txt").read_bytes() == b"not ours"
+    assert not link.is_symlink()
+    assert (link / "english.lang").read_bytes() == b"en"
+
+
+def test_apply_ersc_removes_the_launcher_from_older_releases(tmp_path, tmp_game):
+    # ERSC renamed its launcher to ersc_launcher.exe; the old one still works
+    # enough to start the game unmodded-looking, so leaving it behind invites
+    # launching the wrong binary after an upgrade.
+    legacy = tmp_game / "launch_elden_ring_seamlesscoop.exe"
+    legacy.write_bytes(b"MZ old")
+    z = tmp_path / "ersc.zip"
+    _make_ersc_zip(z)
+    apply_ersc(z, tmp_game, password="hunter2")
+    assert not legacy.exists()
+    assert (tmp_game / "ersc_launcher.exe").exists()
+
+
+def test_extract_archive_closes_the_zip_when_it_rejects_a_member(tmp_path, monkeypatch):
+    # The guard runs between opening the archive and extracting it, so the
+    # rejection path is the one that can leak the open ZipFile.
+    opened = []
+    real = zipfile.ZipFile
+
+    class Recording(real):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            opened.append(self)
+
+    monkeypatch.setattr(install.zipfile, "ZipFile", Recording)
+    arc = tmp_path / "evil.zip"
+    with real(arc, "w") as z:
+        z.writestr("../evil.txt", b"pwned")
+    with pytest.raises(ErmError):
+        install.extract_archive(arc, tmp_path / "Game", "")
+    assert opened, "the zip branch never ran"
+    assert all(z.fp is None for z in opened), "ZipFile left open after the rejection"

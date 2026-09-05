@@ -28,18 +28,6 @@ def _files_fixture():
     ]
 
 
-def test_pick_main_file_selects_main_excludes_old_and_archived_highest_version():
-    f = nexus.pick_main_file(_files_fixture())
-    assert f["file_id"] == 45761
-    assert f["version"] == "1.9.9"
-
-
-def test_pick_main_file_raises_when_no_main():
-    files = [f for f in _files_fixture() if f["category_name"] != "MAIN"]
-    with pytest.raises(ErmError):
-        nexus.pick_main_file(files)
-
-
 def test_find_file_by_version_returns_the_matching_main_file():
     f = nexus.find_file_by_version(_files_fixture(), "1.9.9")
     assert f["file_id"] == 45761

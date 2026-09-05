@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.request
 from typing import NamedTuple
 
-from . import __version__
+from . import USER_AGENT, __version__
 from .errors import ErmError
 
 API_BASE = "https://api.nexusmods.com/v1"
@@ -23,7 +23,7 @@ def _headers(api_key):
         "apikey": api_key,
         "Application-Name": "erm",
         "Application-Version": __version__,
-        "User-Agent": f"erm/{__version__} (+local)",
+        "User-Agent": USER_AGENT,
     }
 
 
@@ -54,35 +54,12 @@ def list_files(mod_id, api_key):
     return _api_get(f"/games/{GAME}/mods/{mod_id}/files.json", api_key)["files"]
 
 
-def _version_key(file):
-    # Parse "1.9.9" -> (1, 9, 9); non-numeric segments sort as 0 rather than
-    # blowing up on a weird upstream version string. Ties (e.g. a re-upload
-    # under the same version) break on upload time, newest wins.
-    parts = []
-    for p in (file.get("version") or "").split("."):
-        try:
-            parts.append(int(p))
-        except ValueError:
-            parts.append(0)
-    return (tuple(parts), file.get("uploaded_timestamp") or 0)
-
-
 def main_files(files):
     # category_name == "MAIN" already excludes OLD_VERSION/ARCHIVED by
     # construction — Nexus only ever tags one category per file. Some mods
     # (e.g. Minimal HUD #148) ship several MAIN files at once — numbered
     # variants, not versions — so this can legitimately return more than one.
     return [f for f in files if f.get("category_name") == "MAIN"]
-
-
-def pick_main_file(files):
-    # Don't trust is_primary: it's False on the current ERSC #510 main file.
-    # Only safe to auto-pick when there's exactly one MAIN file — callers with
-    # several must disambiguate via file_id instead of guessing (see cli.py).
-    candidates = main_files(files)
-    if not candidates:
-        raise ErmError("no MAIN file found in Nexus file list")
-    return max(candidates, key=_version_key)
 
 
 def find_file_by_version(files, version):

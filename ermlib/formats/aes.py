@@ -1,15 +1,24 @@
 """AES-256-CBC, the outermost layer of Elden Ring's regulation.bin.
 
-Pure stdlib on purpose. The alternatives were a third-party dependency (`ermlib`
-has none) or shelling out to `openssl`, and neither is worth it here: AES wraps
-the *compressed* DCX, roughly 2 MB, not the 54 MB payload inside it, so a Python
-implementation costs a couple of seconds once per merge.
+Two backends, tried in order: the system libcrypto through ctypes, then a pure
+Python implementation. The native one matters more than it looks — AES wraps the
+*compressed* DCX, about 2 MB, and a merge of six regulation-carrying mods runs
+that through decrypt dozens of times. In Python each pass is ~5.5 s, so an
+`erm apply` spends minutes here; libcrypto does the same 2 MB in under a
+millisecond, byte for byte the same output.
+
+The Python implementation stays as the fallback rather than becoming dead code:
+`ermlib` has no third-party dependencies and must keep working on a box where
+`crypto` doesn't resolve. `dcx.py` runs the same backend chain for zstd.
 
 Every table below is generated from its algebraic definition rather than typed
 out as a literal. A mistyped byte in a 256-entry S-box yields a cipher that
 still round-trips against itself and disagrees with the rest of the world only
 on data you didn't write — the kind of bug a naive test suite never sees.
 """
+import ctypes
+import ctypes.util
+
 from ..errors import ErmError
 
 BLOCK = 16
@@ -153,9 +162,8 @@ def _check(key, iv, data):
             f"not a multiple of 16 — the caller sliced the buffer wrong")
 
 
-def encrypt_cbc(key, iv, plaintext):
-    """CBC-encrypt `plaintext`. No padding: the input must already be blocks."""
-    _check(key, iv, plaintext)
+def _encrypt_cbc_py(key, iv, plaintext):
+    """CBC-encrypt block by block, chaining each into the next."""
     round_keys = _expand_key(key)
     prev = bytearray(iv)
     out = bytearray()
@@ -169,9 +177,9 @@ def encrypt_cbc(key, iv, plaintext):
     return bytes(out)
 
 
-def decrypt_cbc(key, iv, ciphertext):
-    """CBC-decrypt `ciphertext`. No padding is stripped — see `encrypt_cbc`."""
-    _check(key, iv, ciphertext)
+def _decrypt_cbc_py(key, iv, ciphertext):
+    """The mirror of `_encrypt_cbc_py`: decipher, then XOR the ciphertext
+    block that came before."""
     round_keys = _expand_key(key)
     prev = bytes(iv)
     out = bytearray()
@@ -184,3 +192,112 @@ def decrypt_cbc(key, iv, ciphertext):
         out += state
         prev = block
     return bytes(out)
+
+
+def _pure_python():
+    """The implementation above. Needs nothing installed, so it never fails."""
+    return _encrypt_cbc_py, _decrypt_cbc_py
+
+
+def _ctypes_libcrypto():
+    """OpenSSL's EVP interface through ctypes — no Python package required.
+
+    Every box that can talk TLS has libcrypto, and erm already drives the
+    vendored Kraken decoder and libzstd this way. `restype` on the two functions
+    returning pointers is not optional: ctypes defaults to c_int, which lops the
+    top half off a 64-bit pointer and segfaults on first use.
+    """
+    name = ctypes.util.find_library("crypto") or "libcrypto.so.3"
+    try:
+        lib = ctypes.CDLL(name)
+        lib.EVP_CIPHER_CTX_new.restype = ctypes.c_void_p
+        lib.EVP_CIPHER_CTX_free.argtypes = [ctypes.c_void_p]
+        lib.EVP_aes_256_cbc.restype = ctypes.c_void_p
+        lib.EVP_CIPHER_CTX_set_padding.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.EVP_CIPHER_CTX_set_padding.restype = ctypes.c_int
+        directions = {}
+        for way in ("Encrypt", "Decrypt"):
+            init = getattr(lib, f"EVP_{way}Init_ex")
+            init.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_char_p, ctypes.c_char_p]
+            init.restype = ctypes.c_int
+            update = getattr(lib, f"EVP_{way}Update")
+            update.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                               ctypes.POINTER(ctypes.c_int), ctypes.c_char_p,
+                               ctypes.c_int]
+            update.restype = ctypes.c_int
+            final = getattr(lib, f"EVP_{way}Final_ex")
+            final.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                              ctypes.POINTER(ctypes.c_int)]
+            final.restype = ctypes.c_int
+            directions[way] = (init, update, final)
+    except (OSError, AttributeError) as exc:
+        raise ImportError(f"libcrypto not usable via ctypes ({exc})") from exc
+
+    def check(ok, what):
+        if ok != 1:
+            raise AesError(f"libcrypto refused the AES-256-CBC {what}")
+
+    def run(way, key, iv, data):
+        init, update, final = directions[way]
+        ctx = lib.EVP_CIPHER_CTX_new()
+        if not ctx:
+            raise AesError("libcrypto could not allocate an AES-256-CBC context")
+        try:
+            check(init(ctx, lib.EVP_aes_256_cbc(), None, bytes(key), bytes(iv)),
+                  "key and IV")
+            # The module's contract is that no padding is added or stripped —
+            # regulation.pack appends its own block and sizes the DCX frame
+            # around it. Left on, EVP would silently add a 17th block.
+            check(lib.EVP_CIPHER_CTX_set_padding(ctx, 0), "padding mode")
+            data = bytes(data)
+            out = ctypes.create_string_buffer(len(data) + BLOCK)
+            written = ctypes.c_int(0)
+            check(update(ctx, out, ctypes.byref(written), data, len(data)), "body")
+            total = written.value
+            check(final(ctx,
+                        ctypes.cast(ctypes.addressof(out) + total, ctypes.c_void_p),
+                        ctypes.byref(written)), "final block")
+            return out.raw[:total + written.value]
+        finally:
+            lib.EVP_CIPHER_CTX_free(ctypes.c_void_p(ctx))
+
+    return (lambda key, iv, plaintext: run("Encrypt", key, iv, plaintext),
+            lambda key, iv, ciphertext: run("Decrypt", key, iv, ciphertext))
+
+
+# Native first: the Python fallback always loads, so putting it anywhere but
+# last would mean nobody ever reaches libcrypto.
+_BACKENDS = (_ctypes_libcrypto, _pure_python)
+
+
+def _cipher():
+    """(encrypt, decrypt) from the first backend that loads.
+
+    Resolved on use, never at import, so a box with no libcrypto doesn't pay for
+    the lookup on every erm command that has nothing to do with regulation.bin.
+    """
+    for backend in _BACKENDS:
+        try:
+            return backend()
+        except ImportError:
+            continue
+    raise AesError(
+        "no AES backend loaded — the pure-Python one needs nothing installed, "
+        "so this means _BACKENDS was replaced with something that can fail")
+
+
+def encrypt_cbc(key, iv, plaintext):
+    """CBC-encrypt `plaintext`. No padding: the input must already be blocks."""
+    _check(key, iv, plaintext)
+    return _cipher()[0](key, iv, plaintext)
+
+
+def decrypt_cbc(key, iv, ciphertext):
+    """CBC-decrypt `ciphertext`. No padding is stripped — see `encrypt_cbc`.
+
+    The lengths are checked here rather than in each backend: libcrypto takes
+    the key as a bare pointer and reads 32 bytes from it whatever the caller
+    passed, so a short key would be an out-of-bounds read, not an error.
+    """
+    _check(key, iv, ciphertext)
+    return _cipher()[1](key, iv, ciphertext)

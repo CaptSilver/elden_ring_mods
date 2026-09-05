@@ -88,6 +88,18 @@ def test_read_rejects_a_dflt_size_mismatch():
         dcx.read(bytes(blob))
 
 
+def test_read_rejects_a_corrupt_dflt_body():
+    """Damage in place, not truncation — the length check above only catches a
+    file cut short. zlib raises its own error type from inside the decompressor,
+    and that is not an ErmError, so without the wrap a damaged mod archive
+    reaches the user as a stack trace instead of an error line."""
+    blob = bytearray(dcx.write_dflt(b"payload" * 50))
+    _uncompressed, compressed = struct.unpack_from(">II", blob, 0x1C)
+    blob[dcx.HEADER_SIZE:dcx.HEADER_SIZE + compressed] = b"\x00" * compressed
+    with pytest.raises(dcx.DcxError, match="DFLT body could not be decompressed"):
+        dcx.read(bytes(blob))
+
+
 def test_read_rejects_a_compressed_size_that_overruns_the_buffer():
     """A corrupted or hostile header can claim megabytes of compressed data
     against a file that holds almost none. Python slicing doesn't raise on
@@ -106,6 +118,23 @@ def test_zstd_round_trip():
     assert blob[:4] == b"DCX\x00"
     assert blob[0x28:0x2c] == b"ZSTD"
     assert dcx.read(blob) == payload
+
+
+def test_read_refuses_an_impossible_uncompressed_size_before_reaching_a_decoder(monkeypatch):
+    """The uncompressed size is a bare big-endian u32 out of an untrusted file,
+    and two of the four zstd backends size their output buffer straight from it
+    — 4 GB of it, twice over, on the ctypes backend SteamOS relies on. The size
+    check after decompression is far too late, so gate the field up front, the
+    way the Kraken branch already does."""
+    blob = bytearray(dcx.write_zstd(b"payload"))
+    struct.pack_into(">I", blob, 0x1C, 0xFFFFFFFF)
+
+    def no_backend():
+        raise AssertionError("a decoder was reached with an impossible size")
+
+    monkeypatch.setattr(dcx, "_zstd", no_backend)
+    with pytest.raises(dcx.DcxError, match="refusing to allocate"):
+        dcx.read(bytes(blob))
 
 
 def test_zstd_frame_omits_the_content_size_flag():

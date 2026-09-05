@@ -1,3 +1,5 @@
+import argparse
+import http.client
 import json
 import shutil
 import time
@@ -20,6 +22,44 @@ from . import heal
 from .launch import LAUNCH_OPTION, LAUNCH_VALIDATOR, RESHADE_ENV
 
 ME3_DIR = Path("tools") / "me3"
+# Relative to the cwd, like everything else erm writes: `erm backups` has to
+# read the directory `erm backup` writes.
+BACKUPS_DIR = Path("backups")
+
+# What a download can fail with. http.client.HTTPException is the one that keeps
+# getting forgotten: IncompleteRead (a server closing cleanly mid-body) inherits
+# from bare Exception, not OSError, so it walked past a guard listing the obvious
+# network errors and out through apply's "install what's already present"
+# fallback as a raw traceback. One tuple, so the two guards can't drift.
+_FETCH_FAILURES = (OSError, urllib.error.URLError, http.client.HTTPException,
+                   ValueError, KeyError)
+
+
+def _emit(args, r, doctor=None):
+    """Print one command's result and return its exit code. Every handler's
+    single exit point, so none of them can grow a second output shape.
+
+    --json has to be ONE document: a command that also runs the doctor nests
+    that report under "doctor" rather than printing a prose header and a
+    second document after the first, which is what made `erm --json apply`
+    unreadable to json.loads. Human output is unchanged — the two reports with
+    the header between them.
+
+    The code reported is the doctor's when there is one: it speaks for the
+    install's safety, which outranks whether the command itself did its job.
+    """
+    if getattr(args, "json", False):
+        payload = r.to_dict()
+        if doctor is not None:
+            payload["doctor"] = doctor.to_dict()
+        print(json.dumps(payload))
+    else:
+        if not r.stream:
+            print(r.render())
+        if doctor is not None:
+            print("\nSafety check (erm doctor):")
+            print(doctor.render())
+    return doctor.exit_code if doctor is not None else r.exit_code
 
 
 def cmd_launch_option(args):
@@ -33,6 +73,10 @@ def cmd_launch_option(args):
         reshade = False
     variants = launch.build_variants(launch.find_me3(), reshade, me3_packages)
     if getattr(args, "json", False):
+        # Deliberately NOT the {"worst", "items"} report shape every other
+        # command emits: this one answers a question rather than reporting on a
+        # run, and a consumer wants the launch strings keyed by variant, not a
+        # list of prose lines to grep. The only command whose --json is data.
         print(json.dumps(variants, indent=2, sort_keys=True))
         return 0
     print(launch.render(variants))
@@ -53,9 +97,10 @@ def cmd_audit(args):
         r.ok("no tampering signatures found")
     for f in res.findings:
         (r.fail if f.severity == "decisive" else r.warn)(f"[slot {f.slot}] {f.message}")
-    print(r.render(as_json=args.json))
-    print("\n" + res.caveat)
-    return 0
+    # An item, not a trailing print: the caveat is the most important thing the
+    # audit says, so a --json consumer has to receive it too.
+    r.info(res.caveat)
+    return _emit(args, r)
 
 
 def cmd_status(args):
@@ -95,8 +140,7 @@ def cmd_status(args):
             r.info("launch: me3-mode (me3 packages installed) — see `erm launch-option`")
     else:
         r.info("no mods recorded in installed.json")
-    print(r.render(as_json=args.json))
-    return 0
+    return _emit(args, r)
 
 
 def cmd_doctor(args):
@@ -120,8 +164,7 @@ def cmd_doctor(args):
             stamped = None
         doctor_mod.run_build_checks(game, stamped, live, r, state=state,
                                     lock=manifest.load_lock("mods.lock.toml"))
-    print(r.render(as_json=args.json))
-    return r.exit_code
+    return _emit(args, r)
 
 
 def cmd_refresh(args):
@@ -130,19 +173,31 @@ def cmd_refresh(args):
     r = Report()
     live = gamebuild.identify(game, root)
     stamped = state_mod.stamped_build(state_mod.load_state())
+    stale = doctor_mod.launcher_is_stale(game)
     actions = heal.plan_heal(stamped, live,
                              reharden=not args.no_reharden,
-                             launcher_stale=bool(doctor_mod.launcher_is_stale(game)))
+                             launcher_stale=bool(stale))
+    if stale and args.no_reharden:
+        # The flag decides what goes in the PLAN, not what refresh is allowed
+        # to notice. Letting it swallow the finding as well is how a stale swap
+        # got a green all-clear from the one command whose job is naming what
+        # needs bringing forward. Steam runs that binary.
+        swapped, real = stale
+        r.warn(f"hardened launcher is stale: start_protected_game.exe {swapped}, "
+               f"eldenring.exe {real} — run `erm unharden && erm harden` to put it "
+               f"back on the game's build")
     if not actions:
         if stamped is None:
             # An unstamped stack plans nothing because there is no recorded
             # build to have drifted from -- not because it is up to date.
             r.info(f"stack build not recorded — can't tell whether this stack "
                    f"matches build {live.app}. Run `erm apply` to stamp it.")
+        elif stale:
+            # "nothing to do" would argue with the warning directly above it.
+            r.info(f"the stack itself is built for {live.app}")
         else:
             r.ok(f"stack is already built for {live.app} — nothing to do")
-        print(r.render(as_json=args.json))
-        return r.exit_code
+        return _emit(args, r)
     if stamped is None and not all(a.kind == "refuse" for a in actions):
         # Still worth saying even though something IS planned: the plan below
         # may be about the launcher alone, which tells the reader nothing about
@@ -158,12 +213,10 @@ def cmd_refresh(args):
         # Nothing to execute: the refusal is the whole outcome. Following it
         # with "executing a heal is not wired up yet" would point at a missing
         # feature nobody was asking for here.
-        print(r.render(as_json=args.json))
-        return r.exit_code
+        return _emit(args, r)
     if args.dry_run:
         r.info("dry run — nothing was changed")
-        print(r.render(as_json=args.json))
-        return r.exit_code
+        return _emit(args, r)
     # `refresh` only reports. `apply` runs every step above except the repin:
     # it adopts the baseline, gates the layouts, rebuilds each merge onto the
     # installed build and verifies the result, all as part of a normal install.
@@ -180,8 +233,7 @@ def cmd_refresh(args):
                "gates the param layouts first and verifies the rebase after. It does "
                "not re-pin: run `erm update` first if a mod needs a newer version to "
                "fit this build")
-    print(r.render(as_json=args.json))
-    return r.exit_code
+    return _emit(args, r)
 
 
 def _default_nexus_api_key():
@@ -206,8 +258,34 @@ def _profile_needs_fetch(profile, lock, vendor=Path("vendor")):
     return False
 
 
+def _already_vendored(dest, digest):
+    """`dest` already holds exactly the bytes `digest` names.
+
+    The same check `erm verify` runs, done before spending a download on it. It
+    has to be the hash and not just the name: an interrupted write leaves a
+    short archive at the right path, and adopting that is the one failure a
+    re-download exists to prevent. An empty digest falls through so the
+    fail-closed download still happens.
+    """
+    return bool(digest) and dest.exists() and github.sha256_file(dest) == digest
+
+
 def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"),
-                   update=False, nexus_api_key=None, only_missing=False):
+                   update=False, nexus_api_key=None, only_missing=False, outcomes=None,
+                   report=None):
+    """`outcomes`, if given, is filled in with mod_id -> "checked" | "skipped":
+    whether upstream was actually contacted for that mod. A caller reporting on
+    this run can only speak for the mods it visited, and only a "checked" one
+    has a version worth calling current -- the rest keep their old pin because
+    erm declined to look, not because it looked and found nothing newer."""
+    def _seen(mod_id, outcome):
+        if outcomes is not None:
+            outcomes[mod_id] = outcome
+    # Progress is report items, not bare prints, so a caller in --json mode gets
+    # them inside its document instead of as prose wrapped around it. Without a
+    # caller's report we stream, which is what a download of this size needs:
+    # the same lines at the same moment as before.
+    out = report if report is not None else Report(stream=True)
     try:
         prof = manifest.load_profile(profile_name, base=profiles_base)
     except OSError as exc:
@@ -225,6 +303,7 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
             locked = lock.get(mod["id"])
             asset_name = locked.get("asset") if locked else None
             if asset_name and (vendor / asset_name).exists():
+                _seen(mod["id"], "skipped")
                 continue
         if mod["source"] == "github":
             locked = lock.get(mod["id"])
@@ -249,21 +328,26 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                                                name_hint=mod.get("asset_match"))
                     digest = (asset.get("digest") or "").removeprefix("sha256:")
                 dest = vendor / f'{mod["id"]}-{rel["tag"]}{suffix}'
-                github.download_verified(asset["url"], dest, digest)
-            except (OSError, urllib.error.URLError, ValueError, KeyError) as exc:
+                cached = _already_vendored(dest, digest)
+                if not cached:
+                    github.download_verified(asset["url"], dest, digest)
+            except _FETCH_FAILURES as exc:
                 raise NetworkError(f"failed to fetch {mod['id']} from GitHub: {exc}") from exc
             manifest.set_mod(lock, mod["id"], version=rel["tag"],
                              asset=dest.name, sha256=digest, source="github")
             note = " (pinned)" if pinned else ""
-            print(f"✓ {mod['id']} {rel['tag']}{note} verified → {dest.name}")
+            _seen(mod["id"], "checked")
+            out.ok(f"{mod['id']} {rel['tag']}{note} "
+                   f"{'cached, verified' if cached else 'verified'} → {dest.name}")
         elif mod["source"] == "nexus":
             nid = mod.get("nexus_id")
             if not nexus_api_key:
                 # Free accounts can't hit the download_link.json endpoint —
                 # same manual-download instruction as always.
-                print(f"! {mod['id']} is a manual Nexus download: "
-                      f"https://www.nexusmods.com/eldenring/mods/{nid} "
-                      f"— download the archive into {vendor}/ , then re-run apply.")
+                out.warn(f"{mod['id']} is a manual Nexus download: "
+                         f"https://www.nexusmods.com/eldenring/mods/{nid} "
+                         f"— download the archive into {vendor}/ , then re-run apply.")
+                _seen(mod["id"], "skipped")
                 continue
             locked = lock.get(mod["id"])
             pinned = not update and locked and locked.get("version")
@@ -273,6 +357,7 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
             # against the hash the repin locked.
             file_id = (locked or {}).get("file_id") or mod.get("file_id")
             skip = False
+            cached = False
             try:
                 if pinned:
                     # Same reproducibility promise as the GitHub pin: verify
@@ -289,8 +374,14 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                         f = nexus.find_file_by_version(files, locked["version"])
                     url = nexus.download_url(nid, f["file_id"], nexus_api_key)
                     dest = vendor / f["file_name"]
-                    github.download_verified(url, dest, locked["sha256"])
                     digest = locked["sha256"]
+                    # The link is resolved either way: it is a small JSON call,
+                    # and it is what proves this run selected the pinned file
+                    # rather than skipping the question. Only the archive is
+                    # skipped, which is the part measured in gigabytes.
+                    cached = _already_vendored(dest, digest)
+                    if not cached:
+                        github.download_verified(url, dest, digest)
                 else:
                     files = nexus.list_files(nid, nexus_api_key)
                     current = None
@@ -305,38 +396,52 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
                         options = "\n".join(
                             f"    id={c['file_id']}  {c['file_name']}"
                             for c in choice.candidates)
-                        print(f"! {mod['id']}: {choice.reason} — "
-                              f"set `file_id` in the profile to one of:\n{options}"
-                              if choice.candidates else
-                              f"! {mod['id']}: {choice.reason} — keeping the current pin")
+                        out.warn(f"{mod['id']}: {choice.reason} — "
+                                 f"set `file_id` in the profile to one of:\n{options}"
+                                 if choice.candidates else
+                                 f"{mod['id']}: {choice.reason} — keeping the current pin")
                         skip = True
                     else:
                         f = choice.file
                         if choice.action == "repin":
-                            print(f"• {mod['id']} repin {file_id} -> "
-                                  f"{f['file_id']} ({f.get('version')}) [{choice.reason}]")
+                            out.info(f"{mod['id']} repin {file_id} -> "
+                                     f"{f['file_id']} ({f.get('version')}) [{choice.reason}]")
                             if mod.get("requires_all_players"):
-                                print(f"  ! {mod['id']} is required of all players — "
-                                      "your partner must pull the lockfile and re-apply")
+                                out.warn(f"{mod['id']} is required of all players — "
+                                         "your partner must pull the lockfile and re-apply")
                     if not skip:
-                        # No pin and no upstream hash to check against: trust
-                        # on first use — download, then hash what actually
-                        # landed on disk and pin THAT. Every later fetch
-                        # (yours or a friend's, via the shared lockfile)
-                        # verifies against it.
                         url = nexus.download_url(nid, f["file_id"], nexus_api_key)
                         dest = vendor / f["file_name"]
-                        dest.write_bytes(github._fetch_bytes(url))
-                        digest = github.sha256_file(dest)
-            except (OSError, urllib.error.URLError, ValueError, KeyError) as exc:
+                        locked_sha = (locked or {}).get("sha256") or ""
+                        # "unchanged" plus the locked bytes already on disk is
+                        # the whole job done. Keeping the LOCKED digest instead
+                        # of re-hashing the wire is also what stops an upstream
+                        # swap under a stable file_id being adopted silently --
+                        # including for a pin the profile declared frozen.
+                        cached = (choice.action == "unchanged"
+                                  and _already_vendored(dest, locked_sha))
+                        if cached:
+                            digest = locked_sha
+                        else:
+                            # No pin and no upstream hash to check against: trust
+                            # on first use — hash what actually lands on disk
+                            # and pin THAT. Every later fetch (yours or a
+                            # friend's, via the shared lockfile) verifies
+                            # against it. The digest comes back from the
+                            # download itself, so the archive is hashed as it
+                            # streams past rather than read off disk again.
+                            digest = github.download_stream(url, dest)
+            except _FETCH_FAILURES as exc:
                 raise NetworkError(f"failed to fetch {mod['id']} from Nexus: {exc}") from exc
             if skip:
+                _seen(mod["id"], "skipped")
                 continue
             manifest.set_mod(lock, mod["id"], version=f["version"],
                              asset=f["file_name"], sha256=digest, source="nexus",
                              file_id=f.get("file_id"))
-            verb = "(pinned) verified" if pinned else "fetched"
-            print(f"✓ {mod['id']} v{f['version']} {verb} → {f['file_name']}")
+            verb = "cached, verified" if cached else ("(pinned) verified" if pinned else "fetched")
+            _seen(mod["id"], "checked")
+            out.ok(f"{mod['id']} v{f['version']} {verb} → {f['file_name']}")
         else:
             raise PathError(f"unknown source '{mod['source']}' for mod '{mod['id']}'")
     manifest.write_lock(lock_path, lock)
@@ -344,8 +449,12 @@ def fetch_profile(profile_name, vendor, lock_path, profiles_base=Path("profiles"
 
 
 def cmd_fetch(args):
-    fetch_profile(args.profile, Path("vendor"), Path("mods.lock.toml"), update=args.update)
-    return 0
+    # Streams in human mode so a multi-gigabyte pull shows progress; --json
+    # holds the items back so the whole run comes out as one document.
+    r = Report(stream=not getattr(args, "json", False))
+    fetch_profile(args.profile, Path("vendor"), Path("mods.lock.toml"),
+                  update=args.update, report=r)
+    return _emit(args, r)
 
 
 def _install_ersc(game, lock):
@@ -369,30 +478,58 @@ def _install_ersc(game, lock):
     return version, bool(password)
 
 
-_MANUAL_NOTES = {
-    "item-enemy-randomizer": "run the randomizer generator (in the vendor archive) to create a "
-                              "regulation.bin, then place it per its README; the whole group needs "
-                              "the identical output",
-    "me3": "me3 is a loader — install per me3.help; it chainloads ersc.dll and the randomizer",
-}
+def _persist(state, game, r):
+    """Write installed.json and regenerate the me3 profile from it.
+
+    The me3 profile is a pure function of state, so the two have to move
+    together -- including down an abort path, where state has just forgotten
+    the merged package whose directory was wiped. Regenerating is best-effort:
+    the error being aborted with is what the caller needs to see, so a failed
+    profile write warns rather than replacing it.
+    """
+    state_mod.write_state(Path("installed.json"), state)
+    try:
+        me3profile.reconcile(state, ME3_DIR, game)
+    except OSError as exc:
+        r.warn(f"could not regenerate the me3 profile ({exc}) — erm-coop.me3 may still "
+               f"name a package that is no longer on disk; re-run `erm apply`")
 
 
-def cmd_apply(args):
+def cmd_apply(args, r=None):
     """Install a profile, printing what was found even if the run aborts.
 
     Everything apply notices accumulates in one Report. That Report is a local,
     so an abort used to take every warning with it and surface the exception
     alone -- including on the refusal whose own text points at "a failed install
     reported above", which the reader then could not find.
+
+    `r` lets switch hand its own uninstall report in, so the whole switch comes
+    out as one report (and, under --json, one document) rather than two.
     """
-    r = Report()
+    if r is None:
+        # Live output in human mode: apply installs mod after mod and can spend
+        # minutes auto-fetching, and holding it all back to the end reads as a
+        # hang. --json buffers so the run is a single document.
+        r = Report(stream=not getattr(args, "json", False))
     try:
         return _apply(args, r)
     except ErmError:
-        rendered = r.render(as_json=getattr(args, "json", False))
-        if rendered.strip():
-            print(rendered)
+        if not r.stream:
+            rendered = r.render(as_json=getattr(args, "json", False))
+            if rendered.strip():
+                print(rendered)
         raise
+
+
+# Every `install` mode the loop in _apply handles. The chain there ends in the
+# generic extract-into-Game/ branch, so without this an unrecognised mode -- a
+# profile typo, or one dropped from the code while a profile still names it --
+# unpacked its archive over the game directory and reported success. Writing
+# files nobody asked for is the least safe thing that loop can do, so an unknown
+# mode has to stop the run instead of falling through.
+INSTALL_MODES = frozenset({
+    "game", "mods", "manual", "randomizer", "me3-host", "me3-native", "me3-package",
+})
 
 
 def _apply(args, r):
@@ -436,10 +573,10 @@ def _apply(args, r):
     # fetched profile still applies offline. A fetch failure isn't fatal: warn and
     # install whatever's already present.
     if _profile_needs_fetch(profile, lock):
-        print(f"fetching missing mods for {args.profile}…")
+        r.info(f"fetching missing mods for {args.profile}…")
         try:
             lock = fetch_profile(args.profile, Path("vendor"), Path("mods.lock.toml"),
-                                 only_missing=True)
+                                 only_missing=True, report=r)
         except ErmError as exc:
             # Any fetch problem (network down, a stale pin failing its hash check,
             # an unknown source) — warn and install what's already present rather
@@ -456,8 +593,11 @@ def _apply(args, r):
     for mod in profile["mods"]:
         mid = mod["id"]
         kind = mod.get("install", "game")
+        if kind not in INSTALL_MODES:
+            raise ErmError(f"{mid}: unknown install mode {kind!r} "
+                           f"(known: {', '.join(sorted(INSTALL_MODES))})")
         if kind == "manual":
-            r.info(f"{mid}: manual — {_MANUAL_NOTES.get(mid, 'see the mod README')}")
+            r.info(f"{mid}: manual — install it per the mod's own README")
             continue
         meta = lock.get(mid)
         asset = meta.get("asset") if meta else None
@@ -473,9 +613,8 @@ def _apply(args, r):
         # on a run that then had nothing to put back.
         if not _drop_stale_install(game, mid, kind, state, r):
             continue
-        # randomizer/me3 are tools, not Game/ mods: extract to tools/<mid>/
-        # instead of Game/ and never touch installed.json — `erm uninstall`
-        # only knows how to clean up files it put inside the game dir.
+        # The randomizer generator is a tool, not a Game/ mod: extract it to
+        # tools/<mid>/ instead of Game/.
         if kind == "randomizer":
             try:
                 install.extract_archive(vpath, Path("tools"), mid)
@@ -507,21 +646,11 @@ def _apply(args, r):
             r.info("pick options + a seed, generate, then load the output via me3; "
                     "share the identical output with your group")
             continue
-        if kind == "me3":
-            try:
-                install.extract_archive(vpath, Path("tools"), mid)
-            except (OSError, zipfile.BadZipFile) as exc:
-                r.warn(f"{mid}: extract failed ({exc})")
-                continue
-            r.ok(f"{mid}: extracted to tools/{mid}/ (loader — replaces the Steam launch-option method)")
-            r.info("me3 profile is generated as tools/me3/erm-coop.me3 by erm — launch via me3 "
-                    "(`erm launch-option` prints the line)")
-            continue
         if kind == "me3-host":
-            # The launch option runs the NATIVE binary, not the Windows build
-            # above: Steam starts me3 on the host and me3 builds the Proton
-            # command itself. Installed rather than merely unpacked, because the
-            # path Steam invokes is fixed and outside this repo.
+            # Steam starts the native binary and me3 builds the Proton command
+            # itself. Installed rather than merely unpacked, because the path
+            # Steam invokes is fixed and outside this repo. The Windows pieces
+            # me3 chainloads go with it, into the data dir me3 reads them from.
             try:
                 binary = me3pkg.install_me3_host(vpath, launch.ME3_BINDIR,
                                                  launch.ME3_DATADIR)
@@ -532,6 +661,8 @@ def _apply(args, r):
                 r.warn(f"{mid}: install failed ({exc})")
                 continue
             r.ok(f"{mid} {meta.get('version', '')} → {binary} (native launcher)")
+            r.info("me3 profile is generated as tools/me3/erm-coop.me3 by erm — launch via me3 "
+                    "(`erm launch-option` prints the line)")
             continue
         if kind == "me3-native":
             try:
@@ -617,53 +748,53 @@ def _apply(args, r):
                # ...and still backed by installed mods, so merged output can't
                # outlive the sources it was built from.
                and set(mods) <= installed_packages}
-    conflicts.clear_merged(ME3_DIR, keep=carried)
-    if carried:
-        # Whatever survived the clear is still on disk, so state has to keep
-        # saying so -- including down the abort path below, which writes state
-        # and re-raises without ever reaching the success-path record.
-        state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}", carried)
-    # Forget any merged package from a PRIOR apply right away, in lockstep with
-    # the physical dir clear_merged() just wiped — not after the resolve() call
-    # below. resolve() can refuse a totally unrelated collision, and the except
-    # clause below writes state and re-raises; if forgetting waited until after
-    # that try/except, this path would never reach it, and
-    # installed.json would keep claiming _merged is installed even though its
-    # directory is already gone. Re-recorded below only if this run's merge
-    # actually succeeds. Excluded from package_ids below for the same reason:
-    # it's this function's own prior output, not a real collision provider.
-    if not carried:
-        state_mod.forget(state, conflicts.MERGED_ID)
-    package_ids = [mid for mid, _pkg in state_mod.me3_packages(state)
-                   if mid != conflicts.MERGED_ID]
-    # Before the prunes, and well before resolve(): a rename decides which path
-    # a file even occupies, so every collision and merge downstream has to see
-    # the moved file rather than the one the author happened to ship.
-    for renamed in conflicts.apply_renames(ME3_DIR, profile.get("renames", [])):
-        r.info(f"renamed {renamed}")
-    for pruned in conflicts.apply_prunes(ME3_DIR, profile.get("prunes", [])):
-        # No reason attached: a prune drops a path because the profile says so,
-        # and the profile's comment carries why. The old wording asserted the
-        # file "ships no content of its own", which is true of the vanilla
-        # copies it was written for and false of a prune that deliberately
-        # gives up real content to settle a collision.
-        r.info(f"pruned {pruned}")
-    # A game newer than the ancestor the mods branched from means the merge
-    # would be built out of game data the install no longer has. Fold every
-    # contributor onto the installed game's own regulation instead, so the rows
-    # the patch added survive alongside the mods' edits.
-    bases = {}
+    # This block opens by wiping the merged package, so from clear_merged() to
+    # the end of it every exit -- not just an unresolvable collision -- has to
+    # leave state and the me3 profile agreeing with what is actually on disk.
+    # See the handler.
     try:
-        live = gamebuild.identify(game, steam_root)
-    except GameBuildError as exc:
-        live = None
-        r.warn(f"could not check the game build ({exc}) — merging against the "
-               "profile's declared ancestor")
-    # Everything from here to the end of the block runs after clear_merged()
-    # wiped the merged package, so every exit -- not just an unresolvable
-    # collision -- has to leave state and the me3 profile agreeing with what
-    # is actually on disk. See the handler.
-    try:
+        conflicts.clear_merged(ME3_DIR, keep=carried)
+        if carried:
+            # Whatever survived the clear is still on disk, so state has to keep
+            # saying so -- including down the abort path below, which writes state
+            # and re-raises without ever reaching the success-path record.
+            state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}", carried)
+        # Forget any merged package from a PRIOR apply right away, in lockstep with
+        # the physical dir clear_merged() just wiped — not after the resolve() call
+        # below. resolve() can refuse a totally unrelated collision, and the except
+        # clause below writes state and re-raises; if forgetting waited until after
+        # that try/except, this path would never reach it, and
+        # installed.json would keep claiming _merged is installed even though its
+        # directory is already gone. Re-recorded below only if this run's merge
+        # actually succeeds. Excluded from package_ids below for the same reason:
+        # it's this function's own prior output, not a real collision provider.
+        if not carried:
+            state_mod.forget(state, conflicts.MERGED_ID)
+        package_ids = [mid for mid, _pkg in state_mod.me3_packages(state)
+                       if mid != conflicts.MERGED_ID]
+        # Before the prunes, and well before resolve(): a rename decides which path
+        # a file even occupies, so every collision and merge downstream has to see
+        # the moved file rather than the one the author happened to ship.
+        for renamed in conflicts.apply_renames(ME3_DIR, profile.get("renames", [])):
+            r.info(f"renamed {renamed}")
+        for pruned in conflicts.apply_prunes(ME3_DIR, profile.get("prunes", [])):
+            # No reason attached: a prune drops a path because the profile says so,
+            # and the profile's comment carries why. The old wording asserted the
+            # file "ships no content of its own", which is true of the vanilla
+            # copies it was written for and false of a prune that deliberately
+            # gives up real content to settle a collision.
+            r.info(f"pruned {pruned}")
+        # A game newer than the ancestor the mods branched from means the merge
+        # would be built out of game data the install no longer has. Fold every
+        # contributor onto the installed game's own regulation instead, so the rows
+        # the patch added survive alongside the mods' edits.
+        bases = {}
+        try:
+            live = gamebuild.identify(game, steam_root)
+        except GameBuildError as exc:
+            live = None
+            r.warn(f"could not check the game build ({exc}) — merging against the "
+                   "profile's declared ancestor")
         reg_contributors = [(m, (ME3_DIR / "mods" / m / heal.REGULATION).read_bytes())
                             for m in package_ids
                             if (ME3_DIR / "mods" / m / heal.REGULATION).is_file()]
@@ -711,31 +842,28 @@ def _apply(args, r):
                     f"the merged {heal.REGULATION} is not a faithful rebase onto "
                     f"build {live.regulation}:\n  " + "\n  ".join(problems) +
                     f"\nNothing was mounted — fix the mods and re-run `erm apply`.")
-    except ErmError:
-        state_mod.write_state(Path("installed.json"), state)
-        # The me3 profile is meant to be a pure function of state, and state has
-        # already forgotten the merged package whose directory clear_merged()
-        # wiped above. Regenerate here too, or the abort leaves erm-coop.me3
-        # naming a package that isn't on disk. Best-effort: the error is the
-        # thing the caller needs to see, so a profile-write failure must not
-        # replace it.
-        try:
-            me3profile.reconcile(state, ME3_DIR, game)
-        except OSError:
-            pass
+    except BaseException:
+        # Not just ErmError: apply_renames/apply_prunes move real files, so
+        # ENOSPC or EACCES lands here too, and an interrupt at the wrong moment
+        # leaves the same inconsistency. Cleanup only -- it re-raises, so the
+        # error the caller needs still gets out.
+        _persist(state, game, r)
         raise
     declared_mods = {m["path"]: list(m["mods"]) for m in profile.get("merges", [])}
     merged_paths = dict(carried)
-    merged_paths.update({rel: declared_mods.get(rel, []) for rel in merged})
+    # What actually contributed, not what the profile declared: a merge can name
+    # a mod that lives in another profile and isn't installed here, and
+    # regulation.bin runs to six contributors. This is the set the NEXT apply
+    # tests against installed_packages before carrying the output across, so a
+    # declared-but-absent id recorded here is one no later run can ever satisfy
+    # -- it would wipe merged output that nothing is going to rebuild.
+    merged_paths.update({rel: [m for m in declared_mods.get(rel, []) if m in package_ids]
+                         for rel in merged})
     if merged_paths:
         state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}",
                                 merged_paths)
         for rel in merged:
-            # Count what actually contributed, not what the profile declared: a
-            # merge can name a mod that lives in another profile and isn't
-            # installed here, and regulation.bin runs to six contributors.
-            contributors = [m for m in declared_mods.get(rel, []) if m in package_ids]
-            r.ok(f"merged {rel} (content from {len(contributors)} mods kept)")
+            r.ok(f"merged {rel} (content from {len(merged_paths[rel])} mods kept)")
         # Something a strategy couldn't carry over cleanly -- e.g. two mods'
         # ESD edits landing on the same state machine differently. The merge
         # still happened and one mod's package is still installed; this is the
@@ -752,11 +880,7 @@ def _apply(args, r):
     except GameBuildError as exc:
         r.warn(f"could not record the game build ({exc}) — "
                "a later game patch won't be detected")
-    state_mod.write_state(Path("installed.json"), state)
-    try:
-        me3profile.reconcile(state, ME3_DIR, game)
-    except OSError as exc:
-        r.warn(f"could not regenerate the me3 profile ({exc}) — run `erm apply` again")
+    _persist(state, game, r)
     if installed_seamless and not password:
         r.warn("no COOP_PASSWORD in secrets.env — password left blank")
     # A loader mod (Elden Mod Loader's dinput8.dll, or me3) can be picked up by
@@ -780,24 +904,34 @@ def _apply(args, r):
             # the user the lock didn't complete. Mods are already installed, so
             # this warns rather than aborting the rest of apply.
             r.warn(f"auto-harden incomplete: {exc} — run `erm harden` to finish (or `erm unharden` to revert)")
-    print(r.render(as_json=args.json))
-    print("\nSafety check (erm doctor):")
-    dr = run_doctor(game, Report())
-    print(dr.render(as_json=args.json))
-    return dr.exit_code
+    return _emit(args, r, doctor=run_doctor(game, Report()))
 
 
 def cmd_update(args):
     lock_path = Path("mods.lock.toml")
     before = {k: v.get("version") for k, v in manifest.load_lock(lock_path).items()}
-    fetch_profile(args.profile, Path("vendor"), lock_path, update=True)
+    # One lockfile serves every profile, so it always holds more entries than
+    # the profile being updated. Report on what this run actually visited --
+    # walking `after` instead vouched for mods erm never contacted.
+    outcomes = {}
+    # One report for the whole run: the fetch's own lines land in it first, then
+    # the version diff below. Streams in human mode so an update that pulls
+    # hundreds of megabytes isn't silent until it finishes.
+    r = Report(stream=not getattr(args, "json", False))
+    fetch_profile(args.profile, Path("vendor"), lock_path, update=True, outcomes=outcomes,
+                  report=r)
     after = manifest.load_lock(lock_path)
 
-    r = Report()
     changed = []
-    for mod_id, meta in after.items():
-        old, new = before.get(mod_id), meta.get("version")
-        if old != new:
+    skipped = []
+    for mod_id, outcome in outcomes.items():
+        old, new = before.get(mod_id), (after.get(mod_id) or {}).get("version")
+        if outcome == "skipped":
+            # The pin is unchanged because nothing looked, which is not the
+            # same claim as "current" -- warn so it can't read as a clean bill.
+            skipped.append(mod_id)
+            r.warn(f"{mod_id} pin kept ({new}) — NOT checked against upstream")
+        elif old != new:
             r.ok(f"{mod_id} {old or '(new)'} -> {new}")
             changed.append(mod_id)
         else:
@@ -823,18 +957,20 @@ def cmd_update(args):
             r.warn("no COOP_PASSWORD in secrets.env — password left blank")
         doctor_report = run_doctor(game, Report())
 
-    print(r.render(as_json=args.json))
+    # The closing summary is report items too, so --json carries the LOCKSTEP
+    # warning and the unchecked-pin list instead of trailing them as prose that
+    # breaks the document.
     if changed:
         if installed_version:
-            print(f"\nInstalled seamless-coop {installed_version} into the game.")
-        print("LOCKSTEP: every player must update to the same version and use the shared "
-              "mods.lock.toml, or co-op won't connect. Commit and share the updated lockfile.")
-        if doctor_report is not None:
-            print("\nSafety check (erm doctor):")
-            print(doctor_report.render(as_json=args.json))
+            r.ok(f"installed seamless-coop {installed_version} into the game")
+        r.warn("LOCKSTEP: every player must update to the same version and use the shared "
+               "mods.lock.toml, or co-op won't connect. Commit and share the updated lockfile.")
+    elif skipped:
+        r.info(f"nothing new to install, but {len(skipped)} mod(s) were not checked: "
+               f"{', '.join(sorted(skipped))}. Their pins are unverified.")
     else:
-        print("\nAlready up to date — nothing to install.")
-    return doctor_report.exit_code if doctor_report is not None else 0
+        r.ok("already up to date — nothing to install")
+    return _emit(args, r, doctor=doctor_report)
 
 
 def _uninstall_one(game, mod_id, state, r):
@@ -875,7 +1011,16 @@ def _uninstall_one(game, mod_id, state, r):
         state_mod.forget(state, mod_id)
         return
     if entry and entry.get("kind") == "me3-package":
-        pkg = Path(entry["package"])
+        pkg_str = entry.get("package")
+        if not pkg_str:
+            # Same warn-and-forget its two sibling kinds do. Reading the key
+            # outright raised KeyError out of every caller instead, and `not`
+            # rather than `is None` also catches "", which would become Path(".")
+            # and get refused below under the cwd's name.
+            r.warn(f"{mod_id}: me3-package entry has no recorded package path — forgetting it")
+            state_mod.forget(state, mod_id)
+            return
+        pkg = Path(pkg_str)
         # installed.json can be hand-edited (or corrupted), so re-validate
         # before rmtree — same reasoning as the files-list containment check
         # below, just against the me3 packages dir instead of Game/.
@@ -996,8 +1141,8 @@ def _uninstall_one(game, mod_id, state, r):
 
 
 # Install modes that leave something behind, mapped to the `kind` their recorder
-# writes. Modes absent here ("me3" extracts to tools/ and is never recorded,
-# "manual" never installs) have nothing to reconcile.
+# writes. Modes absent here ("manual" never installs, "me3-host" installs outside
+# the repo) have nothing to reconcile.
 _RECORDED_KIND_FOR_INSTALL = {
     "mods": "files",
     "game": "files",
@@ -1127,11 +1272,7 @@ def cmd_uninstall(args):
         me3profile.reconcile(state, ME3_DIR, game)
     except OSError as exc:
         r.warn(f"could not regenerate the me3 profile ({exc}) — run `erm apply` again")
-    print(r.render(as_json=args.json))
-    print("\nSafety check (erm doctor):")
-    dr = run_doctor(game, Report())
-    print(dr.render(as_json=args.json))
-    return 0
+    return _emit(args, r, doctor=run_doctor(game, Report()))
 
 
 def cmd_switch(args):
@@ -1140,7 +1281,7 @@ def cmd_switch(args):
     from the old one lingering in Game/."""
     game = paths.find_game_dir(paths.find_steam_root())
     state = state_mod.load_state()
-    r = Report()
+    r = Report(stream=not getattr(args, "json", False))
     # mod_ids, not every key: installed.json also holds bookkeeping records
     # like the build stamp, and handing one to the uninstaller raises PathError
     # — whose recovery is to forget the entry, which deletes the stamp.
@@ -1161,12 +1302,13 @@ def cmd_switch(args):
     except OSError as exc:
         r.warn(f"could not regenerate the me3 profile ({exc}) — run `erm apply` again")
     r.info(f"switching to {args.profile}")
-    print(r.render(as_json=args.json))
+    # Same report through the apply half, so a switch is one report and one
+    # --json document rather than the uninstall's, then apply's, then doctor's.
     return cmd_apply(type("A", (), {
         "profile": args.profile,
         "json": args.json,
         "no_harden": getattr(args, "no_harden", False),
-    })())
+    })(), r)
 
 
 def cmd_verify(args):
@@ -1184,8 +1326,7 @@ def cmd_verify(args):
         got = github.sha256_file(p)
         (r.ok if got == meta.get("sha256") else r.fail)(
             f"{mod_id}: {'sha256 ok' if got == meta.get('sha256') else 'HASH MISMATCH'}")
-    print(r.render(as_json=args.json))
-    return r.exit_code
+    return _emit(args, r)
 
 
 def _stamp():
@@ -1195,40 +1336,68 @@ def _stamp():
 def cmd_backup(args):
     root = paths.find_steam_root()
     save_dir = paths.find_save_dir(root)
+    r = Report()
     co2 = list(save_dir.glob("*.co2")) or list(save_dir.glob("*.sl2"))
     if not co2:
-        print("no save found to back up")
-        return 1
-    out = saves.backup_save(co2[0], Path("backups"), label=args.label or "", stamp=_stamp())
-    print(f"backed up → {out}")
-    return 0
+        r.fail("no save found to back up")
+        return _emit(args, r)
+    out = saves.backup_save(co2[0], BACKUPS_DIR, label=args.label or "", stamp=_stamp())
+    r.ok(f"backed up {co2[0].name} → {out}")
+    return _emit(args, r)
 
 
 def cmd_quarantine(args):
     root = paths.find_steam_root()
     save_dir = paths.find_save_dir(root)
     sl2 = save_dir / "ER0000.sl2"
-    rep = saves.quarantine(sl2, Path("backups"), steam.cloud_saves(root),
+    rep = saves.quarantine(sl2, BACKUPS_DIR, steam.cloud_saves(root),
                            steam_up=steam.steam_running(), stamp=_stamp())
-    print(rep.render(as_json=args.json))
-    return 0
+    return _emit(args, rep)
+
+
+def _backup_names():
+    """Snapshot names as `erm restore` takes them — relative to backups/, so a
+    quarantined save reads `quarantine/ER0000.sl2.<stamp>` and pastes straight
+    back into the command."""
+    return [str(p.relative_to(BACKUPS_DIR)) for p in saves.list_backups(BACKUPS_DIR)]
+
+
+def cmd_backups(args):
+    r = Report()
+    names = _backup_names()
+    if not names:
+        r.info(f"no snapshots in {BACKUPS_DIR}/ — `erm backup` takes one")
+    for name in names:
+        r.info(name)
+    return _emit(args, r)
 
 
 def cmd_restore(args):
-    src = Path("backups") / args.backup
+    src = BACKUPS_DIR / args.backup
     if not src.exists():
         src = Path(args.backup)
+    if not src.exists():
+        # Before the pre-restore snapshot below, not after: a mistyped name
+        # used to copy the live save into backups/ and only then fail, leaving
+        # another file behind in the directory that nothing could list.
+        names = _backup_names()
+        raise PathError(f"no backup named {args.backup!r} "
+                        f"({'have: ' + ', '.join(names) if names else 'backups/ is empty'})")
     root = paths.find_steam_root()
     save_dir = paths.find_save_dir(root)
     dest = save_dir / ("ER0000.co2" if src.name.endswith(".co2") or ".co2" in src.name else "ER0000.sl2")
+    r = Report()
     if dest.exists():
-        saves.backup_save(dest, Path("backups"), label="pre-restore", stamp=_stamp())
+        # The save being overwritten is a live character, so where its last
+        # copy went is part of the result, not a detail worth losing.
+        kept = saves.backup_save(dest, BACKUPS_DIR, label="pre-restore", stamp=_stamp())
+        r.info(f"kept the save being replaced → {kept}")
     try:
         shutil.copy2(src, dest)
     except OSError as exc:
         raise PathError(f"cannot restore from {src} ({exc})") from exc
-    print(f"restored {src} → {dest}")
-    return 0
+    r.ok(f"restored {src} → {dest}")
+    return _emit(args, r)
 
 
 def cmd_tidy(args):
@@ -1245,16 +1414,14 @@ def cmd_tidy(args):
     r = Report()
     if not cruft:
         r.ok("nothing to tidy — no orphaned mod logs/dirs found")
-        print(r.render(as_json=args.json))
-        return 0
+        return _emit(args, r)
     verb = "removing" if args.apply else "would remove"
     for c in cruft:
         r.info(f"{verb}: {c.relative_to(game)}")
     if not args.apply:
-        print(r.render(as_json=args.json))
-        print(f"\n{len(cruft)} item(s) would be removed (all inside Game/, none recorded in "
-              f"installed.json). Re-run `erm tidy --apply` to delete them.")
-        return 0
+        r.info(f"{len(cruft)} item(s) would be removed (all inside Game/, none recorded in "
+               f"installed.json). Re-run `erm tidy --apply` to delete them.")
+        return _emit(args, r)
     removed = 0
     for c in cruft:
         try:
@@ -1266,8 +1433,7 @@ def cmd_tidy(args):
         except OSError as exc:
             r.warn(f"could not remove {c.relative_to(game)}: {exc}")
     r.ok(f"tidied {removed} item(s)")
-    print(r.render(as_json=args.json))
-    return 0
+    return _emit(args, r)
 
 
 def cmd_harden(args):
@@ -1283,10 +1449,7 @@ def cmd_harden(args):
     r.ok("start_protected_game.exe is now immutable — Steam Verify/patch can't restore EAC")
     r.warn("run `erm unharden` before any Steam game update, or the update will fail on the immutable file")
     r.warn("vanilla online (invasions/summons) is disabled while hardened")
-    print(r.render(as_json=args.json))
-    print("\nSafety check (erm doctor):")
-    print(run_doctor(game, Report()).render(as_json=args.json))
-    return 0
+    return _emit(args, r, doctor=run_doctor(game, Report()))
 
 
 def cmd_unharden(args):
@@ -1299,67 +1462,80 @@ def cmd_unharden(args):
         r.ok("removed immutable flag and restored the real start_protected_game.exe (EAC)")
     else:
         r.info("not hardened — nothing to restore")
-    print(r.render(as_json=args.json))
-    print("\nSafety check (erm doctor):")
-    print(run_doctor(game, Report()).render(as_json=args.json))
-    return 0
+    return _emit(args, r, doctor=run_doctor(game, Report()))
 
 
 def register(subparsers):
-    subparsers.add_parser("doctor", help="safety report").set_defaults(func=cmd_doctor)
-    a = subparsers.add_parser("audit", help="forensic audit of a save")
+    # --json on every subcommand as well as the root, so `erm status --json`
+    # works like git/docker rather than exiting 2. SUPPRESS is load-bearing: a
+    # plain store_true default would copy False back over the root's True and
+    # silently turn `erm --json status` into prose.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help="machine-readable output")
+
+    def add(name, **kw):
+        return subparsers.add_parser(name, parents=[common], **kw)
+
+    add("doctor", help="safety report").set_defaults(func=cmd_doctor)
+    a = add("audit", help="forensic audit of a save")
     a.add_argument("save", nargs="?", help="path to ER0000.sl2 (default: live save)")
     a.set_defaults(func=cmd_audit)
-    subparsers.add_parser("status", help="install + version summary").set_defaults(func=cmd_status)
-    subparsers.add_parser(
+    add("status", help="install + version summary").set_defaults(func=cmd_status)
+    add(
         "launch-option", help="print every Steam launch option"
     ).set_defaults(func=cmd_launch_option)
-    f = subparsers.add_parser("fetch", help="download + verify a profile's mods")
+    f = add("fetch", help="download + verify a profile's mods")
     f.add_argument("profile", nargs="?", default="seamless-only")
     f.add_argument("--update", action="store_true",
                     help="ignore the lockfile pin and fetch the latest release")
     f.set_defaults(func=cmd_fetch)
-    ap = subparsers.add_parser("apply", help="install the fetched mods into Game/")
+    ap = add("apply", help="install the fetched mods into Game/")
     ap.add_argument("profile", nargs="?", default="seamless-only")
     ap.add_argument("--no-harden", action="store_true",
                      help="skip auto-harden even if the profile loads mods via a proxy DLL/me3")
     ap.set_defaults(func=cmd_apply)
-    up = subparsers.add_parser("update", help="fetch the latest Seamless Co-op, re-pin, and install it")
+    up = add("update", help="fetch the latest Seamless Co-op, re-pin, and install it")
     up.add_argument("profile", nargs="?", default="seamless-only")
     up.set_defaults(func=cmd_update)
-    un = subparsers.add_parser("uninstall", help="remove an installed mod's (or whole profile's) files from Game/")
+    un = add("uninstall", help="remove an installed mod's (or whole profile's) files from Game/")
     un.add_argument("mod", nargs="?", default="seamless-coop")
     un.set_defaults(func=cmd_uninstall)
-    sw = subparsers.add_parser("switch", help="uninstall whatever's installed, then apply a different profile")
+    sw = add("switch", help="uninstall whatever's installed, then apply a different profile")
     sw.add_argument("profile")
     sw.add_argument("--no-harden", action="store_true",
                      help="skip auto-harden even if the new profile loads mods via a proxy DLL/me3")
     sw.set_defaults(func=cmd_switch)
-    subparsers.add_parser("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
-    p_refresh = subparsers.add_parser(
+    add("verify", help="re-hash vendor/ against the lockfile").set_defaults(func=cmd_verify)
+    p_refresh = add(
         "refresh",
         help="show what the installed game build needs rebased onto it — `erm apply` carries it out")
+    # Neither flag gates a write: refresh reports, `erm apply` carries it out.
+    # They shape the printed plan, and the help has to say only that.
     p_refresh.add_argument("--dry-run", action="store_true",
-                           help="print the plan without changing anything")
+                           help="print the plan alone, without the command that carries it out")
     p_refresh.add_argument("--no-reharden", action="store_true",
-                           help="skip re-copying the hardened launcher (avoids the sudo prompt)")
+                           help="leave the launcher re-copy out of the plan "
+                                "(a stale launcher is still reported)")
     p_refresh.set_defaults(func=cmd_refresh)
-    b = subparsers.add_parser("backup", help="snapshot the co-op save")
+    b = add("backup", help="snapshot the co-op save")
     b.add_argument("--label", default="")
     b.set_defaults(func=cmd_backup)
-    rs = subparsers.add_parser("restore", help="restore a save snapshot")
-    rs.add_argument("backup")
+    add("backups", help="list the save snapshots `erm restore` can take").set_defaults(
+        func=cmd_backups)
+    rs = add("restore", help="restore a save snapshot")
+    rs.add_argument("backup", help="a name from `erm backups`, or a path to a file")
     rs.set_defaults(func=cmd_restore)
-    subparsers.add_parser("quarantine", help="move the vanilla save out of harm's way").set_defaults(func=cmd_quarantine)
-    subparsers.add_parser(
+    add("quarantine", help="move the vanilla save out of harm's way").set_defaults(func=cmd_quarantine)
+    add(
         "harden",
         help="swap in a non-EAC launcher and lock it immutable (sudo)",
     ).set_defaults(func=cmd_harden)
-    subparsers.add_parser(
+    add(
         "unharden",
         help="undo `erm harden`: restore the real EAC launcher (sudo)",
     ).set_defaults(func=cmd_unharden)
-    td = subparsers.add_parser(
+    td = add(
         "tidy",
         help="remove orphaned mod logs/runtime dirs left behind by uninstall (dry-run by default)",
     )

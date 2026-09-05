@@ -32,3 +32,24 @@ def test_quarantine_moves_save_and_reports_cloud(tmp_path):
     # backup taken BEFORE the move — move-without-backup would be data loss
     assert list((tmp_path / "backups" / "quarantine-backup").glob("ER0000.sl2*"))
     assert any("cloud" in m.lower() for _, m in rep.items)     # cloud purge instruction
+
+
+def test_listing_finds_the_quarantined_save(tmp_path):
+    # quarantine() files the vanilla save two levels down, under
+    # backups/quarantine/. A flat listing hides the one file the user most
+    # needs to name when restoring.
+    save = tmp_path / "ER0000.sl2"; save.write_bytes(b"x")
+    bdir = tmp_path / "backups"
+    saves.backup_save(save, bdir, label="orig", stamp="20260714-1200")
+    saves.quarantine(save, bdir, cloud_saves=[], steam_up=False,
+                     stamp="20260714-1200")
+
+    listed = saves.list_backups(bdir)
+
+    assert any(p.parent.name == "quarantine" for p in listed)
+    assert any(p.parent == bdir for p in listed)
+    assert listed == sorted(listed)
+
+
+def test_listing_a_directory_that_was_never_created_is_empty(tmp_path):
+    assert saves.list_backups(tmp_path / "nothing-here") == []

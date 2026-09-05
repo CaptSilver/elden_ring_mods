@@ -28,7 +28,7 @@ def _esd(groups):
                           (esd.Condition(target=target, evaluator=ALWAYS),))
                 for sid, target in states))
             for gid, states in sorted(groups.items())),
-        name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+        name="t000001000", unk=(0, 0, 0, 0))
 
 
 def _ids(archive):
@@ -200,7 +200,7 @@ def test_a_grafted_group_carries_no_leftover_order_and_survives_write():
                 )),
             ), order=1),
         ),
-        name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+        name="t000001000", unk=(0, 0, 0, 0))
 
     merged, _ = esdmerge.merge(base, other, vanilla)
     grafted = next(g for g in merged.groups if g.id == 1000)
@@ -265,7 +265,7 @@ def test_a_grafted_condition_degrafts_through_subconditions_and_pass_commands():
         )),
     ), order=0)
     vanilla = esd.Esd(groups=(group1,), name="t000001000",
-                      unk=(0, 0, 0, 0), pool_count=0)
+                      unk=(0, 0, 0, 0))
     base = vanilla       # group 1 is untouched by other -> base's stamped
                          # order/blob_order values above are what land in
                          # the merged output, unmodified
@@ -286,7 +286,7 @@ def test_a_grafted_condition_degrafts_through_subconditions_and_pass_commands():
                 esd.State(1, order=2),
             ), order=1),
         ),
-        name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+        name="t000001000", unk=(0, 0, 0, 0))
 
     merged, _ = esdmerge.merge(base, other, vanilla)
     grafted = next(g for g in merged.groups if g.id == 1000)
@@ -466,7 +466,7 @@ def test_a_mod_whose_only_edit_is_a_command_argument_is_not_dropped():
     that never happened: the group reads as untouched and base's copy ships."""
     def spelling(blob):
         return esd.Esd(groups=(esd.StateGroup(24, (_calling(blob),)),),
-                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+                       name="t000001000", unk=(0, 0, 0, 0))
 
     merged, notes = esdmerge.merge(spelling(b"\x42\xa1"), spelling(b"\x43\xa1"),
                                    spelling(b"\x42\xa1"))
@@ -505,7 +505,7 @@ def test_a_group_with_an_empty_evaluator_merges_instead_of_crashing():
             esd.State(0, conditions=(esd.Condition(target=target, evaluator=b""),
                                      esd.Condition(target=target, evaluator=b""))),
             esd.State(1))),),
-        name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+        name="t000001000", unk=(0, 0, 0, 0))
     merged, notes = esdmerge.merge(spelling(1), spelling(1), spelling(1))
     assert notes == []
     assert [s.id for s in _group(merged, 24).states] == [0, 1]
@@ -669,7 +669,7 @@ def test_a_group_three_encoders_spell_differently_is_not_a_conflict():
         groups=(esd.StateGroup(24, (
             esd.State(0, conditions=(esd.Condition(target=1, evaluator=evaluator),)),
             esd.State(1))),),
-        name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+        name="t000001000", unk=(0, 0, 0, 0))
 
     merged, notes = esdmerge.merge(spelling(ALWAYS_INT32), spelling(ALWAYS_EQ_ONE),
                                    spelling(ALWAYS))
@@ -723,7 +723,7 @@ def test_a_state_neither_mod_kept_is_not_reported_as_a_kept_copy():
     """
     def group(*states):
         return esd.Esd(groups=(esd.StateGroup(24, states),),
-                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+                       name="t000001000", unk=(0, 0, 0, 0))
 
     hook = lambda target: esd.State(
         0, conditions=(esd.Condition(target=target, evaluator=ALWAYS),))
@@ -749,7 +749,7 @@ def test_a_state_only_the_other_mod_dropped_still_reports_the_kept_copy():
     and saying so is the whole value of the note."""
     def group(*states):
         return esd.Esd(groups=(esd.StateGroup(24, states),),
-                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+                       name="t000001000", unk=(0, 0, 0, 0))
 
     hook = lambda target: esd.State(
         0, conditions=(esd.Condition(target=target, evaluator=ALWAYS),))
@@ -810,7 +810,7 @@ def test_an_edit_alignment_cannot_place_is_named_rather_than_dropped():
                 esd.State(0, conditions=(esd.Condition(target=1, evaluator=ALWAYS),),
                           entry=(esd.CommandCall(1, entry_id),)),
                 esd.State(1)) + extra),),
-            name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+            name="t000001000", unk=(0, 0, 0, 0))
 
     vanilla = one(100)
     base = one(100, extra=(esd.State(2, conditions=(
@@ -846,7 +846,7 @@ def test_a_replayed_state_carries_no_leftover_order():
 
     vanilla = esd.Esd(groups=(esd.StateGroup(24, (
         replayable(1, (None, None), 7, b"\x41\xa1"), esd.State(1)),),),
-        name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+        name="t000001000", unk=(0, 0, 0, 0))
     base = esd.Esd(groups=(esd.StateGroup(24, (
         replayable(1, (0, 0), 7, b"\x41\xa1"),
         esd.State(1, order=1),
@@ -856,12 +856,12 @@ def test_a_replayed_state_carries_no_leftover_order():
             target=1, evaluator=GUARD, order=1, blob_order=1,
             pass_commands=(esd.CommandCall(1, 8, order=1, args=(
                 esd.CommandArg(b"\x42\xa1", order=1, blob_order=2),)),)),)),
-    ), order=0),), name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+    ), order=0),), name="t000001000", unk=(0, 0, 0, 0))
     other = esd.Esd(groups=(esd.StateGroup(24, (
         replayable(3, (1, 1), 7, b"\x41\xa1"),      # redirected to a state she adds
         esd.State(1, order=1),
         esd.State(3, order=2),
-    ), order=0),), name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+    ), order=0),), name="t000001000", unk=(0, 0, 0, 0))
 
     merged, notes = esdmerge.merge(base, other, vanilla)
     assert notes == []
@@ -1021,7 +1021,7 @@ def test_states_alignment_could_not_tell_apart_are_named_not_duplicated():
     on as an addition grafts a second copy of a machine that is already there."""
     def group(*states):
         return esd.Esd(groups=(esd.StateGroup(24, states),),
-                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+                       name="t000001000", unk=(0, 0, 0, 0))
 
     look_alike = lambda sid: esd.State(
         sid, conditions=(esd.Condition(target=7, evaluator=OTHER),))
@@ -1064,7 +1064,7 @@ def test_a_renumbered_but_unedited_state_is_not_read_as_a_second_edit():
     """
     def group(*states):
         return esd.Esd(groups=(esd.StateGroup(24, states),),
-                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+                       name="t000001000", unk=(0, 0, 0, 0))
 
     hook = lambda target: esd.State(
         0, conditions=(esd.Condition(target=target, evaluator=ALWAYS),))
@@ -1097,7 +1097,7 @@ def test_an_edit_with_no_single_home_in_the_base_is_not_reported_as_a_deletion()
     """
     def group(*states):
         return esd.Esd(groups=(esd.StateGroup(24, states),),
-                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+                       name="t000001000", unk=(0, 0, 0, 0))
 
     look_alike = lambda sid, target=7: esd.State(
         sid, conditions=(esd.Condition(target=target, evaluator=OTHER),))
@@ -1168,7 +1168,7 @@ def test_reachability_starts_where_the_writer_says_the_group_starts():
     """
     def group(*states):
         return esd.Esd(groups=(esd.StateGroup(24, states, order=0),),
-                       name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+                       name="t000001000", unk=(0, 0, 0, 0))
 
     hook = lambda target, order: esd.State(
         0, order=order, conditions=(esd.Condition(target=target, evaluator=ALWAYS),))
@@ -1197,7 +1197,7 @@ def _nested_hook(target):
 
 def _one_group(*states):
     return esd.Esd(groups=(esd.StateGroup(24, states),),
-                   name="t000001000", unk=(0, 0, 0, 0), pool_count=0)
+                   name="t000001000", unk=(0, 0, 0, 0))
 
 
 def test_a_hook_written_as_a_nested_branch_is_retargeted_too():

@@ -38,8 +38,9 @@ def record_install(state, mod_id, version, archive, files, install=None):
     without it, every mode records a different entry shape and the recorders
     overwrite each other, stranding the previous mode's files on disk with
     nothing tracking them. Optional because entries written before this existed
-    (and by `_install_ersc`) simply don't carry it; those fall back to the
-    coarser kind-level comparison in cli._recorded_install_mode.
+    (and by `_install_ersc`) simply don't carry it. Such an entry names only
+    the recorder that wrote it, not the mode, so a change WITHIN one recorder
+    (game <-> mods, both file-based) can't be told from the entry alone.
     """
     entry = {"version": version, "archive": archive, "files": list(files)}
     if install is not None:

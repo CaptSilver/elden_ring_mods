@@ -144,12 +144,6 @@ asset = "Vanilla or Randomizer - v2.1.2 10062 v2.1.2 2026-08-06T08-53Z 6Ms7ahY3W
 sha256 = "9fe4ffe6fc7157a14b2f2f7c98064f1d736eef048ac1417fa5c11acd9bda0268"
 source = "nexus"
 
-[me3]
-version = "v0.13.0"
-asset = "me3-v0.13.0.zip"
-sha256 = "a8b693c574106f20532ab1e8b58b2452f37370679b938a884fe75f87f9b68c2b"
-source = "github"
-
 [me3-host]
 version = "v0.13.0"
 asset = "me3-host-v0.13.0.tar.gz"

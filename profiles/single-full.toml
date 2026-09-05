@@ -15,17 +15,8 @@ nexus_id = 117
 kind = "loader"
 install = "game"
 
-[[mods]]
-id = "me3"                        # loader/launcher for the randomizer regulation
-source = "github"
-repo_id = 540883721
-asset_match = "me3-windows-amd64"
-kind = "loader"
-install = "me3"
-
-# The native Linux launcher: Steam runs THIS, and me3 builds the Proton command
-# itself. Same release as the Windows build above, different archive — the .zip
-# has no bin/me3. Installed to ~/.local/bin (and its Windows components to
+# The loader: Steam runs the native Linux me3 and me3 builds the Proton command
+# itself. Installed to ~/.local/bin (and the Windows components it chainloads to
 # ~/.local/share/me3/windows-bin), which is where the launch option points.
 [[mods]]
 id = "me3-host"

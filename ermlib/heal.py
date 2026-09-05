@@ -22,9 +22,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .errors import ErmError
-from .formats import param, regulation
+from .formats import bnd4, param, regulation
 from . import gamebuild
-from .gamebuild import read_regulation_version
 
 # Lives under tools/, which is already gitignored runtime state -- these are
 # derived artifacts, not something a fresh clone should carry.
@@ -182,8 +181,12 @@ def rows_by_table(blob):
     row-splices an unreadable entry, it takes the whole entry from one side or
     raises MergeError, so there are no transplanted rows in them to verify.
     """
+    return _rows_from_entries(regulation.entries(blob))
+
+
+def _rows_from_entries(entries):
     out = {}
-    for entry in regulation.entries(blob):
+    for entry in entries:
         if not entry.name.lower().endswith(".param"):
             continue
         try:
@@ -192,6 +195,18 @@ def rows_by_table(blob):
             continue
         out[entry.name.rsplit("\\", 1)[-1]] = {r.id: r.data for r in p.rows}
     return out
+
+
+def regulation_facts(blob):
+    """One regulation's build stamp and its rows, from a single decrypt.
+
+    verify_rebase wants both of the file the merge just produced, and that one
+    is never a build-stamp cache hit -- it did not exist until a moment ago. So
+    the two answers come out of the same AES pass rather than two.
+    """
+    payload = gamebuild.unpack_regulation(blob)
+    return (gamebuild.payload_regulation_version(payload),
+            _rows_from_entries(bnd4.read(payload)))
 
 
 def verify_rebase(merged_blob, baseline_blob, mod_blobs, live):
@@ -215,13 +230,12 @@ def verify_rebase(merged_blob, baseline_blob, mod_blobs, live):
     the first place.
     """
     problems = []
-    got = read_regulation_version(merged_blob)
+    got, merged = regulation_facts(merged_blob)
     if got != live.regulation:
         problems.append(
             f"merged regulation.bin claims {got}, game is {live.regulation}")
 
     base = rows_by_table(baseline_blob)
-    merged = rows_by_table(merged_blob)
 
     # `claimed` is every row any mod's own file even mentions, authored or not.
     # A mod ships a table in full, so an untouched row shows up identical to
@@ -283,7 +297,10 @@ def prepare_rebase(game_dir, live, ancestor, contributors, base=BASELINE_DIR):
     """
     if ancestor is None or not contributors:
         return {}
-    if read_regulation_version(ancestor) == live.regulation:
+    # The ancestor is whatever file the profile declares and does not change
+    # between runs, so its build stamp is a cache hit after the first apply --
+    # five seconds of AES that every apply used to pay again.
+    if gamebuild.cached_regulation_version(ancestor) == live.regulation:
         return {}
     blob = adopt_baseline(game_dir, live, base).read_bytes()
     problems = layout_gate(blob, contributors)

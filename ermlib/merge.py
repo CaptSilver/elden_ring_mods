@@ -33,6 +33,42 @@ class RowCollision(NamedTuple):
     row_id: int
 
 
+class UnreadableParam(NamedTuple):
+    """A param entry the reader refuses, where only the other side had an edit,
+    so its whole table was taken rather than merged row by row."""
+    entry_id: int
+
+
+def _require_same_entries(base_keys, other_keys, van_keys, noun):
+    """Refuse three archives that don't declare the same BND4 entries.
+
+    Every three-way strategy here rebuilds its output from the base's entry
+    list, so an entry one side is missing has nowhere to go: "only the other
+    side moved" can't be told from "base authored this and vanilla just doesn't
+    happen to carry it", and guessing wrong silently discards the preferred
+    mod's own content. That is one rule, so it lives in one place -- it was
+    hand-copied into three before, and the copy in esd_three_way drifted into
+    a one-sided subset check that shipped exactly that data loss.
+
+    Names the ids that differ and who holds them, capped so a 194-entry
+    regulation doesn't flood the terminal.
+    """
+    sides = (("base", set(base_keys)), ("other", set(other_keys)),
+             ("vanilla", set(van_keys)))
+    odd = sorted(set().union(*(s for _, s in sides))
+                 - set.intersection(*(s for _, s in sides)))
+    if not odd:
+        return
+    shown = "; ".join(
+        f"entry {eid}: in {', '.join(n for n, s in sides if eid in s)}"
+        for eid in odd[:5])
+    more = f" (and {len(odd) - 5} more)" if len(odd) > 5 else ""
+    raise MergeError(
+        f"the three {noun} hold different BND4 entries — {shown}{more}; "
+        f"merging would silently drop whichever side is missing from the "
+        f"structural base")
+
+
 def fmg_union(base, other):
     """Union the FMG text tables of two .msgbnd.dcx archives.
 
@@ -95,12 +131,7 @@ def fmg_three_way(base, other, vanilla):
     _, other_tables = _fmg_tables(other)
     _, van_tables = _fmg_tables(vanilla)
 
-    if not (set(base_tables) == set(other_tables) == set(van_tables)):
-        raise MergeError(
-            f"the three archives hold different BND4 entries "
-            f"(base {len(base_tables)}, other {len(other_tables)}, vanilla "
-            f"{len(van_tables)}); merging would silently drop whichever side is "
-            f"missing from the structural base")
+    _require_same_entries(base_tables, other_tables, van_tables, "archives")
 
     replacements = {}
     for eid, base_table in base_tables.items():
@@ -170,6 +201,33 @@ def _fit_to_stride(row, base_row, stride, entry_id, rid):
     return row + tail + b"\x00" * (stride - len(row) - len(tail))
 
 
+def _duplicate_ids(param):
+    """The ids a param carries more than once.
+
+    Legal and shipped: RandomAppearParam holds 5,322 rows for 5,296 unique ids,
+    and 20 of the shadowed ids carry different bytes in their two copies, so
+    they are distinct records that happen to share a number rather than
+    redundant copies.
+    """
+    seen, dupes = set(), set()
+    for row in param.rows:
+        (dupes if row.id in seen else seen).add(row.id)
+    return dupes
+
+
+def _rows_identical(x, y):
+    """Whether two params hold the same rows in the same order.
+
+    Positional rather than keyed, because this is used exactly where an id
+    doesn't identify a row. Content comparison goes through _content_equal for
+    the same reason everything else here does: strides differ per file, so a
+    raw byte compare would report an edit that isn't one.
+    """
+    return len(x.rows) == len(y.rows) and all(
+        a.id == b.id and _content_equal(a.data, b.data)
+        for a, b in zip(x.rows, y.rows))
+
+
 def _merge_row(base, other, vanilla, entry_id, rid):
     """Three-way merge one row at byte granularity.
 
@@ -225,6 +283,25 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id, notes=None,
     """Three-way row merge of one param. Returns new bytes, or None if unchanged."""
     from .formats import param
     b, o, v = (param.read(x) for x in (base_blob, other_blob, van_blob))
+    dupes = _duplicate_ids(b) | _duplicate_ids(o) | _duplicate_ids(v)
+    if dupes:
+        # Everything below keys rows by id, which here silently collapses two
+        # distinct records to the last one and makes a shadowed edit compare
+        # equal to vanilla -- dropped with the merge still reporting success.
+        # Decide the whole table positionally instead: if either side is
+        # unchanged the answer needs no row lookup, and if both moved there is
+        # no way to say which copy an edit belongs to. param.patch_rows refuses
+        # duplicates too, but the diff above would have guessed long before it
+        # ever gets called.
+        if _rows_identical(o, v):
+            return None                    # the other side has no edit to carry
+        if _rows_identical(b, v):
+            return other_blob              # base has nothing to lose
+        raise MergeError(
+            f"entry {entry_id} carries row ids {sorted(dupes)[:5]} more than "
+            f"once and both sides changed the param, so an edit can't be "
+            f"located by id — refusing to guess which copy moved")
+
     br = {r.id: r.data for r in b.rows}
     orr = {r.id: r.data for r in o.rows}
     vr = {r.id: r.data for r in v.rows}
@@ -239,6 +316,12 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id, notes=None,
         same_bv = (bd is None and vd is None) or (
             bd is not None and vd is not None and _content_equal(bd, vd))
         if not same_bv:
+            if bd is None and od is None:
+                # Both sides dropped it. That is agreement, not a conflict --
+                # and `continue` rather than a delete, because the row already
+                # isn't in b.rows for replace_rows to remove. (vd is
+                # necessarily present: od is None with vd None is same_ov.)
+                continue
             if bd is not None and od is not None and _content_equal(bd, od):
                 continue                   # both sides made the same edit
             if base_is_game and vd is None and bd is not None and od is not None:
@@ -313,16 +396,15 @@ def param_rows(base, other, vanilla, notes=None, base_is_game=False):
     decide that would over-report roughly threefold, because tools disagree on
     whether the strings offset is rounded up to a 16-byte boundary.
     """
-    from .formats import regulation
-    base_entries = {e.id: e.data for e in regulation.entries(base)}
+    from .formats import bnd4, regulation
+    # Decrypt the base once and keep the payload -- rebuilding from `base` again
+    # at the end would AES the same 2 MB a second time for nothing.
+    base_payload = regulation.unpack(base)
+    base_entries = {e.id: e.data for e in bnd4.read(base_payload)}
     other_entries = {e.id: e.data for e in regulation.entries(other)}
     van_entries = {e.id: e.data for e in regulation.entries(vanilla)}
 
-    if not (set(base_entries) == set(other_entries) == set(van_entries)):
-        raise MergeError(
-            f"the three regulations hold different BND4 entries (base "
-            f"{len(base_entries)}, other {len(other_entries)}, vanilla "
-            f"{len(van_entries)})")
+    _require_same_entries(base_entries, other_entries, van_entries, "regulations")
 
     from .formats.param import ParamError
     replacements = {}
@@ -339,22 +421,28 @@ def param_rows(base, other, vanilla, notes=None, base_is_game=False):
             merged = _merge_param(base_blob, other_blob, van_blob, eid, notes=notes,
                                   base_is_game=base_is_game)
         except ParamError:
-            # A layout the reader refuses. If the other side is byte-identical to
-            # vanilla it has no edit to lose and base wins by default; if base is
-            # the identical one, the other side's whole entry is the only change
-            # there is. Anything else is a real edit we cannot read, so refuse
-            # rather than quietly picking a side.
-            if other_blob == van_blob:
-                continue
+            # A layout the reader refuses. If base is byte-identical to vanilla
+            # then the other side's whole entry is the only change there is, and
+            # swapping it in loses nothing -- but it's still a whole table
+            # substituted sight-unseen, so say so. (The mirror case, other side
+            # identical to vanilla, never reaches here: the cheap exit above
+            # already continued on it.) Anything else is a real edit we cannot
+            # read, so refuse rather than quietly picking a side.
             if base_blob == van_blob:
                 replacements[eid] = other_blob
+                if notes is not None:
+                    notes.append(UnreadableParam(eid))
                 continue
             raise MergeError(
                 f"entry {eid} can't be parsed as a PARAM and both sides differ "
                 f"from vanilla — refusing to guess which edit to keep")
         if merged is not None:
             replacements[eid] = merged
-    return regulation.repack(base, replacements)
+    # Never short-circuit an empty `replacements` back to `base`: the game's own
+    # regulation declares a 64 MiB DCX window that me3 cannot load, and going
+    # back through regulation.pack is what normalises it.
+    return regulation.pack(bnd4.rebuild(base_payload, replacements),
+                           base[:regulation.IV_SIZE])
 
 
 def tpf_union(base, other):
@@ -415,11 +503,7 @@ def esd_three_way(base, other, vanilla, notes=None):
     other_entries = {e.id: e.data for e in bnd4.read(dcx.read(other))}
     van_entries = {e.id: e.data for e in bnd4.read(dcx.read(vanilla))}
 
-    if not (set(base_entries) == set(other_entries) == set(van_entries)):
-        raise MergeError(
-            f"the three archives hold different BND4 entries (base "
-            f"{sorted(base_entries)}, other {sorted(other_entries)}, vanilla "
-            f"{sorted(van_entries)})")
+    _require_same_entries(base_entries, other_entries, van_entries, "archives")
 
     replacements = {}
     for eid, base_blob in base_entries.items():
@@ -457,6 +541,10 @@ def describe_note(note):
         return (f"entry {note.entry_id} row {note.row_id}: the game and a mod "
                 f"each added a different row under this id — kept the mod's, "
                 f"dropped the game's")
+    if isinstance(note, UnreadableParam):
+        return (f"entry {note.entry_id} can't be read as a PARAM — the base "
+                f"still matched vanilla there, so the mod's whole table was "
+                f"taken instead of merging it row by row")
     from . import esdmerge
     return esdmerge.describe(note)
 

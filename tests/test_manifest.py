@@ -1,10 +1,17 @@
-import subprocess
+import shutil
+import warnings
+import zipfile
 from pathlib import Path
 
 import pytest
 
+from ermlib import install
 from ermlib.manifest import load_profile, write_lock, load_lock, set_mod
 from ermlib.errors import PathError
+
+
+def _raise_bad_zip(*args, **kwargs):
+    raise zipfile.BadZipFile("unreadable archive")
 
 
 def test_seamless_only_profile_has_ersc():
@@ -35,11 +42,13 @@ def test_seamless_full_profile_loads_all_mods():
     assert ersc["source"] == "nexus"
     assert ersc["nexus_id"] == 510
 
-    me3 = next(m for m in prof["mods"] if m["id"] == "me3")
+    # The loader Steam actually runs is the native Linux build; its Windows
+    # components ride along in the same tarball.
+    me3 = next(m for m in prof["mods"] if m["id"] == "me3-host")
     assert me3["source"] == "github"
     assert me3["repo_id"] == 540883721
-    assert me3["asset_match"] == "me3-windows-amd64"
-    assert me3["install"] == "me3"
+    assert me3["asset_match"] == "me3-linux-amd64"
+    assert me3["install"] == "me3-host"
 
     # item-enemy-randomizer is disabled — Clever's Moveset (gameplay-extras) owns
     # the single regulation.bin slot now.
@@ -65,8 +74,8 @@ def test_single_full_profile_is_non_coop_with_the_conflict_mods():
     assert "pause-the-game" in ids
     assert "unlock-the-fps" in ids
     # me3 still routes to its special install kind
-    me3 = next(m for m in prof["mods"] if m["id"] == "me3")
-    assert me3["install"] == "me3"
+    me3 = next(m for m in prof["mods"] if m["id"] == "me3-host")
+    assert me3["install"] == "me3-host"
     # randomizer disabled; Clever's Moveset (composed via includes) owns the regulation slot
     assert "item-enemy-randomizer" not in ids
     assert "clevers-moveset" in ids
@@ -159,10 +168,10 @@ def test_seamless_randomizer_me3_uses_numeric_id():
     # numeric-id-only GitHub fetch (api.github.com/repositories/<id>/...)
     # can't resolve — it 404s. Must be the numeric repository id.
     prof = load_profile("seamless-randomizer", base=Path("profiles"))
-    me3 = next(m for m in prof["mods"] if m["id"] == "me3")
+    me3 = next(m for m in prof["mods"] if m["id"] == "me3-host")
     assert me3["repo_id"] == 540883721
     assert isinstance(me3["repo_id"], int)
-    assert me3["asset_match"] == "me3-windows-amd64"
+    assert me3["asset_match"] == "me3-linux-amd64"
 
 
 def test_lock_roundtrip(tmp_path):
@@ -500,13 +509,27 @@ def test_the_grace_talk_machine_is_merged_not_won():
     assert merge["vanilla"]["mod"] == "item-enemy-randomizer"
 
 
-def _ships_regulation(asset):
-    """Whether a vendor archive carries a regulation.bin. bsdtar rather than
-    zipfile because Nexus serves .rar and .7z as readily as .zip."""
-    out = subprocess.run(["bsdtar", "-tf", str(Path("vendor") / asset)],
-                         capture_output=True, text=True)
-    return any(line.rsplit("/", 1)[-1] == "regulation.bin"
-               for line in out.stdout.splitlines())
+def _ships_regulation(path):
+    """Whether a vendor archive carries a regulation.bin, or None when it takes
+    an extractor this machine hasn't got.
+
+    Sniffs zip by content and falls back to libarchive for the rest, the same
+    way extract_archive picks its reader. Nexus serves .rar and .7z as readily
+    as .zip, but sending zips through bsdtar as well would make this check
+    unrunnable wherever bsdtar isn't installed -- most machines that run the
+    suite. install._list_archive raises on a listing that fails, so an archive
+    that could not be read never comes back as False.
+    """
+    try:
+        z = zipfile.ZipFile(path)
+    except zipfile.BadZipFile:
+        if shutil.which(install.EXTRACTOR) is None:
+            return None
+        names = install._list_archive(path)
+    else:
+        with z:
+            names = z.namelist()
+    return any(n.rsplit("/", 1)[-1] == "regulation.bin" for n in names)
 
 
 def test_every_regulation_mod_is_named_in_the_regulation_merge():
@@ -525,17 +548,77 @@ def test_every_regulation_mod_is_named_in_the_regulation_merge():
                   for m in load_profile(prof, base=Path("profiles"))["mods"]
                   if m.get("install") == "me3-package"}
     checked = 0
+    unread = []
     for mod_id, mod in sorted(candidates.items()):
         asset = lock.get(mod_id, {}).get("asset")
         if not asset or not (Path("vendor") / asset).exists():
             continue                      # not fetched here; nothing to read
+        ships = _ships_regulation(Path("vendor") / asset)
+        if ships is None:
+            unread.append(asset)      # needs an extractor we haven't got
+            continue
         checked += 1
-        if _ships_regulation(asset):
+        if ships:
             assert mod_id in merge["mods"], (
                 f"{mod_id} ships a regulation.bin but the merge doesn't name it")
             assert mod.get("requires_all_players") is True, mod_id
+    if unread:
+        # An archive dropped for want of an extractor is one this check did
+        # not read, and a silent drop is indistinguishable from a clean pass.
+        warnings.warn(f"not read, {install.EXTRACTOR} is not installed: "
+                      + ", ".join(unread))
     if not checked:
-        pytest.skip("no vendor archives present to read")
+        pytest.skip("no vendor archives could be read"
+                    + (f" ({len(unread)} need {install.EXTRACTOR})" if unread else ""))
+
+
+def _zip_with(tmp_path, *names):
+    path = tmp_path / "mod.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        for name in names:
+            z.writestr(name, b"x")
+    return path
+
+
+def test_a_zip_is_read_without_the_external_extractor(tmp_path, monkeypatch):
+    """Apply reads zips with the stdlib, so this has to as well -- routing them
+    through libarchive made the check unrunnable wherever bsdtar isn't
+    installed, which is most of the machines that run the suite."""
+    monkeypatch.setattr(install, "_list_archive",
+                        lambda *a, **k: pytest.fail("a zip must not need bsdtar"))
+    assert _ships_regulation(_zip_with(tmp_path, "mod/regulation.bin")) is True
+    assert _ships_regulation(_zip_with(tmp_path, "mod/regulation.bin.bak")) is False
+
+
+def test_an_archive_that_cannot_be_listed_is_not_read_as_shipping_nothing(tmp_path, monkeypatch):
+    """A failed listing and "no regulation.bin inside" are different answers.
+    Conflating them lets a new regulation mod pass this check having been read
+    not at all, which is exactly the case the check exists for."""
+    monkeypatch.setattr(shutil, "which", lambda exe: "/usr/bin/" + exe)
+    monkeypatch.setattr(install, "_list_archive", _raise_bad_zip)
+    broken = tmp_path / "mod.7z"
+    broken.write_bytes(b"not an archive")
+    with pytest.raises(zipfile.BadZipFile):
+        _ships_regulation(broken)
+
+
+def test_an_archive_needing_a_missing_extractor_reports_unread(tmp_path, monkeypatch):
+    """Unread is its own answer: the caller drops these rather than counting
+    them as checked, so a bsdtar-less box skips honestly instead of certifying
+    archives it never opened."""
+    monkeypatch.setattr(shutil, "which", lambda exe: None)
+    unreadable = tmp_path / "mod.7z"
+    unreadable.write_bytes(b"not an archive")
+    assert _ships_regulation(unreadable) is None
+
+
+def test_archives_that_could_not_be_read_do_not_count_as_checked(monkeypatch):
+    """`checked` is the net under the whole check. If an unread archive counted
+    toward it, a machine that can read none of them would go green having
+    verified nothing rather than skipping."""
+    monkeypatch.setitem(globals(), "_ships_regulation", lambda path: None)
+    with pytest.raises(pytest.skip.Exception, match="no vendor archives could be read"):
+        test_every_regulation_mod_is_named_in_the_regulation_merge()
 
 
 def test_regulation_mods_in_the_shared_profile_are_required_of_everyone():
@@ -567,3 +650,17 @@ def test_forever_buffs_keeps_its_packaging_workarounds():
     assert fb["file_id"] == 39767
     prune = next(p for p in shared["prunes"] if p["mod"] == "forever-buffs")
     assert "param/systemparam/systemparam.parambnd.dcx" in prune["paths"]
+
+
+def test_no_profile_unpacks_the_windows_me3_build_into_tools():
+    # me3's Windows components (me3.exe, me3-launcher.exe, me3_mod_host.dll) are
+    # installed by the me3-host entry, which puts them where me3 actually looks
+    # for them (~/.local/share/me3/windows-bin). A profile that also unpacked the
+    # Windows .zip dropped a second, unread copy into tools/me3/ that nothing
+    # launches and no uninstall removes.
+    unpackers = {}
+    for path in sorted(Path("profiles").glob("*.toml")):
+        for mod in load_profile(path.stem, base=Path("profiles"))["mods"]:
+            if mod.get("install") == "me3":
+                unpackers.setdefault(path.stem, []).append(mod["id"])
+    assert not unpackers, f"profiles still unpacking the Windows me3 build: {unpackers}"

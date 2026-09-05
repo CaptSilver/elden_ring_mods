@@ -113,3 +113,25 @@ def test_a_float_struct_entry_is_refused_rather_than_misparsed():
     struct.pack_into("<I", raw, tpf.HEADER_SIZE + 16, 1)        # hasFloatStruct
     with pytest.raises(tpf.TpfError):
         tpf.read(bytes(raw))
+
+
+def test_read_rejects_an_unterminated_utf16_texture_name():
+    """Without the two-byte terminator the scan runs on into the padding and the
+    texture payload, and those bytes come back decoded into the name — which is
+    the key the union merge is built on. bnd4 and fmg both refuse this through
+    the shared helper; this reader was the one that didn't."""
+    raw = bytearray(_build([("A", b"\x01\x02\x03\x04", 0)]))
+    name_off, = struct.unpack_from("<I", raw, tpf.HEADER_SIZE + 12)
+    raw[name_off + 2:name_off + 4] = b"XY"      # where the terminator was
+    with pytest.raises(tpf.TpfError, match="unterminated"):
+        tpf.read(bytes(raw))
+
+
+def test_read_rejects_a_texture_name_that_is_not_valid_utf16():
+    """A lone surrogate can't be decoded, and UnicodeDecodeError is not an
+    ErmError — the CLI would print a traceback rather than naming the archive."""
+    raw = bytearray(_build([("AB", b"\x01\x02\x03\x04", 0)]))
+    name_off, = struct.unpack_from("<I", raw, tpf.HEADER_SIZE + 12)
+    raw[name_off:name_off + 2] = b"\x00\xd8"   # a high surrogate with no pair
+    with pytest.raises(tpf.TpfError):
+        tpf.read(bytes(raw))

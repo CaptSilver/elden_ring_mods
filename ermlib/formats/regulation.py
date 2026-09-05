@@ -42,8 +42,3 @@ def pack(payload, iv, level=dcx.ZSTD_LEVEL):
     padded = body + b"\x00" * (-len(body) % _PAD_BLOCK) + bytes([_PAD_BLOCK]) * _PAD_BLOCK
     return bytes(iv) + aes.encrypt_cbc(KEY, iv, padded)
 
-
-def repack(blob, replacements):
-    """Return `blob` with BND4 entries replaced, everything else preserved."""
-    payload = bnd4.rebuild(unpack(blob), replacements)
-    return pack(payload, blob[:IV_SIZE])

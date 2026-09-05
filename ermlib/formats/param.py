@@ -50,7 +50,8 @@ class Param(NamedTuple):
     strings: bytes      # the strings block, copied verbatim
     strings_off: int    # where `strings` sat in the source, to compute the shift
     param_type_off: int
-    pad: bytes = b""    # alignment bytes between the last row and the strings
+    tail: bytes = b""   # between the last row and the strings block; in practice
+                        # the param type name, carried verbatim, never synthesised
 
     @property
     def param_type(self):
@@ -91,12 +92,13 @@ def strides_comparable(rows_a, rows_b):
     """Whether two params' derived strides can be compared as a layout fact.
 
     With one row there are no inter-row gaps, so `_derive_stride` falls back to
-    the distance to the strings block -- which includes however much alignment
-    the writing tool left. The game's own files round that to 16 and
-    SoulsFormats-derived tools to 8, so ten shipped one-row params measure
-    wider in Game/regulation.bin than in a mod's re-saved copy with not one
-    field moved. Comparing those widths reports a layout change that isn't
-    one; paramdef_data_version is the signal that survives the rounding.
+    the distance to the strings block, which swallows whatever sits between the
+    row and the strings. In practice that is the param type name straddling the
+    boundary, and how much of it straddles differs between the game's own file
+    and a tool's re-save -- so ten shipped one-row params measure wider in
+    Game/regulation.bin than in a mod's copy with not one field moved. Comparing
+    those widths reports a layout change that isn't one; paramdef_data_version
+    is the signal that survives it.
     """
     return rows_a > 1 and rows_b > 1
 
@@ -126,6 +128,12 @@ def read(data):
     if offsets != sorted(offsets):
         raise ParamError("row data offsets are not ascending in row-table order")
     stride = _derive_stride(offsets, strings_off, row_count) if row_count else 0
+    # Repeated offsets are "ascending" as far as sorted() is concerned, and a
+    # lone row starting past the strings block derives a negative width; both
+    # slip under the overrun check below and hand every row back as b"".
+    if row_count and stride <= 0:
+        raise ParamError(
+            f"derived row stride is {stride} — rows would read as empty")
 
     rows = []
     for rid, _pad, off, name_off in entries:
@@ -134,15 +142,23 @@ def read(data):
         if name_off and not 0 <= name_off <= len(data):
             raise ParamError(
                 f"row {rid} has a name offset ({name_off}) outside the file")
+        # Bounded from below as well as above: a negative offset indexes from
+        # the end of the file rather than raising, so an offset under data_off
+        # quietly splices the header or the file's tail in as row data.
+        if off < data_off:
+            raise ParamError(
+                f"row {rid} data offset {off} precedes the row-data section "
+                f"at {data_off}")
         if off + stride > strings_off:
             raise ParamError(f"row {rid} data overruns the strings block")
         rows.append(Row(rid, data[off:off + stride], name_off))
 
     if not 0 <= param_type_off <= len(data):
         raise ParamError(f"param type offset {param_type_off} is outside the file")
-    # Some params align the strings block, leaving a gap after the last row.
-    # Recomputing strings_off as data_off + n*stride would silently close it and
-    # shift every string offset, so carry the gap through verbatim.
+    # What follows the last row is the param type name in every shipped param
+    # that keeps it outside the strings block. Recomputing strings_off as
+    # data_off + n*stride would swallow it and shift every string offset, so
+    # carry those bytes through verbatim.
     return Param(tuple(rows), stride, data[:HEADER_SIZE], data[strings_off:],
                  strings_off, param_type_off,
                  data[data_off + row_count * stride:strings_off])
@@ -212,7 +228,7 @@ def write(param):
             f"got widths {sorted({len(r.data) for r in param.rows})}")
 
     data_off = HEADER_SIZE + n * ROW_ENTRY
-    strings_off = data_off + n * param.stride + len(param.pad)
+    strings_off = data_off + n * param.stride + len(param.tail)
     # All string offsets are absolute, so moving the block moves them together.
     shift = strings_off - param.strings_off
     if shift:
@@ -242,4 +258,4 @@ def write(param):
         table += struct.pack("<iIqq", row.id, 0, data_off + i * param.stride,
                              row.name_off + shift if row.name_off else 0)
     body = b"".join(r.data for r in param.rows)
-    return bytes(header) + bytes(table) + body + param.pad + param.strings
+    return bytes(header) + bytes(table) + body + param.tail + param.strings

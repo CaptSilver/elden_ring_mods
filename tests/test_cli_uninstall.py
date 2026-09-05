@@ -6,14 +6,7 @@ import pytest
 
 from ermlib import cli, paths
 from ermlib.errors import PathError
-
-
-def _make_ersc_zip(path):
-    with zipfile.ZipFile(path, "w") as z:
-        z.writestr("ersc_launcher.exe", b"\x00")
-        z.writestr("SeamlessCoop/ersc.dll", b"\x00")
-        z.writestr("SeamlessCoop/ersc_settings.ini",
-                   "[PASSWORD]\ncooppassword = \n[SAVE]\nsave_file_extension = co2\n")
+from tests.ersc_fixtures import make_ersc_zip, seed_profile
 
 
 def _seed_lock(tmp_path, version="v1.9.8", asset="seamless-coop-v1.9.8.zip"):
@@ -27,22 +20,6 @@ def _seed_lock(tmp_path, version="v1.9.8", asset="seamless-coop-v1.9.8.zip"):
     return asset
 
 
-def _seed_profile(tmp_path, name="seamless-only"):
-    profiles_dir = tmp_path / "profiles"
-    profiles_dir.mkdir(exist_ok=True)
-    (profiles_dir / f"{name}.toml").write_text(
-        f'name = "{name}"\n'
-        'description = "test profile"\n'
-        '\n'
-        '[[mods]]\n'
-        'id = "seamless-coop"\n'
-        'source = "github"\n'
-        'repo_id = 497113840\n'
-        'kind = "coop-framework"\n'
-        'install = "game"\n'
-    )
-
-
 def _args(mod="seamless-coop", json=False):
     # "profile" defaults to seamless-only so this doubles as cmd_apply's args
     # in the tests below that install first, then uninstall what they installed.
@@ -54,10 +31,10 @@ def test_uninstall_via_manifest_removes_recorded_files_prunes_dir_and_spares_sto
     # tmp_game already seeds eldenring.exe + start_protected_game.exe (stock files).
     game_dir = tmp_game
     asset = _seed_lock(tmp_path)
-    _seed_profile(tmp_path)
+    seed_profile(tmp_path)
     vendor = tmp_path / "vendor"
     vendor.mkdir()
-    _make_ersc_zip(vendor / asset)
+    make_ersc_zip(vendor / asset)
 
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
@@ -95,7 +72,7 @@ def test_uninstall_falls_back_to_vendor_archive_when_no_manifest_entry(
     asset = _seed_lock(tmp_path)
     vendor = tmp_path / "vendor"
     vendor.mkdir()
-    _make_ersc_zip(vendor / asset)
+    make_ersc_zip(vendor / asset)
 
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
@@ -319,7 +296,7 @@ def test_uninstall_profile_me3_rmtree_failure_does_not_abort_other_removals(
     vendor.mkdir()
     with zipfile.ZipFile(vendor / "unit-mod.zip", "w") as z:
         z.writestr("parts/wp_a.dcx", b"x")
-    _make_ersc_zip(vendor / asset)
+    make_ersc_zip(vendor / asset)
 
     apply_args = type("A", (), {"profile": "mixed", "json": False})()
     rc = cli.cmd_apply(apply_args)
@@ -396,10 +373,10 @@ def test_uninstall_never_removes_stock_files(tmp_path, monkeypatch, capsys, tmp_
     # name one more time in isolation.
     game_dir = tmp_game
     asset = _seed_lock(tmp_path)
-    _seed_profile(tmp_path)
+    seed_profile(tmp_path)
     vendor = tmp_path / "vendor"
     vendor.mkdir()
-    _make_ersc_zip(vendor / asset)
+    make_ersc_zip(vendor / asset)
 
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
@@ -533,3 +510,147 @@ def test_uninstall_forgets_the_merged_state_entry_even_without_a_stale_dir(
     assert rc == 0
     assert conflicts.MERGED_ID not in json.loads(
         (tmp_path / "installed.json").read_text())
+
+
+def test_uninstall_json_is_one_document_with_the_doctor_nested(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # uninstall printed its report, the literal line "Safety check (erm doctor):",
+    # then a SECOND document — `erm --json uninstall` could not be parsed at all.
+    game_dir = tmp_game
+    (game_dir / "ersc_launcher.exe").write_bytes(b"\x00")
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "seamless-coop": {"version": "v1.9.8", "archive": "x.zip",
+                          "files": ["ersc_launcher.exe"]}}))
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    rc = cli.cmd_uninstall(_args(json=True))
+    data = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert data["doctor"]["worst"] == "ok"
+    assert any("seamless-coop" in i["message"] for i in data["items"])
+
+
+def test_uninstall_exit_code_reports_a_mod_artifact_left_behind(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # A proxy DLL still sitting next to the real EAC launcher is the mixed
+    # state doctor fails on. uninstall printed that ✗ and returned 0 anyway, so
+    # `erm uninstall <mod> && …` read a ban-risk install as clean.
+    game_dir = tmp_game
+    (game_dir / "ersc_launcher.exe").write_bytes(b"\x00")
+    (game_dir / "dinput8.dll").write_bytes(b"\x00")
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "seamless-coop": {"version": "v1.9.8", "archive": "x.zip",
+                          "files": ["ersc_launcher.exe"]}}))
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    rc = cli.cmd_uninstall(_args())
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "dinput8.dll" in out
+    assert not (game_dir / "ersc_launcher.exe").exists()   # the removal still happened
+
+
+def test_uninstall_forgets_a_me3_package_entry_with_no_recorded_path(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # installed.json is hand-editable, so an entry can carry kind but no
+    # package. The other two recorded kinds warn and forget it; this branch
+    # hard-keyed it and came out as a raw KeyError traceback.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "broken-mod": {"version": "1.0", "archive": "b.zip", "kind": "me3-package"}}))
+
+    rc = cli.cmd_uninstall(type("A", (), {"mod": "broken-mod", "json": False})())
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "no recorded package path" in out
+    assert json.loads((tmp_path / "installed.json").read_text()) == {}
+
+
+def test_uninstall_forgets_an_empty_me3_package_path_rather_than_resolving_cwd(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # An empty string is Path("."), which resolves to the cwd — containment
+    # would refuse it with a message naming a directory nobody recorded.
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "broken-mod": {"version": "1.0", "archive": "b.zip",
+                       "kind": "me3-package", "package": ""}}))
+
+    rc = cli.cmd_uninstall(type("A", (), {"mod": "broken-mod", "json": False})())
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "no recorded package path" in out
+    assert json.loads((tmp_path / "installed.json").read_text()) == {}
+
+
+def test_uninstall_refuses_a_recorded_file_that_resolves_outside_the_game_dir(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # The recorded path is relpath-clean, so is_safe_relpath passes it — it
+    # escapes by traversing a symlinked DIRECTORY inside Game/. Only the
+    # resolve() containment check catches that one, and the literal it would
+    # otherwise unlink is a real file outside the game dir, not a symlink.
+    game_dir = tmp_game
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim.dll").write_text("precious")
+    (game_dir / "mods").mkdir()
+    (game_dir / "mods" / "escape").symlink_to(outside, target_is_directory=True)
+    (game_dir / "ersc_launcher.exe").write_bytes(b"\x00")
+
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "seamless-coop": {"version": "v1.9.8", "archive": "x.zip",
+                          "files": ["mods/escape/victim.dll", "ersc_launcher.exe"]}}))
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    rc = cli.cmd_uninstall(_args())
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert (outside / "victim.dll").read_text() == "precious"
+    # Name the layer: both warnings start with "refusing", so a bare "refus"
+    # can't tell this one from the is_safe_relpath gate above it.
+    assert "outside game dir" in out
+    # A refused entry warns without aborting the rest of the list.
+    assert not (game_dir / "ersc_launcher.exe").exists()
+
+
+def test_switch_json_is_one_document(tmp_path, monkeypatch, capsys, tmp_game):
+    # switch emitted its own uninstall document, then delegated to apply for
+    # two more — three JSON documents from one command.
+    game_dir = tmp_game
+    (game_dir / "ersc_launcher.exe").write_bytes(b"\x00")
+    asset = _seed_lock(tmp_path)
+    seed_profile(tmp_path)
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    make_ersc_zip(vendor / asset)
+    (tmp_path / "installed.json").write_text(json.dumps({
+        "old-mod": {"version": "1", "archive": "x.zip", "files": ["ersc_launcher.exe"]}}))
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    rc = cli.cmd_switch(type("A", (), {"profile": "seamless-only", "json": True})())
+    data = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert any("switching to seamless-only" in i["message"] for i in data["items"])
+    assert any("old-mod" in i["message"] for i in data["items"])
+    assert data["doctor"]["worst"] == "ok"

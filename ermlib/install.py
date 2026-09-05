@@ -96,6 +96,18 @@ def _tar_names(archive):
 
 
 def _extract_tar(archive, dest, names):
+    if not hasattr(tarfile, "data_filter"):
+        # The extraction filter landed in 3.11.4 / 3.12 (and distros backport
+        # it into older 3.11 builds), so probe the capability rather than the
+        # version number. Without it extractall rejects the `filter` kwarg and
+        # the TypeError escapes apply's per-mod handler, killing the run before
+        # write_state — mod files in Game/ that installed.json never recorded.
+        # BadZipFile for the same reason as the missing extractor above: skip
+        # this archive, keep the run.
+        raise zipfile.BadZipFile(
+            f"{Path(archive).name} needs Python 3.11.4+ to extract safely — "
+            f"this interpreter's tarfile has no extraction filter. Upgrade "
+            f"Python, or unpack it into the destination by hand")
     dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive) as tf:
         # `data` refuses absolute paths, `..` escapes, links out of the tree and
@@ -103,6 +115,12 @@ def _extract_tar(archive, dest, names):
         # between a member's name and what extraction actually writes.
         tf.extractall(dest, filter="data")
     return [n for n in names if (dest / n).is_file()]
+
+
+def _extract_zip(z, dest, names):
+    dest.mkdir(parents=True, exist_ok=True)
+    z.extractall(dest)
+    return [n for n in names if not n.endswith("/")]
 
 
 def _wrapper_dir(names):
@@ -124,8 +142,8 @@ def _wrapper_dir(names):
     return top
 
 
-def extract_archive(zip_path, game_dir, subdir="", strip_wrapper=False):
-    """Extract an archive into game_dir/subdir, rejecting unsafe members.
+def extract_archive(archive_path, dest_root, dest_subdir="", strip_wrapper=False):
+    """Extract an archive into dest_root/dest_subdir, rejecting unsafe members.
 
     Handles zip natively and anything else (.rar, .7z — both common on Nexus)
     through libarchive.
@@ -135,50 +153,45 @@ def extract_archive(zip_path, game_dir, subdir="", strip_wrapper=False):
     install="game" archive usually IS a single top-level `mods/` dir, and
     stripping that would drop its DLLs into Game/ where nothing loads them.
 
-    Returns the list of extracted files as paths RELATIVE TO game_dir (so
-    subdir is prefixed onto every entry) — that's what installed.json
+    Returns the list of extracted files as paths RELATIVE TO dest_root (so
+    dest_subdir is prefixed onto every entry) — that's what installed.json
     records and what `erm uninstall` later removes.
     """
-    game_dir = Path(game_dir)
-    dest = game_dir / subdir if subdir else game_dir
+    dest_root = Path(dest_root)
+    dest = dest_root / dest_subdir if dest_subdir else dest_root
     try:
-        z = zipfile.ZipFile(zip_path)
+        z = zipfile.ZipFile(archive_path)
     except zipfile.BadZipFile:
         z = None
-    # Zip-slip guard, both paths: a trojaned archive could name a member
-    # ../../../etc/x and have extraction write outside game_dir. The sha256 pin
-    # proves the archive is the chosen one, not that it's benign. Reject any
-    # absolute path or one with a `..` component BEFORE extracting anything, so
-    # a bad archive is never partially written. The returned list is then
-    # guaranteed safe relative paths.
-    if z is None and tarfile.is_tarfile(zip_path):
-        # Read tarballs with the stdlib rather than libarchive: me3 ships its
-        # Linux build as .tar.gz, and making the loader's own install depend on
-        # bsdtar being on PATH is how it silently fails to update.
-        names = _tar_names(zip_path)
+    try:
+        if z is None and tarfile.is_tarfile(archive_path):
+            # Read tarballs with the stdlib rather than libarchive: me3 ships its
+            # Linux build as .tar.gz, and making the loader's own install depend on
+            # bsdtar being on PATH is how it silently fails to update.
+            src, names, extract = archive_path, _tar_names(archive_path), _extract_tar
+        elif z is None:
+            src, names, extract = archive_path, _list_archive(archive_path), _extract_other
+        else:
+            src, names, extract = z, z.namelist(), _extract_zip
+        # Zip-slip guard, every format: a trojaned archive could name a member
+        # ../../../etc/x and have extraction write outside dest_root. The sha256
+        # pin proves the archive is the chosen one, not that it's benign. Reject
+        # any absolute path or one with a `..` component BEFORE extracting
+        # anything, so a bad archive is never partially written — which is also
+        # why this sits between listing and extraction rather than inside each
+        # branch, where a fourth format could quietly skip it. The returned list
+        # is then guaranteed safe relative paths.
         for name in names:
             if not is_safe_relpath(name):
                 raise ErmError(f"unsafe path in mod archive (refusing to install): {name}")
-        rels = _extract_tar(zip_path, dest, names)
-    elif z is None:
-        names = _list_archive(zip_path)
-        for name in names:
-            if not is_safe_relpath(name):
-                raise ErmError(f"unsafe path in mod archive (refusing to install): {name}")
-        rels = _extract_other(zip_path, dest, names)
-    else:
-        with z:
-            names = z.namelist()
-            for name in names:
-                if not is_safe_relpath(name):
-                    raise ErmError(f"unsafe path in mod archive (refusing to install): {name}")
-            dest.mkdir(parents=True, exist_ok=True)
-            z.extractall(dest)
-            rels = [n for n in names if not n.endswith("/")]
+        rels = extract(src, dest, names)
+    finally:
+        if z is not None:
+            z.close()
     wrapper = _wrapper_dir(names) if strip_wrapper else None
     if wrapper:
         rels = _strip_wrapper_dir(dest, wrapper, rels)
-    return [(f"{subdir}/{n}" if subdir else n) for n in rels]
+    return [(f"{dest_subdir}/{n}" if dest_subdir else n) for n in rels]
 
 
 def _strip_wrapper_dir(dest, wrapper, rels):

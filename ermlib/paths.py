@@ -25,14 +25,6 @@ _STEAM_ROOTS = [
 ]
 
 
-def same_location(a, b):
-    a, b = Path(a), Path(b)
-    try:
-        return a.samefile(b)
-    except (FileNotFoundError, OSError):
-        return False
-
-
 def find_steam_root():
     for cand in _STEAM_ROOTS:
         p = Path(cand).expanduser()

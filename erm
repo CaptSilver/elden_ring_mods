@@ -2,6 +2,31 @@
 import argparse
 import sys
 
+MIN_PYTHON = (3, 11)
+
+
+def unsupported_python(version_info):
+    """The complaint to print for an interpreter erm can't run on, else "".
+
+    ermlib reads the lockfile with tomllib, which is 3.11+, so on anything
+    older every invocation -- `erm --version` included -- used to die with a
+    ModuleNotFoundError traceback from an import three modules deep, before
+    argparse had even run. Hence the check sitting above that import, and
+    string formatting old enough to parse on the interpreters it speaks to.
+    """
+    if tuple(version_info[:2]) >= MIN_PYTHON:
+        return ""
+    return ("error: erm needs Python %d.%d or newer (this is Python %d.%d) — "
+            "it reads the lockfile with tomllib, which older versions don't "
+            "ship. Run it under a newer python3."
+            % (MIN_PYTHON[0], MIN_PYTHON[1], version_info[0], version_info[1]))
+
+
+_too_old = unsupported_python(sys.version_info)
+if _too_old:
+    sys.stderr.write(_too_old + "\n")
+    sys.exit(1)
+
 from ermlib import __version__
 from ermlib.errors import ErmError
 

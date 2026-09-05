@@ -157,3 +157,118 @@ def test_update_noop_when_already_latest(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert "already latest" in out.lower() or "already up to date" in out.lower()
     assert not (tmp_path / "Game").exists()
+
+
+def _seed_profile_with_nexus(tmp_path):
+    """seamless-only plus a Nexus mod. Without a NEXUS_API_KEY the Nexus mod
+    takes the manual-download branch, so erm never contacts upstream for it."""
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir(exist_ok=True)
+    (profiles_dir / "with-nexus.toml").write_text(
+        'name = "with-nexus"\n'
+        'description = "test profile"\n'
+        '\n[[mods]]\n'
+        'id = "seamless-coop"\n'
+        'source = "github"\n'
+        'repo_id = 497113840\n'
+        'kind = "coop"\n'
+        '\n[[mods]]\n'
+        'id = "hand-download"\n'
+        'source = "nexus"\n'
+        'nexus_id = 42\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n')
+
+
+def _stub_github_latest(monkeypatch, tag="v1.9.8"):
+    monkeypatch.setattr(github, "latest_release", lambda repo_id: {
+        "tag": tag, "assets": [{"name": "Seamless.zip", "url": "http://x/Seamless.zip",
+                                "digest": "sha256:" + "a" * 64}]})
+    monkeypatch.setattr(github, "download_verified",
+                        lambda url, dest, sha256: Path(dest).write_bytes(b"zip-bytes"))
+
+
+def test_update_does_not_report_lockfile_entries_the_profile_never_names(
+        tmp_path, monkeypatch, capsys):
+    """The lockfile is shared across every profile, so it always carries more
+    entries than the one being updated. Reporting them meant asserting a
+    version was current for mods erm never contacted upstream about."""
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path, version="v1.9.8", sha="a" * 64)
+    lock_path.write_text(lock_path.read_text() +
+        '\n[other-profiles-mod]\nversion = "3.0"\nasset = "o.zip"\n'
+        'sha256 = "b"\nsource = "nexus"\n')
+
+    _stub_github_latest(monkeypatch)
+    monkeypatch.setattr(paths, "find_steam_root", lambda: (_ for _ in ()).throw(
+        AssertionError("find_steam_root must not run when nothing changed")))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    _seed_profile(tmp_path)
+
+    assert cli.cmd_update(_args()) == 0
+    out = capsys.readouterr().out
+
+    assert "other-profiles-mod" not in out, (
+        "reported a mod that isn't in the profile and was never contacted")
+
+
+def test_update_does_not_claim_a_manual_download_is_already_latest(
+        tmp_path, monkeypatch, capsys):
+    """A Nexus mod with no API key is skipped with a manual-download notice --
+    erm never asked upstream what the latest version is. Calling it 'already
+    latest' in the same report contradicts the notice directly above it."""
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path, version="v1.9.8", sha="a" * 64)
+    lock_path.write_text(lock_path.read_text() +
+        '\n[hand-download]\nversion = "3.0"\nasset = "h.zip"\n'
+        'sha256 = "b"\nsource = "nexus"\n')
+
+    _stub_github_latest(monkeypatch)
+    monkeypatch.setattr(paths, "find_steam_root", lambda: (_ for _ in ()).throw(
+        AssertionError("find_steam_root must not run when nothing changed")))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    _seed_profile_with_nexus(tmp_path)
+
+    assert cli.cmd_update(_args(profile="with-nexus")) == 0
+    out = capsys.readouterr().out
+
+    assert "manual Nexus download" in out
+    assert "hand-download already latest" not in out, (
+        "claimed a version is current for a mod erm declined to check")
+    assert "Already up to date — nothing to install." not in out, (
+        "the closing summary contradicts the manual-download warning above it")
+
+
+def test_update_json_is_one_document_carrying_the_lockstep_warning(
+        tmp_path, monkeypatch, capsys):
+    # update printed its report, then "Installed seamless-coop …", then the
+    # LOCKSTEP line, then "Safety check (erm doctor):", then a second document.
+    # The LOCKSTEP warning is the one thing a co-op partner must not miss, so
+    # it has to be IN the document rather than prose wrapped around it.
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path, version="v1.9.8", sha="a" * 64)
+    game_dir = tmp_path / "Game"
+    game_dir.mkdir()
+
+    monkeypatch.setattr(github, "latest_release", lambda repo_id: {
+        "tag": "v2.0.0", "assets": [{"name": "Seamless.zip",
+                                     "url": "http://x/Seamless.zip",
+                                     "digest": "sha256:" + "b" * 64}]})
+    monkeypatch.setattr(github, "download_verified",
+                        lambda url, dest, sha256: _make_ersc_zip(Path(dest)))
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    _seed_profile(tmp_path)
+
+    import json as _json
+    rc = cli.cmd_update(_args(json=True))
+    data = _json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert any("LOCKSTEP" in i["message"] for i in data["items"])
+    assert any("v1.9.8 -> v2.0.0" in i["message"] for i in data["items"])
+    assert data["doctor"]["worst"] == "ok"

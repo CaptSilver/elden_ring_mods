@@ -16,10 +16,16 @@ def backup_save(save_path, backups_dir, label="", stamp=None):
 
 
 def list_backups(backups_dir):
+    """Every backup file under `backups_dir`, deepest paths included.
+
+    Recursive because quarantine() files the vanilla save two levels down, in
+    quarantine/ and quarantine-backup/ — the single file a listing exists to
+    help someone find.
+    """
     backups_dir = Path(backups_dir)
     if not backups_dir.exists():
         return []
-    return sorted(p for p in backups_dir.iterdir() if p.is_file())
+    return sorted(p for p in backups_dir.rglob("*") if p.is_file())
 
 
 def quarantine(save_path, backups_dir, cloud_saves, steam_up, stamp=None):

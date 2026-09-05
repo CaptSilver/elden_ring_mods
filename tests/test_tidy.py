@@ -58,7 +58,7 @@ def test_recorded_file_is_never_a_candidate(tmp_game):
     assert (mod_dir / "log.txt") not in cruft
 
 
-def test_symlink_escape_is_skipped_and_nothing_returned_resolves_outside_game(tmp_game, tmp_path):
+def test_mods_child_symlink_is_skipped_before_it_is_ever_considered(tmp_game, tmp_path):
     game = tmp_game
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -77,6 +77,85 @@ def test_symlink_escape_is_skipped_and_nothing_returned_resolves_outside_game(tm
             c.resolve().relative_to(game_res)
         except ValueError:
             raise AssertionError(f"{c} resolves outside Game/")
+
+
+def test_recorded_loose_log_is_never_a_candidate(tmp_game):
+    game = tmp_game
+    (game / "mod_loader_log.txt").write_text("log")
+
+    # Positive control: without the recording this file IS cruft, so the
+    # assertion below is about the recorded check and not about the file
+    # failing some earlier gate.
+    assert (game / "mod_loader_log.txt") in tidy.find_cruft(game, recorded=set())
+
+    cruft = tidy.find_cruft(game, recorded={"mod_loader_log.txt"})
+    assert (game / "mod_loader_log.txt") not in cruft
+
+
+def test_recorded_log_beside_a_mod_is_never_a_candidate(tmp_game):
+    # A mod that ships a file named like a log and records it: the mods/ file
+    # branch reaches consider() with nothing but the symlink pre-filter, so the
+    # recorded check inside consider() is the only thing keeping it.
+    game = tmp_game
+    mods = game / "mods"
+    mods.mkdir()
+    (mods / "Foo_log.txt").write_text("log")
+
+    assert (mods / "Foo_log.txt") in tidy.find_cruft(game, recorded=set())
+
+    cruft = tidy.find_cruft(game, recorded={"mods/Foo_log.txt"})
+    assert (mods / "Foo_log.txt") not in cruft
+
+
+def test_a_loose_log_that_is_a_symlink_is_never_a_candidate(tmp_game):
+    # Points at a real file inside Game/, so containment would let it through —
+    # only the symlink gate stops tidy unlinking a link the user put there.
+    game = tmp_game
+    mods = game / "mods"
+    mods.mkdir()
+    real = mods / "Real.dll"
+    real.write_bytes(b"\x00")
+    link = game / "mod_loader_log.txt"
+    link.symlink_to(real)
+
+    cruft = tidy.find_cruft(game, recorded=set())
+
+    assert link not in cruft
+    assert real.exists()
+
+
+def test_a_log_reached_through_a_symlinked_mods_dir_is_left_alone(tmp_game, tmp_path):
+    # Someone put mods/ on another drive. The log inside is a plain file, so it
+    # passes the symlink gate; containment is what refuses it.
+    game = tmp_game
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    stray = outside / "stray.log"
+    stray.write_text("log")
+    (game / "mods").symlink_to(outside)
+
+    cruft = tidy.find_cruft(game, recorded=set())
+
+    assert cruft == []
+    assert stray.exists()
+
+
+def test_mod_dir_holding_a_link_out_of_game_is_left_alone(tmp_game, tmp_path):
+    # The link has a runtime suffix, so the file-type audit would pass it —
+    # the containment check is the only reason the whole dir is spared.
+    game = tmp_game
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    target = outside / "precious.txt"
+    target.write_text("keep me")
+    mod_dir = game / "mods" / "Orphan"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / "link.txt").symlink_to(target)
+
+    cruft = tidy.find_cruft(game, recorded=set())
+
+    assert mod_dir not in cruft
+    assert target.exists()
 
 
 def test_critical_file_is_never_a_candidate(tmp_game):

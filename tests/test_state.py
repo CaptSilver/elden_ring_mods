@@ -1,12 +1,13 @@
+import pathlib
+
 import pytest
 
 from ermlib import state as state_mod
 from ermlib.state import load_state, record_install, write_state, forget
 from ermlib.errors import ErmError
-from ermlib.gamebuild import BuildId
+from tests.build_fixtures import build_id
 
-BUILD = BuildId(exe="2.7.0.0", app="1.17.0", regulation="11701000",
-                steam_buildid="23850278", regulation_sha="a" * 64)
+BUILD = build_id()
 
 
 def test_record_load_write_round_trip(tmp_path):
@@ -129,3 +130,27 @@ def test_the_build_record_is_not_a_mod():
     state_mod.record_build(st, BUILD)
     assert state_mod.BUILD_ID not in state_mod.mod_ids(st)
     assert "adjust-the-fov" in state_mod.mod_ids(st)
+
+
+def test_every_cross_module_pointer_in_the_docstrings_resolves():
+    # state.py is the storage layer and has no way to notice when a private
+    # helper it points at is renamed in another module -- which is how
+    # cli._recorded_install_mode came to name a function that never existed.
+    import ast
+    import importlib
+    import re
+
+    source = pathlib.Path(state_mod.__file__).read_text()
+    tree = ast.parse(source)
+    docstrings = [ast.get_docstring(n) or "" for n in ast.walk(tree)
+                  if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef))]
+    dangling = []
+    for doc in docstrings:
+        for module, name in re.findall(r"\b([a-z][a-z0-9_]*)\.(_[a-z][a-z0-9_]*)\b", doc):
+            try:
+                mod = importlib.import_module(f"ermlib.{module}")
+            except ImportError:
+                continue
+            if not hasattr(mod, name):
+                dangling.append(f"{module}.{name}")
+    assert dangling == []

@@ -44,6 +44,7 @@ _PROFILE_BODY_FILE_BASE = 0x19003B0     # data_offset(0x19003A0) + 0x10 MD5
 _ACTIVE_FILE = 0x1901D04
 _REC0_FILE = 0x1901D0E
 _REC_STRIDE = 0x24C
+_REC_END = 0x2A                          # past the last field read out of a record
 
 
 class Character:
@@ -59,12 +60,24 @@ def _profile_local(file_off):
     return file_off - _PROFILE_BODY_FILE_BASE
 
 
+# Through the end of the last of the ten character records.
+_PROFILE_MIN_BODY = _profile_local(_REC0_FILE) + 9 * _REC_STRIDE + _REC_END
+
+
 class _CharactersMixin:
     @property
     def characters(self):
         body = self.profile_entry.body
         active_base = _profile_local(_ACTIVE_FILE)
         rec0 = _profile_local(_REC0_FILE)
+        # Every offset below is a fixed position in a full profile blob, so a
+        # short body would index off the end. A partially-copied save gets that
+        # far: the header and name table sit before the bodies, so the entries
+        # parse and only the blob is missing.
+        if len(body) < _PROFILE_MIN_BODY:
+            raise NotAnEldenRingSave(
+                f"profile entry truncated: {len(body)} bytes, "
+                f"need {_PROFILE_MIN_BODY}")
         out = []
         for i in range(10):
             if body[active_base + i] != 1:
@@ -203,6 +216,9 @@ class _InventoryMixin:
         )
 
 
+_SAVE_ENTRIES = 12          # 10 character slots + profile summary + regulation
+
+
 class SaveFile(_CharactersMixin, _InventoryMixin):
     def __init__(self, entries):
         self.entries = entries
@@ -218,6 +234,12 @@ class SaveFile(_CharactersMixin, _InventoryMixin):
             entries = [Entry(data, i) for i in range(count)]
         except (struct.error, ValueError, IndexError) as exc:
             raise NotAnEldenRingSave(f"malformed/truncated save: {exc}") from exc
+        # slots/profile_entry/regulation_entry all index fixed positions in this
+        # list, so anything shorter is a BND4 but not a save we can read.
+        if len(entries) != _SAVE_ENTRIES:
+            raise NotAnEldenRingSave(
+                f"not an Elden Ring save: {_SAVE_ENTRIES} BND4 entries "
+                f"expected, found {len(entries)}")
         return cls(entries)
 
     @property

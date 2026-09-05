@@ -85,34 +85,45 @@ def install_me3_native(archive_path, mod_id, me3_dir, dll=None):
     """
     me3_dir = Path(me3_dir)
     dest = me3_dir / "natives" / mod_id
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
-    # extract_archive enforces the zip-slip guard; game_dir=dest, no subdir.
-    install.extract_archive(Path(archive_path), dest, "")
-    if dll is not None:
-        if not is_safe_relpath(dll):
-            shutil.rmtree(dest, ignore_errors=True)
-            raise PathError(f"{mod_id}: unsafe dll path {dll!r}")
-        chosen = dest / dll
-        if not chosen.is_file():
-            shutil.rmtree(dest, ignore_errors=True)
-            raise PathError(
-                f"{mod_id}: dll {dll!r} not found in {Path(archive_path).name} "
-                f"— check the profile's `dll` against the archive's actual layout")
-        return str(chosen)
-    chosen = find_native_dll(dest, mod_id)
-    if chosen is None:
-        found = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*.dll"))
-        shutil.rmtree(dest, ignore_errors=True)
-        if found:
-            raise PathError(
-                f"{mod_id}: several DLLs in {Path(archive_path).name} — set `dll` in "
-                f"the profile to one of: " + ", ".join(repr(f) for f in found))
-        raise PathError(
-            f"{mod_id}: no .dll found in {Path(archive_path).name} — this doesn't look "
-            f"like a native mod; check the profile's install kind")
-    return str(chosen)
+    staging = me3_dir / ".staging" / mod_id
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    try:
+        # Extract to staging and only swap the previous install out once the DLL
+        # is identified: apply merely warns on a failure here and carries on, so
+        # clearing natives/<id> up front would leave installed.json and the
+        # generated .me3 profile naming a DLL that no longer exists.
+        # extract_archive enforces the zip-slip guard.
+        install.extract_archive(Path(archive_path), staging, "")
+        if dll is not None:
+            if not is_safe_relpath(dll):
+                raise PathError(f"{mod_id}: unsafe dll path {dll!r}")
+            chosen = staging / dll
+            if not chosen.is_file():
+                raise PathError(
+                    f"{mod_id}: dll {dll!r} not found in {Path(archive_path).name} "
+                    f"— check the profile's `dll` against the archive's actual layout")
+        else:
+            chosen = find_native_dll(staging, mod_id)
+            if chosen is None:
+                found = sorted(p.relative_to(staging).as_posix()
+                               for p in staging.rglob("*.dll"))
+                if found:
+                    raise PathError(
+                        f"{mod_id}: several DLLs in {Path(archive_path).name} — set `dll` in "
+                        f"the profile to one of: " + ", ".join(repr(f) for f in found))
+                raise PathError(
+                    f"{mod_id}: no .dll found in {Path(archive_path).name} — this doesn't look "
+                    f"like a native mod; check the profile's install kind")
+        rel = chosen.relative_to(staging)
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staging), str(dest))
+        return str(dest / rel)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def install_me3_package(archive_path, mod_id, me3_dir, subdir=None):
@@ -131,38 +142,39 @@ def install_me3_package(archive_path, mod_id, me3_dir, subdir=None):
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
-    # extract_archive enforces the zip-slip guard; game_dir=staging, no subdir.
-    install.extract_archive(Path(archive_path), staging, "")
-    base = staging
-    if subdir is not None:
-        if not is_safe_relpath(subdir):
-            shutil.rmtree(staging, ignore_errors=True)
-            raise PathError(f"{mod_id}: unsafe subdir {subdir!r}")
-        base = staging / subdir
-        if not base.is_dir():
-            shutil.rmtree(staging, ignore_errors=True)
+    try:
+        # extract_archive enforces the zip-slip guard.
+        install.extract_archive(Path(archive_path), staging, "")
+        base = staging
+        if subdir is not None:
+            if not is_safe_relpath(subdir):
+                raise PathError(f"{mod_id}: unsafe subdir {subdir!r}")
+            base = staging / subdir
+            if not base.is_dir():
+                raise PathError(
+                    f"{mod_id}: subdir {subdir!r} not found in {Path(archive_path).name} "
+                    f"— check the profile's `subdir` against the archive's actual folder names")
+        root = find_package_root(base)
+        if root is None:
+            options = list_option_dirs(base)
+            if options:
+                raise PathError(
+                    f"{mod_id}: couldn't auto-place this archive — set `subdir` in the "
+                    f"profile to one of: " + ", ".join(repr(o) for o in options))
             raise PathError(
-                f"{mod_id}: subdir {subdir!r} not found in {Path(archive_path).name} "
-                f"— check the profile's `subdir` against the archive's actual folder names")
-    root = find_package_root(base)
-    if root is None:
-        options = list_option_dirs(base)
+                f"{mod_id}: couldn't locate the game asset tree (parts/menu/msg/...) in "
+                f"{Path(archive_path).name} — install it into a me3 package by hand")
+        dest = me3_dir / "mods" / mod_id
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(root), str(dest))
+        has_regulation = (dest / "regulation.bin").exists()
+        return str(dest), has_regulation
+    finally:
+        # The package root is moved out before this runs, so whatever is left is
+        # scratch — including a tree half-written by a failed extraction.
         shutil.rmtree(staging, ignore_errors=True)
-        if options:
-            raise PathError(
-                f"{mod_id}: couldn't auto-place this archive — set `subdir` in the "
-                f"profile to one of: " + ", ".join(repr(o) for o in options))
-        raise PathError(
-            f"{mod_id}: couldn't locate the game asset tree (parts/menu/msg/...) in "
-            f"{Path(archive_path).name} — install it into a me3 package by hand")
-    dest = me3_dir / "mods" / mod_id
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(root), str(dest))
-    shutil.rmtree(staging, ignore_errors=True)
-    has_regulation = (dest / "regulation.bin").exists()
-    return str(dest), has_regulation
 
 
 # What me3's own install-user.sh puts where. me3 resolves these two at runtime

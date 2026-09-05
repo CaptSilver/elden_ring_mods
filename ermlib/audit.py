@@ -1,3 +1,6 @@
+from .savefile import NotAnEldenRingSave
+
+
 CAVEAT = (
     "This audit flags careless tampering only. It CANNOT certify a save as "
     "legitimate: FromSoft does not publish detection criteria, and a careful "
@@ -32,7 +35,16 @@ def audit_save(sf):
         if not e.md5_ok:
             findings.append(Finding("decisive", e.index, f"entry {e.name} MD5 mismatch"))
 
-    for ch in sf.characters:
+    try:
+        characters = sf.characters
+    except NotAnEldenRingSave as exc:
+        # A truncated save still yields the MD5 verdicts above, which are the
+        # decisive ones — losing them to an unreadable character list would
+        # throw away the diagnosis on exactly the file that needs it.
+        findings.append(Finding("decisive", None, f"character list unreadable: {exc}"))
+        characters = []
+
+    for ch in characters:
         try:
             sd = sf.slot_data(ch.slot, ch.name)
         except Exception as exc:

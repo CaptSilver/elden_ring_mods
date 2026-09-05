@@ -1,6 +1,7 @@
 import zipfile
 import pytest
 from pathlib import Path
+from ermlib import me3pkg
 from ermlib.me3pkg import (find_package_root, install_me3_host, install_me3_package,
                            list_option_dirs)
 from ermlib.errors import PathError
@@ -248,3 +249,25 @@ def test_host_install_replaces_an_older_binary_in_place(tmp_path):
     arc = _me3_tarball(tmp_path / "me3.tar.gz")
     install_me3_host(arc, bindir, datadir)
     assert (bindir / "me3").read_bytes() == b"\x7fELF-native"
+
+
+def test_install_me3_package_clears_its_staging_when_extraction_dies(
+        tmp_path, monkeypatch):
+    # A mid-extract failure (full disk, quota, an I/O error on one member) is
+    # only warned about — apply keeps going. Nothing else ever reclaims the
+    # half-extracted staging tree: tidy walks Game/ only, and uninstall works
+    # off installed.json, which never got an entry for this mod.
+    arc = tmp_path / "mod.zip"
+    _zip(arc, {"parts/wp.dcx": "x"})
+    me3_dir = tmp_path / "tools" / "me3"
+
+    def die(archive_path, dest_root, dest_subdir="", **kw):
+        d = Path(dest_root) / dest_subdir if dest_subdir else Path(dest_root)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "partial.dcx").write_bytes(b"half a file")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(me3pkg.install, "extract_archive", die)
+    with pytest.raises(OSError):
+        install_me3_package(arc, "clevers-moveset", me3_dir)
+    assert list(me3_dir.rglob("partial.dcx")) == []

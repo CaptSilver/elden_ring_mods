@@ -8,9 +8,10 @@ import pytest
 
 from ermlib import cli, gamebuild, harden, me3profile, paths
 from ermlib.errors import ErmError, NetworkError, PathError
-from ermlib.gamebuild import BuildId, GameBuildError
+from ermlib.gamebuild import GameBuildError
 from ermlib.heal import HealError
 from tests.conftest import REPO
+from tests.build_fixtures import build_id
 from tests.test_merge import SP, _regulation, _rows
 
 
@@ -38,6 +39,20 @@ def _seed_lock(lock_path, entries):
 def _zip_with(path, member, data=b"\x00"):
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(member, data)
+
+
+def _me3_host_tarball(path):
+    """A stand-in for the me3 Linux release: the native binary plus the two
+    Windows components me3 chainloads, at the paths install-user.sh uses."""
+    import io
+    import tarfile
+
+    members = ["bin/me3", "bin/win64/me3-launcher.exe", "bin/win64/me3_mod_host.dll"]
+    with tarfile.open(path, "w:gz") as t:
+        for name in members:
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            t.addfile(info, io.BytesIO(b"\x00"))
 
 
 def _apply_args(profile, json_out=False):
@@ -242,8 +257,7 @@ def test_apply_stamps_the_build_it_was_applied_against(tmp_path, monkeypatch, ca
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
-    known = BuildId(exe="2.7.0.0", app="1.17.0", regulation="11701000",
-                    steam_buildid="23850278", regulation_sha="a" * 64)
+    known = build_id()
     monkeypatch.setattr(cli.gamebuild, "identify", lambda game, root: known)
     _seed_two_mod_profile(tmp_path)
 
@@ -339,9 +353,8 @@ def _seed_regulation_stack(tmp_path, game_dir, game_build="11701000",
         with zipfile.ZipFile(vendor / f"{mid}.zip", "w") as z:
             z.writestr(member, blob)
     (tmp_path / "mods.lock.toml").write_text(lock)
-    return BuildId(exe="2.7.0.0", app=gamebuild.app_version(game_build),
-                   regulation=game_build, steam_buildid="23850278",
-                   regulation_sha=hashlib.sha256(game).hexdigest())
+    return build_id(app=gamebuild.app_version(game_build), regulation=game_build,
+                    regulation_sha=hashlib.sha256(game).hexdigest())
 
 
 def _rebase_env(tmp_path, game_dir, monkeypatch, **kwargs):
@@ -896,42 +909,52 @@ def test_apply_randomizer_falls_back_when_no_proton_found(
     assert "no Proton" in out or "Proton/Wine" in out   # fallback note, no crash
 
 
-def test_apply_me3_extracts_scaffolds_profile_and_not_recorded(
+def test_apply_me3_host_installs_the_launcher_and_scaffolds_the_profile(
         tmp_path, monkeypatch, capsys, tmp_game):
+    # me3-host is the only me3 entry a profile carries: it installs the native
+    # launcher Steam runs plus the Windows components me3 chainloads, and apply
+    # has to say how to launch what it just installed. Nothing about it goes
+    # into installed.json — the binary lives outside the repo.
     game_dir = tmp_game
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.chdir(tmp_path)
-    # me3 is kind="loader" -> apply now auto-hardens; mock set_immutable so
+    # me3-host is kind="loader" -> apply auto-hardens; mock set_immutable so
     # this never shells out to real sudo.
     monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
+    # Never write to the real ~/.local/bin.
+    bindir, datadir = tmp_path / "hostbin", tmp_path / "hostdata"
+    monkeypatch.setattr(cli.launch, "ME3_BINDIR", bindir)
+    monkeypatch.setattr(cli.launch, "ME3_DATADIR", datadir)
 
-    _write_profile(tmp_path / "profiles", "me3-only",
+    _write_profile(tmp_path / "profiles", "me3-host-only",
         '[[mods]]\n'
-        'id = "me3"\n'
+        'id = "me3-host"\n'
         'source = "github"\n'
         'repo_id = 540883721\n'
         'kind = "loader"\n'
-        'install = "me3"\n'
+        'install = "me3-host"\n'
     )
-    _seed_lock(tmp_path / "mods.lock.toml", {"me3": ("v1.0", "me3.zip")})
+    _seed_lock(tmp_path / "mods.lock.toml", {"me3-host": ("v1.0", "me3-host.tar.gz")})
     vendor = tmp_path / "vendor"
     vendor.mkdir()
-    _zip_with(vendor / "me3.zip", "bin/me3.exe")
+    _me3_host_tarball(vendor / "me3-host.tar.gz")
 
-    rc = cli.cmd_apply(_apply_args("me3-only"))
+    rc = cli.cmd_apply(_apply_args("me3-host-only"))
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert (tmp_path / "tools" / "me3" / "bin" / "me3.exe").exists()
-    prof = tmp_path / "tools" / "me3" / "erm-coop.me3"
-    assert prof.exists()
-    # Apply has to say how to launch what it just unpacked; erm prints the line
+    assert (bindir / "me3").is_file()
+    windows_bin = datadir / "me3" / "windows-bin"
+    assert (windows_bin / "me3-launcher.exe").is_file()
+    assert (windows_bin / "me3_mod_host.dll").is_file()
+    assert (tmp_path / "tools" / "me3" / "erm-coop.me3").exists()
+    # Apply has to say how to launch what it just installed; erm prints the line
     # itself now rather than sending the reader to the upstream docs.
     assert "launch-option" in out
 
     state = json.loads((tmp_path / "installed.json").read_text())
-    assert "me3" not in state           # a loader/tool, not a Game/ mod
+    assert "me3-host" not in state      # the launcher is not a Game/ mod
 
 
 def test_apply_me3_reconcile_write_failure_warns_and_preserves_earlier_state(
@@ -949,7 +972,7 @@ def test_apply_me3_reconcile_write_failure_warns_and_preserves_earlier_state(
     # this never shells out to real sudo.
     monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
 
-    _write_profile(tmp_path / "profiles", "game-then-me3",
+    _write_profile(tmp_path / "profiles", "game-then-package",
         '[[mods]]\n'
         'id = "mod-a"\n'
         'source = "github"\n'
@@ -958,20 +981,20 @@ def test_apply_me3_reconcile_write_failure_warns_and_preserves_earlier_state(
         'install = "game"\n'
         '\n'
         '[[mods]]\n'
-        'id = "me3"\n'
+        'id = "unit-mod"\n'
         'source = "github"\n'
         'repo_id = 2\n'
-        'kind = "loader"\n'
-        'install = "me3"\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
     )
     _seed_lock(tmp_path / "mods.lock.toml", {
         "mod-a": ("1.0", "mod-a.zip"),
-        "me3": ("1.0", "me3.zip"),
+        "unit-mod": ("1.0", "unit-mod.zip"),
     })
     vendor = tmp_path / "vendor"
     vendor.mkdir()
     _zip_with(vendor / "mod-a.zip", "a.dll")
-    _zip_with(vendor / "me3.zip", "bin/me3.exe")
+    _zip_with(vendor / "unit-mod.zip", "parts/wp_a.dcx")
 
     # Fail only the scaffold write, so write_state (installed.json) still works
     # — that's what lets us prove mod-a's record survived.
@@ -984,33 +1007,33 @@ def test_apply_me3_reconcile_write_failure_warns_and_preserves_earlier_state(
 
     monkeypatch.setattr(Path, "write_text", boom)
 
-    rc = cli.cmd_apply(_apply_args("game-then-me3"))   # must NOT raise
+    rc = cli.cmd_apply(_apply_args("game-then-package"))   # must NOT raise
     out = capsys.readouterr().out
 
     assert rc == 0
     assert (game_dir / "a.dll").exists()                # mod-a really installed
-    assert (tmp_path / "tools" / "me3" / "bin" / "me3.exe").exists()  # me3 extracted
+    assert (tmp_path / "tools" / "me3" / "mods" / "unit-mod" / "parts").exists()
     assert "could not regenerate the me3 profile" in out.lower()   # warned, not crashed
 
     state = json.loads((tmp_path / "installed.json").read_text())
     assert "mod-a" in state          # earlier mod's state survived the failure
-    assert "me3" not in state        # me3 is a tool, never recorded
+    assert "unit-mod" in state       # ... and so did the package installed after it
 
 
-def test_uninstall_profile_removes_recorded_randomizer_and_skips_unrecorded_me3(
+def test_uninstall_profile_removes_recorded_randomizer_and_skips_unrecorded_manual(
         tmp_path, monkeypatch, capsys, tmp_game):
-    # me3 installs to tools/ and is never recorded, so profile-uninstall must
-    # skip it — not fall into the single-mod vendor-archive fallback, which would
-    # open its tool zip and report a bogus "removed 0 file(s)". The randomizer
-    # also lives in tools/ but IS recorded now (kind="randomizer"), so uninstall
+    # A manual mod is never installed and so never recorded, and profile-uninstall
+    # must skip it — not fall into the single-mod vendor-archive fallback, which
+    # would open its archive and report a bogus "removed 0 file(s)". The
+    # randomizer lives in tools/ but IS recorded (kind="randomizer"), so uninstall
     # removes its generator dir and forgets it.
     game_dir = tmp_game
     monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
     monkeypatch.setattr(paths, "find_proton", lambda: None)
     monkeypatch.chdir(tmp_path)
-    # me3 is kind="loader" -> apply now auto-hardens; mock set_immutable so
-    # this never shells out to real sudo.
+    # mod-a is not a loader, but keep set_immutable mocked so no path through
+    # this test can shell out to real sudo.
     monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
     (tmp_path / "steamapps" / "compatdata" / paths.APPID).mkdir(parents=True)
 
@@ -1023,11 +1046,11 @@ def test_uninstall_profile_removes_recorded_randomizer_and_skips_unrecorded_me3(
         'install = "game"\n'
         '\n'
         '[[mods]]\n'
-        'id = "me3"\n'
+        'id = "hand-placed"\n'
         'source = "github"\n'
         'repo_id = 2\n'
-        'kind = "loader"\n'
-        'install = "me3"\n'
+        'kind = "test"\n'
+        'install = "manual"\n'
         '\n'
         '[[mods]]\n'
         'id = "item-enemy-randomizer"\n'
@@ -1038,19 +1061,20 @@ def test_uninstall_profile_removes_recorded_randomizer_and_skips_unrecorded_me3(
     )
     _seed_lock(tmp_path / "mods.lock.toml", {
         "mod-a": ("1.0", "mod-a.zip"),
-        "me3": ("1.0", "me3.zip"),
+        "hand-placed": ("1.0", "hand-placed.zip"),
         "item-enemy-randomizer": ("1.0", "randomizer.zip"),
     })
     vendor = tmp_path / "vendor"
     vendor.mkdir()
     _zip_with(vendor / "mod-a.zip", "a.dll")
-    _zip_with(vendor / "me3.zip", "bin/me3.exe")
+    _zip_with(vendor / "hand-placed.zip", "hand-placed.dll")
     _zip_with(vendor / "randomizer.zip", "randomizer/EldenRingRandomizer.exe")
 
     cli.cmd_apply(_apply_args("tools-mix"))
     capsys.readouterr()
 
-    # mod-a landed in Game/; the randomizer is recorded (tools/); me3 is not.
+    # mod-a landed in Game/; the randomizer is recorded (tools/); the manual one
+    # was never installed at all.
     state = json.loads((tmp_path / "installed.json").read_text())
     assert set(state.keys()) == {"mod-a", "item-enemy-randomizer"}
     assert (tmp_path / "tools" / "item-enemy-randomizer").is_dir()
@@ -1061,10 +1085,9 @@ def test_uninstall_profile_removes_recorded_randomizer_and_skips_unrecorded_me3(
     assert rc == 0
     assert not (game_dir / "a.dll").exists()            # mod-a really removed
     assert not (tmp_path / "tools" / "item-enemy-randomizer").exists()  # generator removed
-    assert (tmp_path / "tools" / "me3").is_dir()        # me3 skipped, left on disk
     assert "randomizer generator" in out                # the recorded randomizer was removed
-    # me3 is unrecorded: skipped, not force-read from its vendor archive.
-    assert "for me3" not in out
+    # hand-placed is unrecorded: skipped, not force-read from its vendor archive.
+    assert "for hand-placed" not in out
     assert "vendor archive" not in out
     assert "removed 0 file" not in out
 
@@ -1086,18 +1109,18 @@ def test_apply_me3_reconcile_preserves_user_additions_in_profile(
     # this never shells out to real sudo.
     monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
 
-    _write_profile(tmp_path / "profiles", "me3-only",
+    _write_profile(tmp_path / "profiles", "package-only",
         '[[mods]]\n'
-        'id = "me3"\n'
+        'id = "unit-mod"\n'
         'source = "github"\n'
         'repo_id = 540883721\n'
-        'kind = "loader"\n'
-        'install = "me3"\n'
+        'kind = "cosmetic"\n'
+        'install = "me3-package"\n'
     )
-    _seed_lock(tmp_path / "mods.lock.toml", {"me3": ("v1.0", "me3.zip")})
+    _seed_lock(tmp_path / "mods.lock.toml", {"unit-mod": ("v1.0", "unit-mod.zip")})
     vendor = tmp_path / "vendor"
     vendor.mkdir()
-    _zip_with(vendor / "me3.zip", "bin/me3.exe")
+    _zip_with(vendor / "unit-mod.zip", "parts/wp_a.dcx")
 
     # Seed a deliberately WRONG header above the marker: if apply merely left
     # an existing profile alone (the old scaffold's `if not prof.exists()`
@@ -1112,7 +1135,7 @@ def test_apply_me3_reconcile_preserves_user_additions_in_profile(
         '[[packages]]\nid = "my-hand-add"\npath = \'mods/mine/\'\n'
     )
 
-    cli.cmd_apply(_apply_args("me3-only"))
+    cli.cmd_apply(_apply_args("package-only"))
     text = prof.read_text()
 
     assert "STALE-GARBAGE-HEADER" not in text     # header actually regenerated
@@ -2383,6 +2406,96 @@ def test_a_carried_merge_is_dropped_once_a_contributor_is_uninstalled(
     assert not merged_file.exists()
 
 
+def _ghost_contributor_profile(profiles_dir, name):
+    """A merge declaring three mods where mod-ghost never gets installed --
+    profiles compose, and a per-mod install failure (missing archive, bad zip)
+    is warned-and-skipped rather than fatal."""
+    _write_profile(profiles_dir, name,
+        '[[mods]]\n'
+        'id = "mod-x"\nsource = "nexus"\nnexus_id = 1\nkind = "cosmetic"\ninstall = "me3-package"\n'
+        '\n[[mods]]\n'
+        'id = "mod-y"\nsource = "nexus"\nnexus_id = 2\nkind = "cosmetic"\ninstall = "me3-package"\n'
+        '\n[[mods]]\n'
+        'id = "mod-ghost"\nsource = "nexus"\nnexus_id = 3\nkind = "cosmetic"\ninstall = "me3-package"\n'
+        '\n[[merges]]\n'
+        'path = "chr/c0000.anibnd.dcx"\n'
+        'strategy = "concat"\n'
+        'mods = ["mod-x", "mod-y", "mod-ghost"]\n'
+        'prefer = "mod-x"\n')
+
+
+def _seed_ghost(tmp_path, mod_id, member):
+    """Pinned in the lockfile but absent from vendor/, so apply warns and skips
+    it -- the mod is declared by the profile and never lands in state."""
+    _seed_package_zip(tmp_path, mod_id, member, b"G")
+    (tmp_path / "vendor" / f"{mod_id}.zip").unlink()
+
+
+def test_a_merge_records_the_contributors_it_had_not_the_ones_declared(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """What a merge records is what a later apply checks before carrying the
+    output across. Recording the declaration instead means the record can name
+    a mod that was never installed, which no future apply can satisfy."""
+    from ermlib import conflicts
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(conflicts.STRATEGIES, "concat", lambda base, other: base + other)
+
+    _seed_package_zip(tmp_path, "mod-x", "chr/c0000.anibnd.dcx", b"X")
+    _seed_package_zip(tmp_path, "mod-y", "chr/c0000.anibnd.dcx", b"Y")
+    _seed_ghost(tmp_path, "mod-ghost", "chr/c0000.anibnd.dcx")
+
+    profiles = tmp_path / "profiles"
+    _ghost_contributor_profile(profiles, "unit-ghost")
+    assert cli.cmd_apply(_apply_args("unit-ghost")) == 0
+    capsys.readouterr()
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    recorded = state[conflicts.MERGED_ID]["paths"]["chr/c0000.anibnd.dcx"]
+    installed = {m for m in state if not m.startswith("_")}
+    assert "mod-ghost" not in installed, "fixture wrong: the ghost got installed"
+    assert set(recorded) <= installed, (
+        f"recorded {sorted(recorded)} names mods that were never installed "
+        f"({sorted(set(recorded) - installed)}), so no later apply can carry it")
+
+
+def test_an_overlay_keeps_a_merge_whose_declaration_named_an_uninstalled_mod(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """The user-facing half of the same defect: a merge built from the two mods
+    that were there is real output, and a successful merge strips the path from
+    every contributor, so wiping it on the next unrelated apply leaves no
+    package providing the file at all."""
+    from ermlib import conflicts
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(conflicts.STRATEGIES, "concat", lambda base, other: base + other)
+
+    _seed_package_zip(tmp_path, "mod-x", "chr/c0000.anibnd.dcx", b"X")
+    _seed_package_zip(tmp_path, "mod-y", "chr/c0000.anibnd.dcx", b"Y")
+    _seed_ghost(tmp_path, "mod-ghost", "chr/c0000.anibnd.dcx")
+    _seed_package_zip(tmp_path, "mod-z", "menu/tex.dcx", b"Z")
+
+    profiles = tmp_path / "profiles"
+    _ghost_contributor_profile(profiles, "unit-ghost-base")
+    assert cli.cmd_apply(_apply_args("unit-ghost-base")) == 0
+    merged_file = tmp_path / "tools" / "me3" / "mods" / conflicts.MERGED_ID / "chr/c0000.anibnd.dcx"
+    assert merged_file.read_bytes() == b"XY"
+    capsys.readouterr()
+
+    _overlay_profile(profiles, "unit-ghost-overlay", "mod-z")
+    assert cli.cmd_apply(_apply_args("unit-ghost-overlay")) == 0
+    capsys.readouterr()
+
+    assert merged_file.exists(), (
+        "the overlay wiped a merge it never declared, and the contributors no "
+        "longer ship the path -- nothing provides it now")
+    assert merged_file.read_bytes() == b"XY"
+
+
 _A_BUILD = {"exe": "2.7.0.0", "app": "1.17.0", "regulation": "11701000",
             "steam_buildid": "23850278", "regulation_sha": "a" * 64}
 
@@ -2485,3 +2598,206 @@ def test_an_aborted_apply_prints_the_warnings_it_already_collected(
     out = capsys.readouterr().out
     assert "mod-a" in out
     assert "install failed" in out
+
+
+_UNSAFE_RENAME = (
+    '\n[[renames]]\n'
+    'mod = "mod-x"\n'
+    'paths = { "../escaped.bin" = "regulation.bin" }\n'
+)
+
+
+def _rebase_env_with_unsafe_rename(tmp_path, game_dir, monkeypatch):
+    """A stack that merges cleanly on the first apply, then grows a rename the
+    profile author got wrong — the refusal that fires after clear_merged has
+    already wiped the merged output."""
+    known = _rebase_env(tmp_path, game_dir, monkeypatch)
+    _write_profile(tmp_path / "profiles", "unit-rebase", _REGULATION_MERGE + _UNSAFE_RENAME)
+    return known
+
+
+def test_a_rename_refusal_leaves_no_state_claiming_the_merged_package(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """clear_merged() wipes the merged package, and apply_renames raised before
+    the handler that writes state opened. installed.json and erm-coop.me3 went
+    on naming a directory that was already gone, and every install this run
+    recorded was lost with it."""
+    from ermlib import conflicts
+
+    _rebase_env(tmp_path, tmp_game, monkeypatch)
+    assert cli.cmd_apply(_apply_args("unit-rebase")) == 0, capsys.readouterr().out
+    capsys.readouterr()
+    me3_profile = tmp_path / "tools" / "me3" / "erm-coop.me3"
+    assert conflicts.MERGED_ID in me3_profile.read_text()
+
+    # A rename the profile author got wrong, plus a version bump so the run's
+    # own install records are distinguishable from the first run's.
+    _write_profile(tmp_path / "profiles", "unit-rebase", _REGULATION_MERGE + _UNSAFE_RENAME)
+    lock_path = tmp_path / "mods.lock.toml"
+    lock_path.write_text(lock_path.read_text().replace(
+        '[mod-y]\nversion = "1.0"', '[mod-y]\nversion = "2.0"'))
+
+    with pytest.raises(ErmError, match="unsafe rename path"):
+        cli.cmd_apply(_apply_args("unit-rebase"))
+    capsys.readouterr()
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert conflicts.MERGED_ID not in state
+    assert conflicts.MERGED_ID not in me3_profile.read_text(), (
+        "erm-coop.me3 still names a merged package whose directory was wiped")
+    assert not (tmp_path / MERGED_REGULATION).exists()
+    assert state["mod-y"]["version"] == "2.0", (
+        "the installs this run made were never recorded")
+
+
+def test_an_os_error_during_the_prunes_still_records_what_was_installed(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # Renames and prunes move real files, so they can fail with ENOSPC/EACCES
+    # rather than a ConflictError. That is not an ErmError, so it walked out
+    # past the handler and left the same stale state behind.
+    from ermlib import conflicts
+
+    _rebase_env(tmp_path, tmp_game, monkeypatch)
+    assert cli.cmd_apply(_apply_args("unit-rebase")) == 0, capsys.readouterr().out
+    capsys.readouterr()
+
+    def _enospc(me3_dir, prunes):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(cli.conflicts, "apply_prunes", _enospc)
+
+    with pytest.raises(OSError):
+        cli.cmd_apply(_apply_args("unit-rebase"))
+    capsys.readouterr()
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert conflicts.MERGED_ID not in state
+    assert conflicts.MERGED_ID not in (
+        tmp_path / "tools" / "me3" / "erm-coop.me3").read_text()
+
+
+def test_an_abort_says_so_when_it_cannot_regenerate_the_me3_profile(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # The abort's own regeneration can fail (read-only tools/, ENOSPC), and it
+    # was swallowed whole: erm-coop.me3 kept naming the wiped merged package
+    # and nothing said so. The four other reconcile sites all warn.
+    _rebase_env_with_unsafe_rename(tmp_path, tmp_game, monkeypatch)
+
+    def _boom(state, me3_dir, game):
+        raise OSError(30, "Read-only file system")
+    monkeypatch.setattr(cli.me3profile, "reconcile", _boom)
+
+    with pytest.raises(ErmError, match="unsafe rename path"):
+        cli.cmd_apply(_apply_args("unit-rebase"))
+    out = capsys.readouterr().out
+
+    assert "could not regenerate the me3 profile" in out
+
+
+def test_apply_auto_fetch_truncated_download_warns_and_installs_present(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # A CDN closing mid-body raises http.client.IncompleteRead, which is not an
+    # ErmError — so it skipped the "warn and install what's already present"
+    # handler and aborted the whole apply with a traceback out of http/client.py.
+    import http.client
+
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+    _write_profile(tmp_path / "profiles", "partial",
+        '[[mods]]\n'
+        'id = "mod-a"\n'
+        'source = "github"\n'
+        'repo_id = 1\n'
+        'kind = "test"\n'
+        'install = "mods"\n'
+        '\n'
+        '[[mods]]\n'
+        'id = "mod-b"\n'
+        'source = "github"\n'
+        'repo_id = 2\n'
+        'kind = "test"\n'
+        'install = "mods"\n'
+    )
+    _seed_lock(tmp_path / "mods.lock.toml", {"mod-a": ("1.0", "mod-a.zip")})
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    _zip_with(vendor / "mod-a.zip", "a.dll")
+
+    def truncated(repo_id):
+        raise http.client.IncompleteRead(b"partial", 99999)
+    monkeypatch.setattr(cli.github, "latest_release", truncated)
+
+    rc = cli.cmd_apply(_apply_args("partial"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "auto-fetch incomplete" in out.lower()
+    assert (game_dir / "mods" / "a.dll").exists()
+
+
+def test_no_shipped_profile_calls_a_mod_manual_that_erm_installs_itself():
+    """me3 was install="manual" in one profile and install="me3" in three
+    others, so `erm apply seamless-randomizer` told the user to go install me3
+    by hand in the same run that installed the pinned me3 for them. Same
+    missed migration left the randomizer generator manual, which also skips
+    recording it — so the mutual-exclusion guard never saw it and `erm
+    uninstall` could not clean it up."""
+    from ermlib import manifest
+
+    modes = {}
+    for path in sorted((REPO / "profiles").glob("*.toml")):
+        for mod in manifest.load_profile(path.stem, base=REPO / "profiles")["mods"]:
+            modes.setdefault(mod["id"], set()).add(mod.get("install", "game"))
+
+    mixed = {mid: kinds for mid, kinds in modes.items()
+             if "manual" in kinds and kinds != {"manual"}}
+    assert not mixed, f"erm installs these itself elsewhere: {mixed}"
+
+
+def test_applying_the_randomizer_profile_never_points_at_me3_help(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    # The tree's last "install per me3.help". Following it drops an unpinned me3
+    # on the exact path erm writes the locked build to, after which doctor
+    # reports the launcher stale — the drift the pinned install exists to kill.
+    shutil.copytree(REPO / "profiles", tmp_path / "profiles")
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "mods.lock.toml").write_text("")
+    monkeypatch.setattr(cli, "_profile_needs_fetch", lambda profile, lock: False)
+
+    cli.cmd_apply(_apply_args("seamless-randomizer"))
+    out = capsys.readouterr().out
+
+    assert "me3.help" not in out
+
+
+def test_apply_refuses_an_install_mode_it_does_not_recognise(
+        tmp_path, monkeypatch, capsys, tmp_game):
+    """The mode chain used to end in the generic extract, so a mode nobody
+    handles -- a profile typo, or one deleted from the code while a profile
+    still names it -- silently unpacked the archive over Game/. Refusing is the
+    only safe default: the fall-through writes files nobody asked for."""
+    game_dir = tmp_game
+    monkeypatch.setattr(paths, "find_steam_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game_dir)
+    monkeypatch.chdir(tmp_path)
+
+    _seed_package_zip(tmp_path, "typo-mod", "should_not_land.dll", b"X")
+    profiles = tmp_path / "profiles"
+    _write_profile(profiles, "unit-badmode",
+        '[[mods]]\n'
+        'id = "typo-mod"\nsource = "nexus"\nnexus_id = 1\nkind = "cosmetic"\n'
+        'install = "me3package"\n')       # a real typo for "me3-package"
+
+    with pytest.raises(ErmError) as exc:
+        cli.cmd_apply(_apply_args("unit-badmode"))
+    capsys.readouterr()
+
+    assert "me3package" in str(exc.value), "the message must name the bad mode"
+    assert "me3-package" in str(exc.value), "and list the modes that do exist"
+    assert not (game_dir / "should_not_land.dll").exists(), (
+        "the unknown mode fell through to the generic extract and wrote to Game/")

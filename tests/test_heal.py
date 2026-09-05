@@ -2,17 +2,13 @@ import hashlib
 
 import pytest
 
-from ermlib import heal
-from ermlib.gamebuild import BuildId, GameBuildError
+from ermlib import gamebuild, heal
+from ermlib.formats import regulation
+from ermlib.gamebuild import GameBuildError
 from ermlib.heal import HealError
 from tests.test_doctor import _regulation_blob
-
-
-def _bid(**over):
-    base = dict(exe="2.7.0.0", app="1.17.0", regulation="11701000",
-                steam_buildid="23850278", regulation_sha="a" * 64)
-    base.update(over)
-    return BuildId(**base)
+from tests.test_merge import SP, _regulation
+from tests.build_fixtures import build_id
 
 
 def _sha(blob):
@@ -24,7 +20,7 @@ def _game_with_regulation(tmp_path, blob=b"the 1.17 regulation"):
     game = tmp_path / "Game"
     game.mkdir()
     (game / "regulation.bin").write_bytes(blob)
-    return game, _bid(regulation_sha=_sha(blob))
+    return game, build_id(regulation_sha=_sha(blob))
 
 
 def test_baseline_path_is_named_for_the_build(tmp_path):
@@ -36,7 +32,7 @@ def test_adopting_copies_the_games_regulation(tmp_path):
     game.mkdir()
     blob = b"the 1.17 regulation"
     (game / "regulation.bin").write_bytes(blob)
-    dest = heal.adopt_baseline(game, _bid(regulation_sha=_sha(blob)), tmp_path / "baselines")
+    dest = heal.adopt_baseline(game, build_id(regulation_sha=_sha(blob)), tmp_path / "baselines")
     assert dest.read_bytes() == b"the 1.17 regulation"
     assert dest.name == "regulation-11701000.bin"
 
@@ -51,10 +47,10 @@ def test_adopting_refuses_a_second_file_under_one_build_and_keeps_the_first(tmp_
     game.mkdir()
     (game / "regulation.bin").write_bytes(b"first")
     base = tmp_path / "baselines"
-    dest = heal.adopt_baseline(game, _bid(regulation_sha=_sha(b"first")), base)
+    dest = heal.adopt_baseline(game, build_id(regulation_sha=_sha(b"first")), base)
     (game / "regulation.bin").write_bytes(b"second")
     with pytest.raises(HealError, match="not the regulation"):
-        heal.adopt_baseline(game, _bid(regulation_sha=_sha(b"second")), base)
+        heal.adopt_baseline(game, build_id(regulation_sha=_sha(b"second")), base)
     assert dest.read_bytes() == b"first"
 
 
@@ -64,9 +60,9 @@ def test_old_baselines_are_kept_so_a_rebuild_stays_reproducible(tmp_path):
     base = tmp_path / "baselines"
     (game / "regulation.bin").write_bytes(b"1.16")
     heal.adopt_baseline(
-        game, _bid(regulation="11601000", regulation_sha=_sha(b"1.16")), base)
+        game, build_id(regulation="11601000", regulation_sha=_sha(b"1.16")), base)
     (game / "regulation.bin").write_bytes(b"1.17")
-    heal.adopt_baseline(game, _bid(regulation_sha=_sha(b"1.17")), base)
+    heal.adopt_baseline(game, build_id(regulation_sha=_sha(b"1.17")), base)
     assert {p.name for p in base.iterdir()} == {
         "regulation-11601000.bin", "regulation-11701000.bin"}
 
@@ -75,7 +71,7 @@ def test_a_missing_game_regulation_raises(tmp_path):
     game = tmp_path / "Game"
     game.mkdir()
     with pytest.raises(HealError, match="regulation.bin"):
-        heal.adopt_baseline(game, _bid(), tmp_path / "baselines")
+        heal.adopt_baseline(game, build_id(), tmp_path / "baselines")
 
 
 def test_adopting_refuses_when_the_file_changed_since_it_was_identified(tmp_path):
@@ -86,7 +82,7 @@ def test_adopting_refuses_when_the_file_changed_since_it_was_identified(tmp_path
     game.mkdir()
     (game / "regulation.bin").write_bytes(b"not what was identified")
     with pytest.raises(HealError, match="changed between planning and adopting"):
-        heal.adopt_baseline(game, _bid(regulation_sha="a" * 64), tmp_path / "baselines")
+        heal.adopt_baseline(game, build_id(regulation_sha="a" * 64), tmp_path / "baselines")
 
 
 def test_adopting_accepts_the_file_it_was_identified_from(tmp_path):
@@ -103,7 +99,7 @@ def test_an_already_adopted_baseline_is_returned_without_reading_the_install(tmp
     base = tmp_path / "baselines"
     base.mkdir()
     (base / "regulation-11701000.bin").write_bytes(b"already here")
-    dest = heal.adopt_baseline(game, _bid(regulation_sha=_sha(b"already here")), base)
+    dest = heal.adopt_baseline(game, build_id(regulation_sha=_sha(b"already here")), base)
     assert dest.read_bytes() == b"already here"
 
 
@@ -252,8 +248,8 @@ def test_verify_passes_when_every_authored_row_survived(monkeypatch):
     merged = {"A.param": {1: b"MOD", 2: b"v", 3: b"new"}}
     blobs = {b"base": base, b"mod": mod, b"merged": merged}
     monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
-    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
-    assert heal.verify_rebase(b"merged", b"base", [("m", b"mod")], _bid()) == ()
+    monkeypatch.setattr(heal, "regulation_facts", lambda b: ("11701000", blobs[b]))
+    assert heal.verify_rebase(b"merged", b"base", [("m", b"mod")], build_id()) == ()
 
 
 def test_verify_catches_an_authored_row_lost_in_the_rebase(monkeypatch):
@@ -262,8 +258,8 @@ def test_verify_catches_an_authored_row_lost_in_the_rebase(monkeypatch):
     merged = {"A.param": {1: b"v"}}          # mod's row silently reverted
     blobs = {b"base": base, b"mod": mod, b"merged": merged}
     monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
-    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
-    problems = heal.verify_rebase(b"merged", b"base", [("m", b"mod")], _bid())
+    monkeypatch.setattr(heal, "regulation_facts", lambda b: ("11701000", blobs[b]))
+    problems = heal.verify_rebase(b"merged", b"base", [("m", b"mod")], build_id())
     assert len(problems) == 1
     assert "A.param" in problems[0] and "row 1" in problems[0]
 
@@ -274,8 +270,8 @@ def test_verify_ignores_rows_a_mod_did_not_author(monkeypatch):
     merged = {"A.param": {}}                 # dropped, but nobody authored it
     blobs = {b"base": base, b"mod": mod, b"merged": merged}
     monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
-    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
-    assert heal.verify_rebase(b"merged", b"base", [("m", b"mod")], _bid()) == ()
+    monkeypatch.setattr(heal, "regulation_facts", lambda b: ("11701000", blobs[b]))
+    assert heal.verify_rebase(b"merged", b"base", [("m", b"mod")], build_id()) == ()
 
 
 def test_verify_does_not_flag_a_row_two_mods_both_authored(monkeypatch):
@@ -286,15 +282,15 @@ def test_verify_does_not_flag_a_row_two_mods_both_authored(monkeypatch):
     blobs = {b"base": base, b"one": {"A.param": {1: b"ONE"}},
              b"two": {"A.param": {1: b"TWO"}}, b"merged": merged}
     monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
-    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
+    monkeypatch.setattr(heal, "regulation_facts", lambda b: ("11701000", blobs[b]))
     assert heal.verify_rebase(b"merged", b"base",
-                              [("one", b"one"), ("two", b"two")], _bid()) == ()
+                              [("one", b"one"), ("two", b"two")], build_id()) == ()
 
 
 def test_verify_requires_the_merged_output_to_claim_the_installed_build(monkeypatch):
     monkeypatch.setattr(heal, "rows_by_table", lambda b: {})
-    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11601000")
-    problems = heal.verify_rebase(b"merged", b"base", [], _bid())
+    monkeypatch.setattr(heal, "regulation_facts", lambda b: ("11601000", {}))
+    problems = heal.verify_rebase(b"merged", b"base", [], build_id())
     assert any("11601000" in p and "11701000" in p for p in problems)
 
 
@@ -306,8 +302,8 @@ def test_verify_keeps_rows_the_new_baseline_added(monkeypatch):
     merged = {"A.param": {1: b"MOD"}}        # base's new row went missing
     blobs = {b"base": base, b"mod": mod, b"merged": merged}
     monkeypatch.setattr(heal, "rows_by_table", lambda b: blobs[b])
-    monkeypatch.setattr(heal, "read_regulation_version", lambda b: "11701000")
-    problems = heal.verify_rebase(b"merged", b"base", [("m", b"mod")], _bid())
+    monkeypatch.setattr(heal, "regulation_facts", lambda b: ("11701000", blobs[b]))
+    problems = heal.verify_rebase(b"merged", b"base", [("m", b"mod")], build_id())
     assert any("99" in p for p in problems)
 
 
@@ -316,55 +312,55 @@ def _kinds(actions):
 
 
 def test_no_drift_plans_nothing():
-    assert heal.plan_heal(_bid(), _bid()) == ()
+    assert heal.plan_heal(build_id(), build_id()) == ()
 
 
 def test_an_unstamped_stack_plans_nothing():
-    assert heal.plan_heal(None, _bid()) == ()
+    assert heal.plan_heal(None, build_id()) == ()
 
 
 def test_a_patch_plans_the_full_rebase_in_order():
-    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
-                   steam_buildid="1", regulation_sha="b" * 64)
-    kinds = _kinds(heal.plan_heal(stamped, _bid()))
+    stamped = build_id(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                       steam_buildid="1", regulation_sha="b" * 64)
+    kinds = _kinds(heal.plan_heal(stamped, build_id()))
     assert kinds == ["adopt-baseline", "repin", "gate", "rebuild", "verify", "stamp"]
 
 
 def test_the_gate_runs_after_fetching_not_before():
     # An updated mod may be the thing that fixes a layout mismatch, so the
     # question is whether THESE files merge onto THIS baseline.
-    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
-                   steam_buildid="1", regulation_sha="b" * 64)
-    kinds = _kinds(heal.plan_heal(stamped, _bid()))
+    stamped = build_id(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                       steam_buildid="1", regulation_sha="b" * 64)
+    kinds = _kinds(heal.plan_heal(stamped, build_id()))
     assert kinds.index("repin") < kinds.index("gate")
 
 
 def test_a_repackaged_build_restamps_without_rebuilding():
-    stamped = _bid(exe="2.6.2.0", steam_buildid="1")
-    kinds = _kinds(heal.plan_heal(stamped, _bid()))
+    stamped = build_id(exe="2.6.2.0", steam_buildid="1")
+    kinds = _kinds(heal.plan_heal(stamped, build_id()))
     assert "rebuild" not in kinds
     assert kinds[-1] == "stamp"
 
 
 def test_a_tampered_install_refuses_and_plans_nothing_else():
-    stamped = _bid(regulation_sha="b" * 64)
-    actions = heal.plan_heal(stamped, _bid())
+    stamped = build_id(regulation_sha="b" * 64)
+    actions = heal.plan_heal(stamped, build_id())
     assert _kinds(actions) == ["refuse"]
     assert "Verify integrity" in actions[0].detail
 
 
 def test_a_stale_launcher_adds_a_reharden_step():
-    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
-                   steam_buildid="1", regulation_sha="b" * 64)
-    kinds = _kinds(heal.plan_heal(stamped, _bid(), launcher_stale=True))
+    stamped = build_id(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                       steam_buildid="1", regulation_sha="b" * 64)
+    kinds = _kinds(heal.plan_heal(stamped, build_id(), launcher_stale=True))
     assert "reharden" in kinds
     assert kinds.index("reharden") < kinds.index("stamp")
 
 
 def test_no_reharden_omits_it():
-    stamped = _bid(exe="2.6.2.0", app="1.16.0", regulation="11601000",
-                   steam_buildid="1", regulation_sha="b" * 64)
-    kinds = _kinds(heal.plan_heal(stamped, _bid(), reharden=False, launcher_stale=True))
+    stamped = build_id(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                       steam_buildid="1", regulation_sha="b" * 64)
+    kinds = _kinds(heal.plan_heal(stamped, build_id(), reharden=False, launcher_stale=True))
     assert "reharden" not in kinds
 
 
@@ -372,18 +368,18 @@ def test_prepare_rebase_is_empty_when_the_ancestor_is_the_installed_build(tmp_pa
     # The mods branched from the build that is running, so there is nothing to
     # forward-port them onto.
     assert heal.prepare_rebase(
-        tmp_path, _bid(), _regulation_blob("11701000"), [("clevers", b"mod")]) == {}
+        tmp_path, build_id(), _regulation_blob("11701000"), [("clevers", b"mod")]) == {}
 
 
 def test_prepare_rebase_is_empty_when_no_merge_declares_an_ancestor(tmp_path):
-    assert heal.prepare_rebase(tmp_path, _bid(), None, [("clevers", b"mod")]) == {}
+    assert heal.prepare_rebase(tmp_path, build_id(), None, [("clevers", b"mod")]) == {}
 
 
 def test_prepare_rebase_is_empty_when_no_mod_ships_a_regulation(tmp_path):
     # An overlay profile whose packages carry no regulation.bin has nothing to
     # gate and nothing to fold, however far the game has moved.
     assert heal.prepare_rebase(
-        tmp_path, _bid(), _regulation_blob("11611000"), []) == {}
+        tmp_path, build_id(), _regulation_blob("11611000"), []) == {}
 
 
 def test_prepare_rebase_offers_the_adopted_baseline_for_an_older_ancestor(
@@ -415,7 +411,7 @@ def test_prepare_rebase_refuses_an_ancestor_it_cannot_read(tmp_path):
     # Silently skipping the rebase would leave the 1.16 merge mounted over a
     # 1.17 game, which is the state this whole path exists to prevent.
     with pytest.raises(GameBuildError):
-        heal.prepare_rebase(tmp_path, _bid(), b"not a regulation",
+        heal.prepare_rebase(tmp_path, build_id(), b"not a regulation",
                             [("clevers", b"mod")])
 
 
@@ -435,16 +431,62 @@ def test_a_stale_launcher_is_planned_even_when_the_build_has_not_moved():
     # hardened launcher is a build behind. Gating the reharden on drift means an
     # unstamped stack -- what a fresh install is -- drops a finding doctor
     # reports, and that launcher is the binary Steam actually runs.
-    assert _kinds(heal.plan_heal(None, _bid(), launcher_stale=True)) == ["reharden"]
+    assert _kinds(heal.plan_heal(None, build_id(), launcher_stale=True)) == ["reharden"]
 
 
 def test_a_stale_launcher_is_planned_on_a_stack_already_built_for_this_game():
-    assert _kinds(heal.plan_heal(_bid(), _bid(), launcher_stale=True)) == ["reharden"]
+    assert _kinds(heal.plan_heal(build_id(), build_id(), launcher_stale=True)) == ["reharden"]
 
 
 def test_a_current_launcher_on_an_unchanged_build_still_plans_nothing():
-    assert heal.plan_heal(_bid(), _bid(), launcher_stale=False) == ()
+    assert heal.plan_heal(build_id(), build_id(), launcher_stale=False) == ()
 
 
 def test_no_reharden_still_omits_it_when_nothing_else_is_planned():
-    assert heal.plan_heal(None, _bid(), reharden=False, launcher_stale=True) == ()
+    assert heal.plan_heal(None, build_id(), reharden=False, launcher_stale=True) == ()
+
+
+# --- how often a regulation gets decrypted ---
+
+
+def _refuse_to_decrypt(monkeypatch):
+    def boom(blob):
+        raise AssertionError("decrypted a regulation whose build was already known")
+
+    monkeypatch.setattr(regulation, "unpack", boom)
+
+
+def _counting_unpack(monkeypatch):
+    """Record every blob handed to regulation.unpack, and keep unpacking it."""
+    seen = []
+    real = regulation.unpack
+
+    def spy(blob):
+        seen.append(bytes(blob))
+        return real(blob)
+
+    monkeypatch.setattr(regulation, "unpack", spy)
+    return seen
+
+
+def test_prepare_rebase_takes_the_ancestors_build_from_the_stamp_cache(
+        tmp_path, monkeypatch):
+    """The declared ancestor is a fixed file, so its build stamp is the same on
+    every apply -- the same trade status and doctor already make, and five
+    seconds of AES off the front of every apply."""
+    ancestor = _regulation_blob("11701000")
+    gamebuild.cached_regulation_version(ancestor)
+    _refuse_to_decrypt(monkeypatch)
+    assert heal.prepare_rebase(
+        tmp_path, build_id(), ancestor, [("clevers", b"mod")]) == {}
+
+
+def test_verify_decrypts_the_merged_regulation_only_once(monkeypatch):
+    """The build stamp and the rows both come out of the same decrypt: a
+    freshly merged blob is never a cache hit, so asking for it twice is five
+    seconds nobody gets back."""
+    merged = _regulation({1: (SP, {1: b"\x11" * 8}, 8)}, version=b"11701000")
+    baseline = _regulation({1: (SP, {1: b"\x00" * 8}, 8)}, version=b"11701000")
+    seen = _counting_unpack(monkeypatch)
+    assert heal.verify_rebase(merged, baseline, [], build_id()) == ()
+    assert sorted(seen) == sorted(set(seen))

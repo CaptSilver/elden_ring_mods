@@ -169,7 +169,26 @@ def _rows(blob, eid):
     return {r.id: r.data for r in param.read(entry.data).rows}
 
 
+def _entry(blob, eid):
+    """One regulation entry's raw bytes, for assertions that must not go
+    through the param reader."""
+    return {e.id: e.data for e in regulation.entries(blob)}[eid]
+
+
 SP = b"SP_EFFECT_PARAM_ST"
+
+
+def _dup_regulation(params, version=b"07D7R6\x00\x00"):
+    """Like _regulation, but rows are an ordered (id, bytes) list rather than a
+    dict, so one param can carry an id twice. Shipped params do:
+    RandomAppearParam has 5,322 rows for 5,296 unique ids."""
+    entries = []
+    for eid, (ptype, rows, stride) in sorted(params.items()):
+        data = iter([d for _, d in rows])
+        blob = make_param([rid for rid, _ in rows], stride=stride, param_type=ptype,
+                          fill=lambda rid, data=data: next(data))
+        entries.append((eid, f"{ptype.decode()}.param", blob))
+    return regulation.pack(_synthetic_bnd4(entries, version=version), bytes(16))
 
 
 def test_param_rows_takes_the_other_sides_edit_when_base_matches_vanilla():
@@ -362,6 +381,69 @@ def test_param_rows_refuses_when_the_other_side_dropped_a_row_the_base_edited():
         merge.param_rows(base, other, van)
 
 
+def test_param_rows_keeps_a_shared_drop_when_it_is_the_other_that_edited():
+    """Neither side has the row any more, so there is nothing to reconcile --
+    they agree. esd-3way and fmg-3way both treat a shared deletion that way,
+    and calling it a conflict stops the whole apply over an agreement."""
+    van = _regulation({1: (SP, {1: b"\x00" * 8, 5: b"\x55" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x00" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\xbb" * 8}, 8)})
+    out = _rows(merge.param_rows(base, other, van), 1)
+    assert 5 not in out
+    assert out[1] == b"\xbb" * 8
+
+
+def test_param_rows_keeps_a_shared_drop_when_it_is_the_base_that_edited():
+    """Mirror of the above with the surviving edit on the other side of the
+    fold -- the shared deletion must not become a conflict either way round."""
+    van = _regulation({1: (SP, {1: b"\x00" * 8, 5: b"\x55" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xaa" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x00" * 8}, 8)})
+    out = _rows(merge.param_rows(base, other, van), 1)
+    assert 5 not in out
+    assert out[1] == b"\xaa" * 8
+
+
+def test_param_rows_names_the_entries_the_three_regulations_disagree_on():
+    """The likeliest way to reach this is a game patch adding a param, and
+    counts alone leave the user with nothing to act on -- they can't tell
+    whether to update the mod, re-pin the profile's vanilla, or file a bug."""
+    van = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x01" * 8}, 8),
+                        99: (b"NEW_PARAM_ST", {1: b"\x02" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x02" * 8}, 8)})
+    with pytest.raises(merge.MergeError, match="entry 99"):
+        merge.param_rows(base, other, van)
+
+
+def test_param_rows_drops_a_row_only_the_other_side_deleted():
+    """The one arm of this merge that removes content. Base still matches
+    vanilla on that row, so the other side's deletion is the only edit and it
+    has to reach the output."""
+    van = _regulation({1: (SP, {1: b"\x11" * 8, 2: b"\x22" * 8, 3: b"\x33" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x11" * 8, 2: b"\x22" * 8, 3: b"\x33" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x11" * 8, 3: b"\x33" * 8}, 8)})
+    out = _rows(merge.param_rows(base, other, van), 1)
+    assert 2 not in out
+    assert out[1] == b"\x11" * 8
+    assert out[3] == b"\x33" * 8
+
+
+def test_param_rows_deletes_and_inserts_in_the_same_pass():
+    """A shrink and a grow in one param means the row table, the row data and
+    the strings block all move by a net offset neither edit alone produces --
+    and the result still has to reparse."""
+    from ermlib.formats import param
+    van = _regulation({1: (SP, {1: b"\x11" * 8, 2: b"\x22" * 8, 3: b"\x33" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x11" * 8, 2: b"\x22" * 8, 3: b"\x33" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x11" * 8, 3: b"\x33" * 8, 99: b"\x99" * 8}, 8)})
+    merged = _entry(merge.param_rows(base, other, van), 1)
+    reparsed = param.read(merged)
+    assert [r.id for r in reparsed.rows] == [1, 3, 99]
+    assert reparsed.param_type == SP
+    assert param.write(reparsed) == merged
+
+
 def test_param_rows_output_is_a_loadable_regulation():
     van = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
     base = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
@@ -407,11 +489,39 @@ def test_param_rows_still_refuses_when_both_change_the_same_byte():
         merge.param_rows(base, other, van)
 
 
-def test_param_rows_accepts_both_sides_making_the_identical_field_edit():
+def test_param_rows_accepts_both_sides_making_the_identical_edit():
+    """NoFallDead's regulation is built on top of Clever's, so both carry the
+    same added row. The shared edit has to sit on a row vanilla lacks for this
+    to pin anything: with an ancestor row present the byte merge reaches the
+    same answer on its own, and without the same-edit arm the added row has
+    nothing to locate against and the fold refuses outright."""
     van = _regulation({1: (SP, {5: bytes(8)}, 8)})
-    base = _regulation({1: (SP, {5: b"\xaa" + bytes(7)}, 8)})
-    other = _regulation({1: (SP, {5: b"\xaa" + bytes(7)}, 8)})
-    assert _rows(merge.param_rows(base, other, van), 1)[5] == b"\xaa" + bytes(7)
+    base = _regulation({1: (SP, {5: bytes(8), 900: b"\xaa" + bytes(7)}, 8)})
+    other = _regulation({1: (SP, {5: b"\xbb" + bytes(7), 900: b"\xaa" + bytes(7)}, 8)})
+    out = _rows(merge.param_rows(base, other, van), 1)
+    assert out[900] == b"\xaa" + bytes(7)
+    assert out[5] == b"\xbb" + bytes(7)
+
+
+def test_param_rows_trims_a_transplanted_row_to_the_bases_narrower_layout():
+    """Mirror of the non-padding refusal: where the excess past the base's
+    width really is padding, the row fits and the transplant goes through
+    rather than blocking the merge."""
+    van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x99" * 8 + bytes(4)}, 12)})
+    assert _rows(merge.param_rows(base, other, van), 1)[1] == b"\x99" * 8
+
+
+def test_param_rows_refuses_a_row_both_sides_changed_at_different_widths():
+    """Three versions of differing width give the byte merge nothing to line
+    up: zip() would stop at the shortest and drop the wider side's tail into
+    regulation.bin without a word."""
+    van = _regulation({1: (SP, {1: b"\xab" * 8, 2: b"\xcd" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x11" * 12, 2: b"\xcd" * 8 + bytes(4)}, 12)})
+    other = _regulation({1: (SP, {1: b"\x22" * 8, 2: b"\xcd" * 8}, 8)})
+    with pytest.raises(merge.MergeError, match="different widths"):
+        merge.param_rows(base, other, van)
 
 
 def test_param_rows_keeps_an_untouched_field_from_vanilla():
@@ -730,3 +840,127 @@ def test_tpf_union_preserves_the_order_and_flags_of_every_texture():
     assert [t.name for t in out] == ["A", "B", "C"]
     assert (out[0].format, out[0].mipmaps, out[0].flags1) == (102, 3, 1)
     assert (out[1].format, out[1].mipmaps, out[1].flags1) == (0, 1, 0)
+
+
+# --- params the reader refuses to parse ---
+
+
+def _refuse_param(monkeypatch, blobs):
+    """Make param.read refuse exactly these entry blobs.
+
+    Three of vanilla's own entries really are unreadable until a tool re-saves
+    them: FromSoft stores a strings offset past the end of the file. Refusing
+    by blob rather than blanket-patching keeps the rest of the regulation (and
+    the test's own reads) parseable."""
+    from ermlib.formats import param
+    real, targets = param.read, set(blobs)
+
+    def reader(blob):
+        if blob in targets:
+            raise param.ParamError("PARAM offsets fall outside the file")
+        return real(blob)
+    monkeypatch.setattr(param, "read", reader)
+
+
+def test_param_rows_takes_the_mods_table_whole_when_an_entry_will_not_parse(monkeypatch):
+    """Base still matches vanilla, so the mod's table is the only edit there
+    is and swapping the whole entry loses nothing. It is still a substitution
+    the apply report has to name -- three entries went through this on the
+    1.16-to-1.17 rebase without a word."""
+    van = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
+    base = van
+    other = _regulation({1: (SP, {1: b"\x02" * 8}, 8)})
+    _refuse_param(monkeypatch, [_entry(base, 1)])
+    notes = []
+    out = merge.param_rows(base, other, van, notes=notes)
+    assert _entry(out, 1) == _entry(other, 1)
+    assert notes == [merge.UnreadableParam(1)]
+
+
+def test_param_rows_refuses_an_unparseable_entry_both_sides_changed(monkeypatch):
+    """Neither side is vanilla, so there is a real edit on each and no way to
+    read either -- picking one silently is the data loss this whole strategy
+    exists to avoid."""
+    van = _regulation({1: (SP, {1: b"\x01" * 8}, 8)})
+    base = _regulation({1: (SP, {1: b"\x02" * 8}, 8)})
+    other = _regulation({1: (SP, {1: b"\x03" * 8}, 8)})
+    _refuse_param(monkeypatch, [_entry(base, 1)])
+    with pytest.raises(merge.MergeError, match="entry 1"):
+        merge.param_rows(base, other, van)
+
+
+def test_describe_note_renders_an_unreadable_param():
+    text = merge.describe_note(merge.UnreadableParam(30))
+    assert "30" in text and "mod" in text.lower()
+
+
+# --- params that carry the same row id twice ---
+
+
+def test_param_rows_refuses_a_duplicated_param_both_sides_changed():
+    """An id is the only handle this merge has on a row, and in these params it
+    doesn't name one. Keying rows by id would collapse the two copies last-wins
+    and the shadowed edit would compare equal to vanilla -- dropped with the
+    apply still reporting success."""
+    van = _dup_regulation({1: (SP, [(1, bytes(8)), (5, b"\x50" * 8), (5, b"\x51" * 8)], 8)})
+    base = _dup_regulation({1: (SP, [(1, b"\xaa" * 8), (5, b"\x50" * 8), (5, b"\x51" * 8)], 8)})
+    other = _dup_regulation({1: (SP, [(1, bytes(8)), (5, b"\x99" * 8), (5, b"\x51" * 8)], 8)})
+    with pytest.raises(merge.MergeError, match="more than once"):
+        merge.param_rows(base, other, van)
+
+
+def test_param_rows_keeps_the_base_when_a_duplicated_param_has_no_other_edit():
+    """The common shape: every mod ships this table row-for-row as vanilla, but
+    re-saved, so the entry blobs differ and the cheap skip can't fire. Nothing
+    to merge, and the base's own edit must survive."""
+    van = _dup_regulation({1: (SP, [(1, bytes(12)), (5, b"\x50" * 8 + bytes(4)),
+                                    (5, b"\x51" * 8 + bytes(4))], 12)})
+    base = _dup_regulation({1: (SP, [(1, b"\xaa" * 8 + bytes(4)), (5, b"\x50" * 8 + bytes(4)),
+                                     (5, b"\x51" * 8 + bytes(4))], 12)})
+    other = _dup_regulation({1: (SP, [(1, bytes(8)), (5, b"\x50" * 8), (5, b"\x51" * 8)], 8)})
+    out = merge.param_rows(base, other, van)
+    before = {e.id: e.data for e in regulation.entries(base)}
+    assert {e.id: e.data for e in regulation.entries(out)}[1] == before[1]
+
+
+def test_param_rows_takes_the_whole_duplicated_param_when_only_the_other_edited():
+    """Base still matches vanilla row for row, so it has nothing to lose and
+    the other side's table can be taken whole -- the one answer that needs no
+    row lookup."""
+    van = _dup_regulation({1: (SP, [(1, bytes(8)), (5, b"\x50" * 8), (5, b"\x51" * 8)], 8)})
+    base = van
+    other = _dup_regulation({1: (SP, [(1, bytes(8)), (5, b"\x99" * 8), (5, b"\x51" * 8)], 8)})
+    out = merge.param_rows(base, other, van)
+    assert ({e.id: e.data for e in regulation.entries(out)}[1]
+            == {e.id: e.data for e in regulation.entries(other)}[1])
+
+
+# --- how often a regulation gets decrypted ---
+
+
+def _counting_unpack(monkeypatch):
+    """Record every blob handed to regulation.unpack, and keep unpacking it."""
+    seen = []
+    real = regulation.unpack
+
+    def spy(blob):
+        seen.append(bytes(blob))
+        return real(blob)
+
+    monkeypatch.setattr(regulation, "unpack", spy)
+    return seen
+
+
+def test_param_rows_decrypts_each_regulation_only_once(monkeypatch):
+    """AES over the real 2 MB regulation costs about five seconds a pass, and
+    writing the result back used to re-decrypt the base the entry walk had
+    already unpacked -- twelve wasted passes over a six-mod fold."""
+    van = _regulation({1: (SP, {100: b"\x00" * 8}, 8)})
+    base = _regulation({1: (SP, {100: b"\x00" * 8, 5: b"\x11" * 8}, 8)})
+    other = _regulation({1: (SP, {100: b"\xff" * 8}, 8)})
+    seen = _counting_unpack(monkeypatch)
+    out = merge.param_rows(base, other, van)
+    assert sorted(seen) == sorted(set(seen))
+    rows = _rows(out, 1)
+    assert rows[100] == b"\xff" * 8       # the other side's edit still lands
+    assert rows[5] == b"\x11" * 8         # and the base's own row survives

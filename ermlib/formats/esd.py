@@ -74,7 +74,6 @@ class Esd(NamedTuple):
     groups: tuple
     name: str
     unk: tuple            # the four u32s at internal header +4, meaning unknown
-    pool_count: int       # as declared; vanilla over-declares, see the design doc
 
 
 def _u32(data, off):
@@ -97,7 +96,6 @@ def read(data):
     descriptors = [(_u32(data, 0x1C + i * 8), _u32(data, 0x20 + i * 8)) for i in range(6)]
     (_ih_size, _ih_n), (_g_size, group_count), (_s_size, state_count), \
         (_c_size, cond_count), (_cc_size, call_count), (_ca_size, arg_count) = descriptors
-    pool_count = _u32(data, 0x50)
     name_off, name_len = _u32(data, 0x54), _u32(data, 0x58)
 
     # Table bases, data-relative. The regions are contiguous in this order.
@@ -207,7 +205,7 @@ def read(data):
             out.append(CommandCall(bank, cid, read_args(a_off, a_count), idx))
         return tuple(out)
 
-    def read_conditions(pool_offset, count):
+    def read_conditions(pool_offset, count, stack=()):
         out = []
         # The pool is bounded against the buffer rather than against its
         # declared slot count: vanilla over-declares that, so trusting it would
@@ -221,6 +219,14 @@ def read(data):
             cond_rel = _i64(data, abs_(pool_offset + i * 8))
             idx = run_start("condition", cond_rel, conds_at, CONDITION_SIZE,
                             cond_count, 1)
+            # Ancestors only, never every row seen: shipped files reference one
+            # condition row from several pools, and _dedupe exists because of
+            # it. A row reached from its own subcondition pool is the case
+            # nothing else stops -- it recurses to CPython's frame limit and
+            # surfaces as a RecursionError instead of an EsdError.
+            if idx in stack:
+                raise EsdError(
+                    "condition cycle: " + " -> ".join(str(i) for i in stack + (idx,)))
             at = abs_(conds_at + idx * CONDITION_SIZE)
             target = _i64(data, at)
             pc_off, pc_count = _i64(data, at + 8), _i64(data, at + 16)
@@ -229,7 +235,7 @@ def read(data):
             out.append(Condition(
                 target,                       # still an offset; resolved below
                 read_calls(pc_off, pc_count),
-                read_conditions(sc_off, sc_count),
+                read_conditions(sc_off, sc_count, stack + (idx,)),
                 blob(ev_off, ev_len, "condition evaluator"),
                 idx, ev_off))
         return tuple(out)
@@ -281,7 +287,7 @@ def read(data):
         g._replace(states=tuple(
             s._replace(conditions=resolve(g.id, s.conditions)) for s in g.states))
         for g in groups)
-    return Esd(groups, name, unk, pool_count)
+    return Esd(groups, name, unk)
 
 
 def _ordered(records):

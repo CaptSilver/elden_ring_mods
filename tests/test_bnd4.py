@@ -1,11 +1,43 @@
 import struct
+import sys
 from pathlib import Path
 
 import pytest
 
 from ermlib.formats import bnd4, dcx
+from tests.conftest import REPO
 
-CLEVERS_MENU = Path("tools/me3/mods/clevers-moveset/msg/engus/menu_dlc02.msgbnd.dcx")
+# Anchored to the repo, not the CWD: relative paths make this quietly skip
+# whenever pytest is started from a subdirectory.
+REAL_ARCHIVE_CANDIDATES = [
+    REPO / "tools/me3/mods/clevers-moveset/chr/c0000.behbnd.dcx",
+    REPO / "tools/me3/mods/clevers-moveset/msg/engus/item_dlc02.msgbnd.dcx",
+    REPO / "tools/me3/mods/clevers-moveset/msg/engus/menu_dlc02.msgbnd.dcx",
+]
+
+
+def _no_kraken_reason():
+    """Why there is nothing to test against, in terms a maintainer can act on.
+
+    Built from REAL_ARCHIVE_CANDIDATES rather than written out beside it, so
+    reordering the candidates cannot leave the message pointing at files the
+    resolver never opens. A candidate that is present but not KRAK gets named
+    with the method it does carry -- "nothing on disk" and "erm rewrote this one
+    as DFLT when it merged the path" are different problems with different
+    fixes.
+    """
+    present = []
+    for candidate in REAL_ARCHIVE_CANDIDATES:
+        try:
+            method = candidate.read_bytes()[0x28:0x2C]
+        except OSError:
+            continue
+        present.append(f"{candidate} is DCX {method!r}")
+    reason = ("No Kraken archive found. Checked: "
+              + ", ".join(str(p) for p in REAL_ARCHIVE_CANDIDATES))
+    if present:
+        reason += ". Present but unusable: " + ", ".join(present)
+    return reason
 
 
 def _resolve_real_archive():
@@ -22,12 +54,7 @@ def _resolve_real_archive():
 
     Returns Path to the archive if found, else None.
     """
-    candidates = [
-        Path("tools/me3/mods/clevers-moveset/chr/c0000.behbnd.dcx"),
-        Path("tools/me3/mods/clevers-moveset/msg/engus/item_dlc02.msgbnd.dcx"),
-        Path("tools/me3/mods/clevers-moveset/msg/engus/menu_dlc02.msgbnd.dcx"),
-    ]
-    for candidate in candidates:
+    for candidate in REAL_ARCHIVE_CANDIDATES:
         try:
             if candidate.read_bytes()[0x28:0x2C] == dcx.KRAK:
                 return candidate
@@ -380,12 +407,7 @@ def test_identity_rebuild_of_a_real_msgbnd():
     explicitly so that degrades loudly instead of quietly."""
     archive = _resolve_real_archive()
     if not archive:
-        pytest.skip(
-            "No real archive found. Checked: "
-            "clevers-moveset/msg/engus/item_dlc02.msgbnd.dcx, "
-            "_merged/msg/engus/menu_dlc02.msgbnd.dcx, "
-            "clevers-moveset/msg/engus/menu_dlc02.msgbnd.dcx"
-        )
+        pytest.skip(_no_kraken_reason())
     raw_bytes = archive.read_bytes()
     method = raw_bytes[0x28:0x2C]
     assert method == dcx.KRAK, (
@@ -395,3 +417,44 @@ def test_identity_rebuild_of_a_real_msgbnd():
     )
     raw = dcx.read(raw_bytes)
     assert bnd4.rebuild(raw, {}) == raw
+
+
+def test_the_skip_reason_names_the_archives_the_resolver_opens(monkeypatch):
+    """When nothing on disk resolves, this reason is the only guidance a
+    maintainer gets about the project's one piece of real Kraken coverage, so
+    it has to name the paths the resolver actually opens. Hand-copying the list
+    beside the resolver is how it came to advertise a _merged/ archive that is
+    deliberately not a candidate -- a merged archive is rewritten DFLT, which is
+    the self-round-trip the KRAK assert exists to reject."""
+    monkeypatch.setattr(sys.modules[__name__], "_resolve_real_archive", lambda: None)
+    with pytest.raises(pytest.skip.Exception) as excinfo:
+        test_identity_rebuild_of_a_real_msgbnd()
+    reason = str(excinfo.value)
+    for candidate in REAL_ARCHIVE_CANDIDATES:
+        assert str(candidate) in reason, f"{candidate} is checked but unnamed"
+    assert "_merged/" not in reason, "names an archive the resolver never opens"
+
+
+def test_the_resolver_reads_the_candidates_the_reason_advertises(monkeypatch, tmp_path):
+    """The constant is the single source for both the search and the message.
+    Pinned so it cannot decay into a decorative list the resolver ignores."""
+    kraken = tmp_path / "kraken.dcx"
+    kraken.write_bytes(b"\x00" * 0x28 + dcx.KRAK + b"\x00" * 16)
+    monkeypatch.setattr(sys.modules[__name__], "REAL_ARCHIVE_CANDIDATES",
+                        [tmp_path / "absent.dcx", kraken])
+    assert _resolve_real_archive() == kraken
+    assert str(kraken) in _no_kraken_reason()
+
+
+def test_a_present_but_non_kraken_candidate_is_reported_as_present(monkeypatch, tmp_path):
+    """A candidate that is on disk but DFLT means erm rewrote it when it merged
+    the path -- a different problem from "nothing is installed", and a different
+    fix, so the reason has to tell the two apart."""
+    dflt = tmp_path / "rewritten.dcx"
+    dflt.write_bytes(b"\x00" * 0x28 + dcx.DFLT + b"\x00" * 16)
+    monkeypatch.setattr(sys.modules[__name__], "REAL_ARCHIVE_CANDIDATES",
+                        [tmp_path / "absent.dcx", dflt])
+    assert _resolve_real_archive() is None
+    reason = _no_kraken_reason()
+    assert f"{dflt} is DCX {dcx.DFLT!r}" in reason
+    assert str(tmp_path / "absent.dcx") not in reason.split("Present but unusable")[1]

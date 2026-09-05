@@ -8,12 +8,15 @@ from ermlib.formats.param import ParamError
 FORMAT_FLAGS = bytes.fromhex("00850700")
 
 
-def make_param(ids, stride=8, param_type=b"TEST_PARAM_ST", fill=None):
+def make_param(ids, stride=8, param_type=b"TEST_PARAM_ST", fill=None, tail=b""):
     """Build a synthetic PARAM with the layout Elden Ring actually uses:
-    header, 24-byte row table, fixed-stride row data, then one strings block."""
+    header, 24-byte row table, fixed-stride row data, then one strings block.
+
+    `tail` fills the region between the last row and the strings block, which
+    40 of the shipped params use to hold the head of their type name."""
     n = len(ids)
     data_off = 0x40 + n * 24
-    strings_off = data_off + n * stride
+    strings_off = data_off + n * stride + len(tail)
     strings = param_type + b"\x00\x00\x00\x00\x00"
     name_off = strings_off + len(param_type)      # the shared terminator
 
@@ -28,7 +31,7 @@ def make_param(ids, stride=8, param_type=b"TEST_PARAM_ST", fill=None):
     for i, rid in enumerate(ids):
         table += struct.pack("<iIqq", rid, 0, data_off + i * stride, name_off)
     body = b"".join((fill(rid) if fill else bytes([rid & 0xFF]) * stride) for rid in ids)
-    return bytes(header) + bytes(table) + body + strings
+    return bytes(header) + bytes(table) + body + tail + strings
 
 
 def test_read_exposes_ids_stride_and_row_data():
@@ -189,16 +192,83 @@ def test_rejects_a_truncated_param():
         param.read(blob[:0x30])
 
 
+def test_round_trip_preserves_the_bytes_between_the_last_row_and_the_strings():
+    """40 of the params in a real regulation keep the head of their type name
+    there, so a writer that dropped or zero-filled the region would strip those
+    bytes out of every one of them."""
+    blob = make_param([1, 2], tail=b"ASSET_MA")
+    p = param.read(blob)
+    assert p.tail == b"ASSET_MA"
+    assert param.write(p) == blob
+
+
+def test_write_refuses_to_move_a_param_type_that_starts_before_the_strings():
+    """50 shipped params keep their type name straddling the strings boundary.
+    How far the leading part would move is never measured, so a row-count change
+    that shifts the block has to be refused instead of guessed at."""
+    blob = bytearray(make_param([1, 2], tail=b"TYPE"))
+    strings_off, = struct.unpack_from("<I", blob, 0x00)
+    struct.pack_into("<q", blob, 0x10, strings_off - 4)
+    p = param.read(bytes(blob))
+    assert param.write(p) == bytes(blob)        # an unchanged row count is fine
+    with pytest.raises(ParamError, match="param type string sits before"):
+        param.write(param.patch_rows(p, insert={3: b"\x03" * 8}))
+
+
+def test_rejects_a_row_offset_that_lands_before_the_row_data_section():
+    """A row-data offset below data_off slices out of the header or, when it is
+    negative, out of the file's tail — Python counts a negative index from the
+    end instead of raising, so the ascending and overrun checks both pass and
+    the caller gets fabricated row bytes stamped into a merged regulation."""
+    blob = bytearray(make_param([1, 2]))
+    for i, off in enumerate((-32, -24)):
+        struct.pack_into("<q", blob, 0x40 + i * 24 + 8, off)
+    with pytest.raises(ParamError, match="precedes the row-data section"):
+        param.read(bytes(blob))
+
+
+def test_rejects_duplicate_row_offsets_that_derive_a_zero_stride():
+    """Two rows pointing at the same offset are ascending (sorted() permits
+    equals) and sit inside the file, but the only gap between them is 0, so
+    every row would read back as empty bytes."""
+    blob = bytearray(make_param([1, 2]))
+    first, = struct.unpack_from("<q", blob, 0x40 + 8)
+    struct.pack_into("<q", blob, 0x40 + 24 + 8, first)
+    with pytest.raises(ParamError, match="stride"):
+        param.read(bytes(blob))
+
+
+def test_rejects_a_single_row_whose_offset_sits_past_the_strings_block():
+    """With one row the stride is the distance to the strings block, so an
+    offset past it derives a negative width — which slips under the overrun
+    check by construction and hands back an empty row."""
+    blob = bytearray(make_param([7], stride=64))
+    strings_off, = struct.unpack_from("<I", blob, 0x00)
+    struct.pack_into("<q", blob, 0x40 + 8, strings_off + 8)
+    with pytest.raises(ParamError, match="stride"):
+        param.read(bytes(blob))
+
+
 # --- integration: real game data, skipped when it isn't on this machine ---
 
-REGULATION_KEY = bytes.fromhex(
-    "99BFFC366A6BC8C6F5827D093602D676C42892A01C207FB024D3AF4E493FEF99")
+def test_the_regulation_key_is_the_one_the_retail_game_ships():
+    """The fixture below is the only thing that decrypts a real regulation.bin,
+    and it skips on a machine without the game, so nothing else would notice a
+    mistyped digit in a constant that never legitimately changes."""
+    import hashlib
+
+    from ermlib.formats import regulation
+    assert hashlib.sha256(regulation.KEY).hexdigest() == (
+        "cb349d15a6492969e3c801dbf4d60c721e9c58abd4b40cfc5b87aff253d68c72")
 
 
 def _regulation_params(path):
-    from ermlib.formats import aes, bnd4, dcx
-    raw = path.read_bytes()
-    return bnd4.read(dcx.read(aes.decrypt_cbc(REGULATION_KEY, raw[:16], raw[16:])))
+    """Go through regulation.entries rather than re-deriving the decrypt here:
+    a private copy of the key and the unwrap steps agrees with itself whatever
+    the shipping module says, which leaves regulation.KEY -- the key behind
+    every merge, heal and rebase -- with nothing testing it."""
+    from ermlib.formats import regulation
+    return regulation.entries(path.read_bytes())
 
 
 @pytest.fixture(scope="module")

@@ -1,7 +1,6 @@
 import os
 import pytest
 from ermlib.paths import (
-    same_location,
     find_game_dir,
     find_prefix,
     find_save_dir,
@@ -55,17 +54,6 @@ def test_is_safe_relpath():
     assert is_safe_relpath("/etc/x") is False        # absolute
     assert is_safe_relpath("../x") is False           # leading traversal
     assert is_safe_relpath("a/../../x") is False       # embedded traversal
-
-
-def test_same_location_uses_inode(tmp_path):
-    a = tmp_path / "a"
-    a.write_text("x")
-    link = tmp_path / "b"
-    os.symlink(a, link)
-    assert same_location(a, link) is True
-    c = tmp_path / "c"
-    c.write_text("x")
-    assert same_location(a, c) is False
 
 
 def test_find_game_dir_raises_when_missing(tmp_path):

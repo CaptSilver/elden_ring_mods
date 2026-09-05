@@ -182,14 +182,14 @@ def _ctypes_libzstd(_unused=None):
     return decompress, compress, _LibZstdError
 
 
-# Tried in order. The stdlib module is first because it needs no install; the
-# other two are ordinary pip packages and exist for interpreters older than 3.14,
-# which is what SteamOS ships. All three wrap libzstd and emit byte-identical
-# output for the same parameters, verified against the real payload — which
-# matters because co-op partners have to end up with the same regulation.bin.
-# other two are ordinary pip packages, and the ctypes one needs nothing at all
-# beyond the shared library any system with the zstd tool already has -- which is
-# what makes erm work on SteamOS, where there is no pip and no Python 3.14.
+# Tried in order, cheapest install first: the stdlib module (3.14+) needs
+# nothing at all, then the system libzstd through ctypes, which needs only the
+# shared library any box with the zstd tool already has — that one is what makes
+# erm work on SteamOS, where there is no pip and no Python 3.14 — and the pip
+# packages last. They all wrap libzstd: whichever ones are installed here are
+# checked against each other for byte-identical output, and the frame digest is
+# pinned outright, because co-op partners have to end up with the same
+# regulation.bin.
 _BACKENDS = (("compression.zstd", _stdlib_zstd), (None, _ctypes_libzstd),
              ("pyzstd", _pyzstd), ("zstandard", _zstandard))
 
@@ -229,10 +229,23 @@ def read(data):
         raise DcxError(
             f"DCX is truncated: header claims {compressed} compressed bytes, "
             f"file holds {len(body)}")
+    # ooz.decompress refuses this field on its own, but two of the four zstd
+    # backends size their output buffer from it too, and the length check after
+    # decompression comes far too late to stop a 4 GB allocation. Gate it once,
+    # here, so every method is covered rather than only Kraken.
+    if uncompressed > ooz.MAX_UNCOMPRESSED_SIZE:
+        raise DcxError(
+            f"refusing to allocate {uncompressed} bytes for a DCX payload — "
+            f"exceeds the {ooz.MAX_UNCOMPRESSED_SIZE}-byte cap")
     if method == KRAK:
         return ooz.decompress(body, uncompressed)
     if method == DFLT:
-        out = zlib.decompress(body)
+        try:
+            out = zlib.decompress(body)
+        except zlib.error as exc:
+            # Keep the module's error contract: callers catch DcxError, and a
+            # corrupt body is a malformed container, not a programming fault.
+            raise DcxError(f"DFLT body could not be decompressed: {exc}") from exc
         if len(out) != uncompressed:
             raise DcxError(
                 f"DFLT payload is {len(out)} bytes, header claims {uncompressed}")

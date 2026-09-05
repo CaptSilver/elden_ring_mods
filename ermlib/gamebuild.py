@@ -77,12 +77,25 @@ def app_version(regver):
     return f"{regver[0]}.{int(regver[1:3])}.{regver[3]}"
 
 
-def read_regulation_version(blob):
-    """The 8-byte ASCII build stamp in a regulation.bin's BND4 header."""
+def unpack_regulation(blob):
+    """The decrypted BND4 payload of a regulation.bin.
+
+    Wrapped so a file that is not one fails as a build we can't identify,
+    rather than as a stray decompression error from two layers down.
+    """
     try:
-        payload = regulation.unpack(blob)
+        return regulation.unpack(blob)
     except (ErmError, ValueError, struct.error) as exc:
         raise GameBuildError(f"can't read regulation.bin: {exc}") from exc
+
+
+def payload_regulation_version(payload):
+    """The build stamp in an already-decrypted regulation payload.
+
+    Split from read_regulation_version so a caller that has unpacked the file
+    for another reason -- heal, reading the merged output's rows -- doesn't
+    pay a second AES pass over 2 MB to learn eight bytes.
+    """
     # A wrong key or a partial decrypt still yields bytes. Without these two
     # checks the stamp slice comes back as whatever happened to sit there and
     # the run fails much later, in app_version, blaming the wrong thing.
@@ -99,6 +112,11 @@ def read_regulation_version(blob):
     except UnicodeDecodeError as exc:
         raise GameBuildError(
             f"regulation version field is not ASCII: {raw!r}") from exc
+
+
+def read_regulation_version(blob):
+    """The 8-byte ASCII build stamp in a regulation.bin's BND4 header."""
+    return payload_regulation_version(unpack_regulation(blob))
 
 
 # Decrypting the ~1.9 MB regulation in pure Python costs about five seconds,

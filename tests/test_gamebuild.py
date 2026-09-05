@@ -1,8 +1,11 @@
+import hashlib
 import struct
+
 import pytest
 
 from ermlib import gamebuild
 from ermlib.gamebuild import GameBuildError
+from tests.build_fixtures import build_id
 
 
 def _fake_exe(major, minor, patch, build, prefix=b"MZ" + b"\x00" * 64):
@@ -176,16 +179,6 @@ def test_identify_reads_the_stamp_through_the_cache(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-from ermlib.gamebuild import BuildId
-
-
-def _build(**over):
-    base = dict(exe="2.7.0.0", app="1.17.0", regulation="11701000",
-                steam_buildid="23850278", regulation_sha="a" * 64)
-    base.update(over)
-    return BuildId(**base)
-
-
 def test_identify_assembles_from_all_three_sources(tmp_path, monkeypatch):
     game = tmp_path / "Game"
     game.mkdir()
@@ -201,7 +194,10 @@ def test_identify_assembles_from_all_three_sources(tmp_path, monkeypatch):
     assert got.app == "1.17.0"
     assert got.regulation == "11701000"
     assert got.steam_buildid == "23850278"
-    assert len(got.regulation_sha) == 64
+    # The digest must be over regulation.bin's own bytes: it is half of what
+    # tells a tampered install from an unchanged one, and a length check alone
+    # would accept a hash of the exe, or of the path.
+    assert got.regulation_sha == hashlib.sha256(b"encrypted").hexdigest()
 
 
 def test_identify_refuses_when_steam_has_no_buildid(tmp_path, monkeypatch):
@@ -220,50 +216,77 @@ def test_identify_refuses_when_steam_has_no_buildid(tmp_path, monkeypatch):
 
 
 def test_drift_is_empty_when_nothing_moved():
-    assert gamebuild.drift(_build(), _build()) == ()
+    assert gamebuild.drift(build_id(), build_id()) == ()
+
+
+def test_build_id_requires_every_identity_field():
+    # classify() keys on the three identity sources disagreeing, so a defaulted
+    # field would let a caller construct a half-populated identity and have the
+    # placeholder read as agreement. Test convenience lives in build_id().
+    assert gamebuild.BuildId._field_defaults == {}
+    assert set(build_id()._asdict()) == set(gamebuild.BuildId._fields)
 
 
 def test_drift_names_every_field_that_moved():
-    stamped = _build(exe="2.6.2.0", app="1.16.0", regulation="11601000",
-                     steam_buildid="1", regulation_sha="b" * 64)
-    moved = {c.field for c in gamebuild.drift(stamped, _build())}
+    stamped = build_id(exe="2.6.2.0", app="1.16.0", regulation="11601000",
+                       steam_buildid="1", regulation_sha="b" * 64)
+    moved = {c.field for c in gamebuild.drift(stamped, build_id())}
     assert moved == {"exe", "app", "regulation", "steam_buildid", "regulation_sha"}
 
 
 def test_drift_against_an_unstamped_stack_is_empty():
     # A stack that was never stamped isn't "drifted" -- it's unknown. Callers
     # decide what to do; drift must not invent five changes out of nothing.
-    assert gamebuild.drift(None, _build()) == ()
+    assert gamebuild.drift(None, build_id()) == ()
 
 
 def test_classify_unchanged():
-    assert gamebuild.classify(_build(), _build()) == gamebuild.UNCHANGED
+    assert gamebuild.classify(build_id(), build_id()) == gamebuild.UNCHANGED
 
 
 def test_classify_patched_when_exe_and_regulation_move_together():
-    stamped = _build(exe="2.6.2.0", regulation="11601000",
-                     steam_buildid="1", regulation_sha="b" * 64)
-    assert gamebuild.classify(stamped, _build()) == gamebuild.PATCHED
+    stamped = build_id(exe="2.6.2.0", regulation="11601000",
+                       steam_buildid="1", regulation_sha="b" * 64)
+    assert gamebuild.classify(stamped, build_id()) == gamebuild.PATCHED
 
 
 def test_classify_repackaged_when_only_the_exe_moves():
     # An EAC/launcher-only depot update. Nothing to rebuild -- but the stamp
     # must still be refreshed or every later run re-reports the same drift.
-    stamped = _build(exe="2.6.2.0", steam_buildid="1")
-    assert gamebuild.classify(stamped, _build()) == gamebuild.REPACKAGED
+    stamped = build_id(exe="2.6.2.0", steam_buildid="1")
+    assert gamebuild.classify(stamped, build_id()) == gamebuild.REPACKAGED
 
 
 def test_classify_tampered_when_the_regulation_moves_alone():
     # exe and buildid identical, regulation content different: nobody patched
     # the game, something overwrote its regulation.bin.
-    stamped = _build(regulation_sha="b" * 64)
-    assert gamebuild.classify(stamped, _build()) == gamebuild.TAMPERED
+    stamped = build_id(regulation_sha="b" * 64)
+    assert gamebuild.classify(stamped, build_id()) == gamebuild.TAMPERED
 
 
 def test_classify_tampered_when_the_regulation_version_moves_alone():
-    stamped = _build(regulation="11601000", app="1.16.0", regulation_sha="b" * 64)
-    assert gamebuild.classify(stamped, _build()) == gamebuild.TAMPERED
+    stamped = build_id(regulation="11601000", app="1.16.0", regulation_sha="b" * 64)
+    assert gamebuild.classify(stamped, build_id()) == gamebuild.TAMPERED
 
 
 def test_classify_without_a_stamp_is_unchanged():
-    assert gamebuild.classify(None, _build()) == gamebuild.UNCHANGED
+    assert gamebuild.classify(None, build_id()) == gamebuild.UNCHANGED
+
+
+def test_the_sha_identify_computes_is_the_one_adopt_baseline_checks(tmp_path, monkeypatch):
+    # Producer and consumer are only ever pinned to test-local values, so both
+    # halves could move to the wrong bytes together and stay green. Join them:
+    # identify() hashes the live regulation, adopt_baseline re-reads the same
+    # file and refuses if the digests disagree.
+    from ermlib import heal
+    from tests.test_doctor import _regulation_blob
+
+    game = tmp_path / "Game"
+    game.mkdir()
+    (game / "eldenring.exe").write_bytes(_fake_exe(2, 7, 0, 0))
+    (game / "regulation.bin").write_bytes(_regulation_blob("11701000"))
+    monkeypatch.setattr(gamebuild.steam, "read_appmanifest",
+                        lambda root: {"buildid": "23850278"})
+
+    live = gamebuild.identify(game, tmp_path)
+    assert heal.adopt_baseline(game, live, tmp_path / "baselines").exists()

@@ -206,7 +206,13 @@ def _check_vanilla_ancestors(lock, live, report, profiles_base, vendor):
 
 
 def installed_me3_version():
-    """The version the me3 on this machine reports, or None if it isn't there.
+    """The version the me3 on this machine reports.
+
+    Three outcomes, and the caller needs to tell them apart: the version
+    string, None when there is no binary at all, and "" when one is there but
+    won't say — it can't be executed, it dies, or it prints something with no
+    version in it. Collapsing that last case into None hides a launcher Steam
+    will run and fail on.
 
     Asks the binary rather than reading installed.json: this one is installed
     outside the game and outside the repo, at the fixed path the Steam launch
@@ -219,9 +225,9 @@ def installed_me3_version():
         out = subprocess.run([str(binary), "--version"], check=True,
                              capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
-        return None
+        return ""
     found = re.search(r"(\d+\.\d+\.\d+)", out)
-    return found.group(1) if found else None
+    return found.group(1) if found else ""
 
 
 def _check_me3_host(lock, report):
@@ -231,11 +237,21 @@ def _check_me3_host(lock, report):
     versions can all be correct while the loader that mounts them is older than
     the one the lockfile promises.
     """
+    # Plain "me3" is a legacy pin: lockfiles written before the launcher got its
+    # own entry named the same release under that key. Reading it keeps the
+    # warning alive on the installs most likely to have drifted.
     pinned = ((lock or {}).get("me3-host") or (lock or {}).get("me3") or {}).get("version")
     if not pinned:
         return
     installed = installed_me3_version()
     if installed is None:
+        return
+    if not installed:
+        # Warn, not fail: doctor exiting 1 would be wrong on an install that is
+        # safe, just unlaunchable. Same reasoning as the stale-launcher warning.
+        report.warn(f"me3 at {launch.ME3_FALLBACK} won't report a version — the "
+                    f"launcher Steam runs may be broken; run `erm apply` to "
+                    f"reinstall it")
         return
     if installed != pinned.lstrip("v"):
         report.warn(f"me3 launcher is stale: {launch.ME3_FALLBACK} reports {installed}, "

@@ -20,8 +20,18 @@ def _condition_count(raw):
     return struct.unpack_from("<I", raw, 0x38)[0]
 
 
-def _synthetic(groups, name="t000001000"):
+def _declared_pool_count(raw):
+    """The condition-pointer-pool slot count an ESD header declares, at
+    INTERNAL_HEADER+0x50 -- the same field esd.read() reads. Vanilla declares
+    more slots here than its graph reaches."""
+    return struct.unpack_from("<I", raw, 0x50)[0]
+
+
+def _synthetic(groups, name="t000001000", extra_pool_slots=0):
     """Build a minimal valid ESD. groups: [(group_id, [(state_id, target_or_None)])].
+
+    extra_pool_slots pads the condition-pointer pool with orphaned slots no
+    state reaches, the way vanilla's compiler does.
 
     Hand-rolled rather than going through esd.write, so the reader is tested
     against bytes this file assembled. Not an independent implementation of the
@@ -55,7 +65,7 @@ def _synthetic(groups, name="t000001000"):
             if target is not None:
                 conditions.append((gid, target))
     condition_count = len(conditions)
-    pool_count = condition_count
+    pool_count = condition_count + extra_pool_slots
 
     groups_off = esd.INTERNAL_HEADER_SIZE
     states_off = groups_off + group_count * esd.GROUP_SIZE
@@ -116,7 +126,10 @@ def _synthetic(groups, name="t000001000"):
         out += struct.pack("<qqqqqqq", target_off, -1, 0, -1, 0,
                            blobs_off + i * len(evaluator), len(evaluator))
     for i in range(pool_count):
-        out += struct.pack("<q", conds_off + i * esd.CONDITION_SIZE)
+        # Padding slots point at the first condition row: orphaned, but a
+        # valid pointer, which is what vanilla leaves behind.
+        row = min(i, condition_count - 1) if condition_count else 0
+        out += struct.pack("<q", conds_off + row * esd.CONDITION_SIZE)
     out += evaluator * condition_count
     out += name.encode("utf-16-le") + b"\0\0" if name else b""
 
@@ -265,6 +278,25 @@ def test_write_round_trips_vanilla_semantically():
             assert [c.evaluator for c in wa] == [c.evaluator for c in wb]
 
 
+def test_write_emits_the_pool_size_it_used_not_the_one_the_source_declared():
+    """The written header has to describe the pool write() actually laid out.
+    A source file can declare more slots than its graph reaches -- vanilla
+    over-declares by 128 -- and carrying that number through would leave the
+    header promising slots the bytes do not hold, which is a reader's only
+    bound on the pool."""
+    padding = 128
+    raw = _synthetic([(1, [(0, 1), (1, None)])], extra_pool_slots=padding)
+    reached = _declared_pool_count(raw) - padding
+
+    rewritten = esd.write(esd.read(raw))
+    assert _declared_pool_count(rewritten) == reached
+
+    # And the graph survives the shrink: the orphaned slots carried nothing.
+    out = esd.read(rewritten)
+    assert [s.id for s in out.groups[0].states] == [0, 1]
+    assert out.groups[0].states[0].conditions[0].target == 1
+
+
 def test_write_appends_a_new_state_and_keeps_every_target_resolvable():
     """Inserting a state shifts the whole state table, so every jump target moves.
     A writer that patched offsets rather than re-deriving them would corrupt these."""
@@ -294,7 +326,7 @@ def test_write_refuses_a_fresh_call_appended_to_an_existing_states_entry():
     state_a = esd.State(id=0, entry=(call_a, fresh), order=0)
     state_b = esd.State(id=1, entry=(call_b,), order=1)
     group = esd.StateGroup(id=1, states=(state_a, state_b), order=0)
-    archive = esd.Esd(groups=(group,), name="", unk=(0, 0, 0, 0), pool_count=0)
+    archive = esd.Esd(groups=(group,), name="", unk=(0, 0, 0, 0))
     with pytest.raises(esd.EsdError):
         esd.write(archive)
 
@@ -311,7 +343,7 @@ def test_write_refuses_a_fresh_arg_appended_to_an_existing_calls_args():
     call_b = esd.CommandCall(bank=1, id=200, args=(arg_b,), order=1)
     state = esd.State(id=0, entry=(call_a, call_b), order=0)
     group = esd.StateGroup(id=1, states=(state,), order=0)
-    archive = esd.Esd(groups=(group,), name="", unk=(0, 0, 0, 0), pool_count=0)
+    archive = esd.Esd(groups=(group,), name="", unk=(0, 0, 0, 0))
     with pytest.raises(esd.EsdError):
         esd.write(archive)
 
@@ -362,7 +394,7 @@ def test_write_refuses_two_different_conditions_sharing_an_order():
     cond_b = esd.Condition(target=None, evaluator=b"\xa2", order=5)
     state = esd.State(id=0, conditions=(cond_a, cond_b), order=0)
     group = esd.StateGroup(id=1, states=(state,), order=0)
-    archive = esd.Esd(groups=(group,), name="", unk=(0, 0, 0, 0), pool_count=0)
+    archive = esd.Esd(groups=(group,), name="", unk=(0, 0, 0, 0))
     with pytest.raises(esd.EsdError):
         esd.write(archive)
 
@@ -382,7 +414,7 @@ def test_write_refuses_a_jump_target_the_group_does_not_have():
     a stale jump target reached the user as a stack trace."""
     state = esd.State(0, conditions=(esd.Condition(target=99, evaluator=b"\x41\xa1"),))
     archive = esd.Esd(groups=(esd.StateGroup(1, (state,)),), name="",
-                      unk=(0, 0, 0, 0), pool_count=0)
+                      unk=(0, 0, 0, 0))
     with pytest.raises(esd.EsdError, match="99"):
         esd.write(archive)
 
@@ -391,7 +423,7 @@ def test_write_refuses_a_group_with_no_states():
     """The group header has to point at a first state row, and there isn't
     one. IndexError said nothing about which group or why."""
     archive = esd.Esd(groups=(esd.StateGroup(1, ()),), name="",
-                      unk=(0, 0, 0, 0), pool_count=0)
+                      unk=(0, 0, 0, 0))
     with pytest.raises(esd.EsdError, match="no states"):
         esd.write(archive)
 
@@ -421,7 +453,7 @@ def test_write_points_the_group_header_at_the_lowest_order_state():
     helper returns: reading back gives the states in table order."""
     group = esd.StateGroup(1, (esd.State(7, order=3), esd.State(4, order=1)))
     archive = esd.Esd(groups=(group,), name="t000001000",
-                      unk=(0, 0, 0, 0), pool_count=0)
+                      unk=(0, 0, 0, 0))
     reread = esd.read(esd.write(archive))
     assert [s.id for s in reread.groups[0].states] == [4, 7]
 
@@ -432,7 +464,7 @@ def test_a_single_state_group_round_trips_without_a_dummy_row():
     group = esd.StateGroup(1, (esd.State(0, conditions=(
         esd.Condition(target=0, evaluator=b"\x41\xa1"),)),))
     archive = esd.Esd(groups=(group,), name="t000001000",
-                      unk=(0, 0, 0, 0), pool_count=0)
+                      unk=(0, 0, 0, 0))
     raw = esd.write(archive)
     reread = esd.read(raw)
     assert [s.id for s in reread.groups[0].states] == [0]
@@ -494,3 +526,19 @@ def test_read_refuses_an_evaluator_that_runs_past_the_end():
                 + 3 * esd.STATE_SIZE)
     with pytest.raises(esd.EsdError, match="evaluator"):
         esd.read(_corrupt(raw, conds_at + 48, 4000, "<q"))     # ev_len
+
+
+def test_read_refuses_a_condition_that_is_its_own_subcondition():
+    """A subcondition pool slot pointing back at an ancestor row recurses until
+    CPython's frame limit. RecursionError is not an ErmError, so it reaches the
+    user as a stack trace instead of the named refusal every other malformed ESD
+    gets. Ancestors only, not every row seen: shipped files really do reference
+    one condition row from several pools."""
+    raw = _synthetic([(1, [(0, 1), (1, None)])])
+    conds_rel = esd.INTERNAL_HEADER_SIZE + esd.GROUP_SIZE + 3 * esd.STATE_SIZE
+    conds_at = esd.HEADER_SIZE + conds_rel
+    # Slot 0 of the pool already holds condition 0's own row offset.
+    raw = _corrupt(raw, conds_at + 24, conds_rel + esd.CONDITION_SIZE, "<q")
+    raw = _corrupt(raw, conds_at + 32, 1, "<q")
+    with pytest.raises(esd.EsdError, match="cycle"):
+        esd.read(raw)

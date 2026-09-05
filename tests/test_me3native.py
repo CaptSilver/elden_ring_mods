@@ -2,6 +2,7 @@ import zipfile
 import pytest
 from pathlib import Path
 
+from ermlib import me3pkg
 from ermlib import state as state_mod
 from ermlib.me3pkg import install_me3_native, find_native_dll
 from ermlib.me3profile import reconcile
@@ -171,3 +172,47 @@ def test_reconcile_natives_sorted_by_id(tmp_path):
     state_mod.record_me3_native(s, "alpha", "1", "a.zip", str(tmp_path / "a" / "alpha.dll"))
     text = reconcile(s, tmp_path / "tools" / "me3", _game(tmp_path)).read_text()
     assert text.index("alpha.dll") < text.index("zebra.dll")
+
+
+# --- a failed extraction must not take the working install with it ---
+
+def _dies_mid_extract(dest_marker="partial.bin"):
+    """Stand-in for extract_archive that writes one file and then hits ENOSPC.
+
+    Real failures land here: a full disk, a quota, an I/O error on one member.
+    """
+    def die(archive_path, dest_root, dest_subdir="", **kw):
+        d = Path(dest_root) / dest_subdir if dest_subdir else Path(dest_root)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / dest_marker).write_bytes(b"half a file")
+        raise OSError(28, "No space left on device")
+    return die
+
+
+def test_install_me3_native_keeps_the_working_install_when_extraction_dies(
+        tmp_path, monkeypatch):
+    # apply only warns on this failure and keeps going, so installed.json and
+    # the generated .me3 profile still name this dll. Destroying the old copy
+    # first would leave every record pointing at a file that isn't there.
+    src = _zip(tmp_path / "qp.zip", **{"QuestPath.dll": b"MZ"})
+    me3 = tmp_path / "tools" / "me3"
+    first = install_me3_native(src, "questpath", me3)
+    assert Path(first).read_bytes() == b"MZ"
+
+    monkeypatch.setattr(me3pkg.install, "extract_archive", _dies_mid_extract())
+    with pytest.raises(OSError):
+        install_me3_native(src, "questpath", me3)
+    assert Path(first).read_bytes() == b"MZ"
+
+
+def test_install_me3_native_leaves_no_debris_when_extraction_dies(
+        tmp_path, monkeypatch):
+    # Nothing else reclaims a half-extracted tree under tools/me3 — tidy only
+    # walks Game/, and uninstall works off installed.json, which never got an
+    # entry for a mod whose install raised.
+    src = _zip(tmp_path / "qp.zip", **{"QuestPath.dll": b"MZ"})
+    me3 = tmp_path / "tools" / "me3"
+    monkeypatch.setattr(me3pkg.install, "extract_archive", _dies_mid_extract())
+    with pytest.raises(OSError):
+        install_me3_native(src, "questpath", me3)
+    assert list(me3.rglob("partial.bin")) == []

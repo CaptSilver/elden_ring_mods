@@ -1,4 +1,5 @@
 import hashlib
+import io
 import urllib.error
 from pathlib import Path
 
@@ -7,6 +8,17 @@ import pytest
 from ermlib import cli, manifest, github, nexus
 from ermlib.errors import ErmError, IntegrityError
 from tests import nexus_fixtures as fx
+
+
+def _stub_download(monkeypatch, body):
+    """Serve an archive through github's streaming download seam.
+
+    `body` is either the bytes to serve or a callable taking the url — the
+    latter is how a test proves which file the pin selected.
+    """
+    def _open(url):
+        return io.BytesIO(body(url) if callable(body) else body)
+    monkeypatch.setattr(github, "_urlopen", _open)
 
 
 def _write_github_profile(base_dir, name="gh-only", mod_id="seamless-coop", repo_id=497113840):
@@ -59,7 +71,7 @@ def test_fetch_downloads_github_and_prints_nexus(tmp_path, monkeypatch, capsys):
                     "digest": "sha256:" + "a" * 64}],
     })
     payload = b"zip-bytes"
-    monkeypatch.setattr(github, "_fetch_bytes", lambda url: payload)
+    _stub_download(monkeypatch, payload)
     monkeypatch.setattr(github, "download_verified",
                         lambda url, dest, sha256: Path(dest).write_bytes(payload))
     vendor = tmp_path / "vendor"; vendor.mkdir()
@@ -209,7 +221,7 @@ def test_pinned_fetch_fails_closed_on_hash_mismatch(tmp_path, monkeypatch):
                                          "digest": "sha256:" + payload_hash}]}
 
     monkeypatch.setattr(github, "release_by_tag", fake_release_by_tag)
-    monkeypatch.setattr(github, "_fetch_bytes", lambda url: payload)
+    _stub_download(monkeypatch, payload)
 
     vendor = tmp_path / "vendor"; vendor.mkdir()
     profiles_dir = _write_github_profile(tmp_path / "profiles")
@@ -276,7 +288,7 @@ def test_fetch_profile_nexus_with_key_first_fetch_pins_sha256(tmp_path, monkeypa
     monkeypatch.setattr(github, "download_verified", must_not_verify)
 
     payload = b"nexus-zip-bytes"
-    monkeypatch.setattr(github, "_fetch_bytes", lambda url: payload)
+    _stub_download(monkeypatch, payload)
 
     vendor = tmp_path / "vendor"; vendor.mkdir()
     lock = tmp_path / "mods.lock.toml"
@@ -329,7 +341,7 @@ def test_pinned_nexus_fetch_fails_closed_on_hash_mismatch(tmp_path, monkeypatch)
                         lambda mod_id, file_id, key: "https://cdn/x/Seamless%20Co-op.zip")
 
     payload = b"a-mutated-upstream-payload"     # real sha will NOT equal locked "a"*64
-    monkeypatch.setattr(github, "_fetch_bytes", lambda url: payload)  # real download_verified runs
+    _stub_download(monkeypatch, payload)  # real download_verified runs
 
     vendor = tmp_path / "vendor"; vendor.mkdir()
     with pytest.raises(IntegrityError):
@@ -357,7 +369,7 @@ def test_fetch_profile_nexus_file_id_selects_exact_file(tmp_path, monkeypatch, c
     monkeypatch.setattr(github, "download_verified", must_not_verify)
 
     payload = b"variant-a-bytes"
-    monkeypatch.setattr(github, "_fetch_bytes", lambda url: payload)
+    _stub_download(monkeypatch, payload)
 
     vendor = tmp_path / "vendor"; vendor.mkdir()
     lock = tmp_path / "mods.lock.toml"
@@ -446,7 +458,7 @@ def test_pinned_nexus_fetch_with_file_id_selects_by_id_not_version(tmp_path, mon
     # path must select by file_id — find_file_by_version returns the FIRST file
     # at that version (the wrong one), whose hash then fails the locked-sha
     # check. Here file 200 (Variant B) is pinned; if selection fell back to
-    # version, _fetch_bytes would see file 100's url and blow up.
+    # version, the download would see file 100's url and blow up.
     payload_b = b"variant-b-bytes"
     sha_b = hashlib.sha256(payload_b).hexdigest()
     lock_path = tmp_path / "mods.lock.toml"
@@ -464,7 +476,7 @@ def test_pinned_nexus_fetch_with_file_id_selects_by_id_not_version(tmp_path, mon
     def fetch_bytes(url):
         assert url.endswith("/200.zip"), f"pinned path selected the wrong file: {url}"
         return payload_b
-    monkeypatch.setattr(github, "_fetch_bytes", fetch_bytes)  # real download_verified runs
+    _stub_download(monkeypatch, fetch_bytes)  # real download_verified runs
 
     vendor = tmp_path / "vendor"; vendor.mkdir()
     profiles_dir = _write_nexus_profile(tmp_path / "profiles", file_id=200)
@@ -504,7 +516,7 @@ def _capture_chosen_file(monkeypatch, files):
 
     monkeypatch.setattr(nexus, "list_files", lambda mod_id, api_key: files)
     monkeypatch.setattr(nexus, "download_url", _download_url)
-    monkeypatch.setattr(github, "_fetch_bytes", lambda url: b"archive-bytes")
+    _stub_download(monkeypatch, b"archive-bytes")
     return chosen
 
 
@@ -522,7 +534,7 @@ def _stub_nexus_per_file(monkeypatch, files):
 
     monkeypatch.setattr(nexus, "list_files", lambda mod_id, api_key: files)
     monkeypatch.setattr(nexus, "download_url", _download_url)
-    monkeypatch.setattr(github, "_fetch_bytes", lambda url: f"bytes of {url}".encode())
+    _stub_download(monkeypatch, lambda url: f"bytes of {url}".encode())
     return chosen
 
 
@@ -649,3 +661,196 @@ def test_fetch_picks_the_asset_suffix_the_profile_declares(tmp_path, monkeypatch
     assert grabbed["url"] == "http://x/linux.tar.gz"
     assert grabbed["dest"].name.endswith(".tar.gz"), grabbed["dest"].name
     assert manifest.load_lock(lock)["me3-host"]["version"] == "v0.13.0"
+
+
+def test_fetch_profile_truncated_download_raises_clean_error(tmp_path, monkeypatch):
+    # A server that closes cleanly part-way through a body it gave a
+    # Content-Length for raises http.client.IncompleteRead out of r.read().
+    # urllib does not convert it, and it is not an OSError, a ValueError or a
+    # KeyError — so it walked straight past the guard the other network
+    # failures land in and came out as a raw traceback.
+    import http.client
+
+    def truncated(repo_id):
+        raise http.client.IncompleteRead(b"partial", 99999)
+    monkeypatch.setattr(github, "latest_release", truncated)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    lock = tmp_path / "mods.lock.toml"
+    profiles_dir = _write_github_profile(tmp_path / "profiles")
+    with pytest.raises(ErmError):
+        cli.fetch_profile("gh-only", vendor, lock, profiles_base=profiles_dir)
+
+
+def test_fetch_profile_truncated_nexus_download_raises_clean_error(tmp_path, monkeypatch):
+    # Same hole on the Nexus half: nexus._api_get catches only HTTPError and
+    # URLError, so a truncated files.json escapes it too.
+    import http.client
+
+    def truncated(*a, **k):
+        raise http.client.IncompleteRead(b"partial", 99999)
+    monkeypatch.setattr(nexus, "list_files", truncated)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    lock = tmp_path / "mods.lock.toml"
+    profiles_dir = _write_nexus_profile(tmp_path / "profiles")
+    with pytest.raises(ErmError):
+        cli.fetch_profile("nexus-only", vendor, lock, profiles_base=profiles_dir,
+                          nexus_api_key="key")
+
+
+def test_fetch_does_not_redownload_a_pinned_archive_already_verified_on_disk(
+        tmp_path, monkeypatch, capsys):
+    # The bytes in vendor/ already hash to the pin. `erm verify` proves that
+    # offline in seconds; fetch pulled the whole archive again anyway — 8 GB
+    # for the largest mod in the stack, every single run.
+    payload = b"zip-bytes"
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path, sha=hashlib.sha256(payload).hexdigest())
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    (vendor / "seamless-coop-v1.9.8.zip").write_bytes(payload)
+
+    monkeypatch.setattr(github, "release_by_tag", lambda rid, tag: {
+        "tag": tag, "assets": [{"name": "Seamless.zip",
+                                "url": "http://x/Seamless.zip", "digest": None}]})
+
+    def must_not_download(url, dest, sha256):
+        raise AssertionError("re-downloaded an archive already verified on disk")
+    monkeypatch.setattr(github, "download_verified", must_not_download)
+
+    profiles_dir = _write_github_profile(tmp_path / "profiles")
+    updated = cli.fetch_profile("gh-only", vendor, lock_path, profiles_base=profiles_dir)
+
+    assert updated["seamless-coop"]["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert "cached" in capsys.readouterr().out
+
+
+def test_fetch_redownloads_a_vendored_archive_that_fails_its_hash(tmp_path, monkeypatch):
+    # An interrupted write leaves a short file at the right path. Trusting the
+    # NAME would adopt it; only the hash tells the two apart.
+    payload = b"zip-bytes"
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_lock(lock_path, sha=hashlib.sha256(payload).hexdigest())
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    (vendor / "seamless-coop-v1.9.8.zip").write_bytes(b"trunc")
+
+    monkeypatch.setattr(github, "release_by_tag", lambda rid, tag: {
+        "tag": tag, "assets": [{"name": "Seamless.zip",
+                                "url": "http://x/Seamless.zip", "digest": None}]})
+    calls = []
+    monkeypatch.setattr(github, "download_verified",
+                        lambda url, dest, sha256: (calls.append(url),
+                                                   Path(dest).write_bytes(payload)))
+
+    profiles_dir = _write_github_profile(tmp_path / "profiles")
+    cli.fetch_profile("gh-only", vendor, lock_path, profiles_base=profiles_dir)
+
+    assert calls == ["http://x/Seamless.zip"]
+    assert (vendor / "seamless-coop-v1.9.8.zip").read_bytes() == payload
+
+
+def _seed_nexus_lock(lock_path, mod_id, version, asset, sha, file_id):
+    lock_path.write_text(
+        f'[{mod_id}]\n'
+        f'version = "{version}"\n'
+        f'asset = "{asset}"\n'
+        f'sha256 = "{sha}"\n'
+        'source = "nexus"\n'
+        f'file_id = "{file_id}"\n'
+    )
+
+
+def test_fetch_does_not_redownload_a_pinned_nexus_archive_already_on_disk(
+        tmp_path, monkeypatch):
+    payload = b"nexus-archive-bytes"
+    asset = fx.NOFALLDEAD[1]["file_name"]
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_nexus_lock(lock_path, "nofalldead", "1", asset,
+                     hashlib.sha256(payload).hexdigest(), 48340)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    (vendor / asset).write_bytes(payload)
+
+    monkeypatch.setattr(nexus, "list_files", lambda mod_id, key: fx.NOFALLDEAD)
+    monkeypatch.setattr(nexus, "download_url",
+                        lambda mod_id, file_id, key: f"http://x/{file_id}.zip")
+
+    def must_not_download(url):
+        raise AssertionError("re-downloaded a Nexus archive already verified on disk")
+    _stub_download(monkeypatch, must_not_download)
+
+    profiles_dir = _write_pinned_nexus_profile(tmp_path / "profiles",
+                                               "nofalldead", 10402, 48340)
+    updated = cli.fetch_profile("pinned", vendor, lock_path, profiles_base=profiles_dir,
+                                nexus_api_key="k")
+
+    assert updated["nofalldead"]["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+def test_update_keeps_the_locked_digest_for_a_frozen_pin_already_on_disk(
+        tmp_path, monkeypatch):
+    # `freeze = true` says this file never moves, yet update re-pulled the whole
+    # archive and re-hashed whatever arrived into the lock — so an upstream
+    # swap under a stable file_id was adopted silently instead of failing.
+    payload = b"frozen-archive-bytes"
+    sha = hashlib.sha256(payload).hexdigest()
+    asset = fx.CLEVERS[0]["file_name"]
+    lock_path = tmp_path / "mods.lock.toml"
+    _seed_nexus_lock(lock_path, "clevers-moveset", "25.0", asset, sha, 34558)
+    vendor = tmp_path / "vendor"; vendor.mkdir()
+    (vendor / asset).write_bytes(payload)
+
+    monkeypatch.setattr(nexus, "list_files", lambda mod_id, key: fx.CLEVERS)
+    monkeypatch.setattr(nexus, "download_url",
+                        lambda mod_id, file_id, key: f"http://x/{file_id}.zip")
+
+    def must_not_download(url):
+        raise AssertionError("re-downloaded a frozen pin that was already on disk")
+    _stub_download(monkeypatch, must_not_download)
+
+    profiles_dir = _write_pinned_nexus_profile(tmp_path / "profiles",
+                                               "clevers-moveset", 1928, 34558, freeze=True)
+    updated = cli.fetch_profile("pinned", vendor, lock_path, profiles_base=profiles_dir,
+                                nexus_api_key="k", update=True)
+
+    assert updated["clevers-moveset"]["sha256"] == sha
+    assert (vendor / asset).read_bytes() == payload
+
+
+def _stub_one_github_release(monkeypatch, payload=b"zip-bytes"):
+    monkeypatch.setattr(github, "latest_release", lambda rid: {
+        "tag": "v1.9.8", "assets": [{"name": "Seamless.zip",
+                                     "url": "http://x/Seamless.zip",
+                                     "digest": "sha256:" + hashlib.sha256(payload).hexdigest()}]})
+    monkeypatch.setattr(github, "download_verified",
+                        lambda url, dest, sha256: Path(dest).write_bytes(payload))
+
+
+def test_cmd_fetch_json_is_one_document(tmp_path, monkeypatch, capsys):
+    # `erm --json fetch` never called Report.render at all: the flag was
+    # accepted and the progress came out as bare prose.
+    import json as _json
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    _write_github_profile(tmp_path / "profiles")
+    _stub_one_github_release(monkeypatch)
+
+    rc = cli.cmd_fetch(type("A", (), {"profile": "gh-only", "update": False, "json": True})())
+    data = _json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert any("seamless-coop" in i["message"] for i in data["items"])
+
+
+def test_cmd_fetch_still_prints_progress_as_it_goes(tmp_path, monkeypatch, capsys):
+    # A fetch can run for gigabytes, so the human path must report each mod as
+    # it lands rather than holding everything back to the end.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    _write_github_profile(tmp_path / "profiles")
+    _stub_one_github_release(monkeypatch)
+    seen = []
+    monkeypatch.setattr(manifest, "write_lock",
+                        lambda path, lock: seen.append(capsys.readouterr().out))
+
+    cli.cmd_fetch(type("A", (), {"profile": "gh-only", "update": False, "json": False})())
+
+    assert "seamless-coop" in seen[0], "nothing was printed until the run finished"
