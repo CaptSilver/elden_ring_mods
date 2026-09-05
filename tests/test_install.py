@@ -378,3 +378,31 @@ def test_extract_archive_closes_the_zip_when_it_rejects_a_member(tmp_path, monke
         install.extract_archive(arc, tmp_path / "Game", "")
     assert opened, "the zip branch never ran"
     assert all(z.fp is None for z in opened), "ZipFile left open after the rejection"
+
+
+def test_inject_password_refuses_a_settings_layout_it_cannot_write_into(tmp_path):
+    """An ERSC update that renames the password key would otherwise be written
+    back untouched and reported as success, starting a session with a blank
+    password that anyone can join. The module exists to stop exactly that."""
+    ini = tmp_path / "ersc_settings.ini"
+    original = "[PASSWORD]\nsession_password = \n[SAVE]\nsave_file_extension = co2\n"
+    ini.write_text(original)
+
+    with pytest.raises(ErmError) as exc:
+        inject_password(ini, "hunter2")
+
+    assert "ersc_settings.ini" in str(exc.value)
+    assert "cooppassword" in str(exc.value), "say which key was looked for"
+    assert ini.read_text() == original, "must not half-write the file it refused"
+
+
+def test_inject_password_accepts_an_unrecognised_layout_when_there_is_no_password(tmp_path):
+    """No COOP_PASSWORD is a warned-about state, not an error -- there is
+    nothing to inject, so an unfamiliar layout is not a failure here."""
+    ini = tmp_path / "ersc_settings.ini"
+    original = "[PASSWORD]\nsession_password = \n"
+    ini.write_text(original)
+
+    inject_password(ini, "")
+
+    assert ini.read_text() == original

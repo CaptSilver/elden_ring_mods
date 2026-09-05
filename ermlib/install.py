@@ -29,7 +29,18 @@ def inject_password(settings_ini, password):
     if "@COOP_PASSWORD@" in text:
         text = text.replace("@COOP_PASSWORD@", password)
     else:
-        text = re.sub(r"(?m)^cooppassword\s*=.*$", f"cooppassword = {password}", text)
+        text, hits = re.subn(r"(?m)^cooppassword\s*=.*$",
+                             f"cooppassword = {password}", text)
+        # An ERSC release that renames the key would otherwise leave re.subn
+        # matching nothing and this function writing the file back unchanged --
+        # a session with a blank password that anyone can join, reported as a
+        # success. Only worth refusing when a password was actually supplied:
+        # having none is a state apply already warns about.
+        if not hits and password:
+            raise ErmError(
+                f"{ini}: no `cooppassword` line to write the co-op password "
+                f"into — the settings layout changed, so erm can't set it. "
+                f"Set it by hand in the file and re-run.")
     ini.write_text(text)
 
 
