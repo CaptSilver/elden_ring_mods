@@ -527,7 +527,7 @@ def _ships_regulation(path):
     try:
         z = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
-        if shutil.which(install.EXTRACTOR) is None:
+        if install.find_extractor() is None:
             return None
         names = install._list_archive(path)
     else:
@@ -610,7 +610,9 @@ def test_an_archive_needing_a_missing_extractor_reports_unread(tmp_path, monkeyp
     """Unread is its own answer: the caller drops these rather than counting
     them as checked, so a bsdtar-less box skips honestly instead of certifying
     archives it never opened."""
-    monkeypatch.setattr(shutil, "which", lambda exe: None)
+    # Patch the resolver, not PATH: find_extractor also looks in the Homebrew
+    # prefixes, so a which()-only stub still finds one on a machine that has it.
+    monkeypatch.setattr(install, "find_extractor", lambda: None)
     unreadable = tmp_path / "mod.7z"
     unreadable.write_bytes(b"not an archive")
     assert _ships_regulation(unreadable) is None
@@ -676,7 +678,7 @@ def _archive_names(path):
     try:
         z = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
-        if shutil.which(install.EXTRACTOR) is None:
+        if install.find_extractor() is None:
             return None
         return install._list_archive(path)
     with z:

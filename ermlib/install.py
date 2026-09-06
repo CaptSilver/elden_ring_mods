@@ -4,6 +4,7 @@ An ERSC update ships its own ersc_settings.ini with cooppassword blank, so
 apply() always has to rewrite it after extracting — otherwise the whole
 group silently loses connection until someone notices.
 """
+import os
 import re
 import shutil
 import subprocess
@@ -45,10 +46,40 @@ def inject_password(settings_ini, password):
 
 
 EXTRACTOR = "bsdtar"
+# Where to look when PATH doesn't have it. Homebrew is how bsdtar gets onto an
+# immutable host (you can't dnf install onto the base image), and a non-login
+# shell — which is what a Steam launch option or a bare `./erm` gets — routinely
+# has none of brew's bin on PATH. Reporting "not installed" there is wrong: the
+# binary is right here, and the cost of believing otherwise is every .rar/.7z
+# mod silently skipped and the regulation merge aborting after them.
+EXTRACTOR_DIRS = (
+    Path("/home/linuxbrew/.linuxbrew/bin"),     # brew on Linux, shared install
+    Path.home() / ".linuxbrew" / "bin",         # brew on Linux, per-user
+    Path("/opt/homebrew/bin"),                  # brew on Apple silicon
+    Path("/usr/local/bin"),                     # brew on Intel macOS
+)
+
+
+def find_extractor():
+    """Absolute path to bsdtar, or None if there isn't one.
+
+    PATH first — that's the one the user chose — then the Homebrew prefixes. The
+    executable bit is checked because a leftover name that can't be run is not
+    an extractor, and handing it to subprocess fails later and further from the
+    cause.
+    """
+    on_path = shutil.which(EXTRACTOR)
+    if on_path:
+        return on_path
+    for directory in EXTRACTOR_DIRS:
+        candidate = directory / EXTRACTOR
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 def _require_extractor(archive):
-    exe = shutil.which(EXTRACTOR)
+    exe = find_extractor()
     if exe is None:
         # BadZipFile, not ErmError: apply catches this per-mod and keeps going.
         # An ErmError aborts the whole run before write_state, which would throw
@@ -56,9 +87,10 @@ def _require_extractor(archive):
         # reasoning for the unreadable-archive failures below — only a hostile
         # path is worth aborting for.
         raise zipfile.BadZipFile(
-            f"{Path(archive).name} is not a zip and {EXTRACTOR} isn't installed — "
-            f"install {EXTRACTOR} (libarchive) to handle .rar/.7z mod archives, "
-            f"or extract it by hand")
+            f"{Path(archive).name} is not a zip and no {EXTRACTOR} was found — "
+            f"not on PATH, and not in "
+            f"{', '.join(str(d) for d in EXTRACTOR_DIRS)}. "
+            f"`brew install libarchive` provides it, or extract the archive by hand")
     return exe
 
 

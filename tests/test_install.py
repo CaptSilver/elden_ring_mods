@@ -95,7 +95,7 @@ def test_extract_archive_rejects_traversal_before_extracting(tmp_path, tmp_game)
 
 
 def _rar_available():
-    return shutil.which("bsdtar") is not None
+    return install.find_extractor() is not None
 
 
 def _make_rar(path, **members):
@@ -110,7 +110,7 @@ def _make_rar(path, **members):
         p = src / name.replace("|", "/")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(data)
-    subprocess.run(["bsdtar", "-a", "-cf", str(path), "-C", str(src)]
+    subprocess.run([install.find_extractor(), "-a", "-cf", str(path), "-C", str(src)]
                    + [n.replace("|", "/") for n in members],
                    check=True, capture_output=True)
     return path
@@ -406,3 +406,48 @@ def test_inject_password_accepts_an_unrecognised_layout_when_there_is_no_passwor
     inject_password(ini, "")
 
     assert ini.read_text() == original
+
+
+def _fake_bsdtar(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    exe = directory / install.EXTRACTOR
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    return exe
+
+
+def test_the_extractor_is_found_in_the_homebrew_prefix_when_it_is_not_on_path(
+        tmp_path, monkeypatch):
+    """brew puts bsdtar in /home/linuxbrew/.linuxbrew/bin, and a non-login shell
+    routinely has none of brew's bin on PATH. erm then called it "not installed"
+    and skipped every .rar/.7z mod -- telling you to install something already
+    sitting on the disk, and aborting the regulation merge as a knock-on."""
+    brew = tmp_path / "linuxbrew" / "bin"
+    exe = _fake_bsdtar(brew)
+    monkeypatch.setattr(install.shutil, "which", lambda name: None)
+    monkeypatch.setattr(install, "EXTRACTOR_DIRS", (brew,))
+
+    assert install.find_extractor() == str(exe)
+
+
+def test_an_extractor_on_path_wins_over_the_homebrew_prefix(tmp_path, monkeypatch):
+    """PATH is what the user chose; the fallback is only for when they didn't."""
+    brew = tmp_path / "linuxbrew" / "bin"
+    _fake_bsdtar(brew)
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/bsdtar")
+    monkeypatch.setattr(install, "EXTRACTOR_DIRS", (brew,))
+
+    assert install.find_extractor() == "/usr/bin/bsdtar"
+
+
+def test_a_non_executable_file_in_the_prefix_is_not_taken_as_the_extractor(
+        tmp_path, monkeypatch):
+    """A leftover name that can't be run is not an extractor -- handing it to
+    subprocess would fail later and further from the cause."""
+    brew = tmp_path / "linuxbrew" / "bin"
+    brew.mkdir(parents=True)
+    (brew / install.EXTRACTOR).write_text("not executable")
+    monkeypatch.setattr(install.shutil, "which", lambda name: None)
+    monkeypatch.setattr(install, "EXTRACTOR_DIRS", (brew,))
+
+    assert install.find_extractor() is None
