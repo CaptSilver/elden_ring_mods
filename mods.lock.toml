@@ -77,17 +77,17 @@ sha256 = "a1226c29382b9cb3a616a79a5cf30a3cdd54cc97e51be2f1363aaa580ba5a774"
 source = "nexus"
 
 [ertransmogrify]
-version = "2.4.13"
-file_id = "44563"
-asset = "ertransmogrify-3596-2-4-13-1773526503.zip"
-sha256 = "8b684ccb0f391224b1951c7c75aa665e47f916145dd3ddfd9e1515159d9db848"
+version = "2.4.14"
+file_id = "50347"
+asset = "ertransmogrify 3596 2.4.14 2026-09-04T23-32Z Qgpq1zPv3.zip"
+sha256 = "09d565a74c7bd923b30176b0f030e163a6ea237f421ba8eb7c51a96f4886fb42"
 source = "nexus"
 
 [expanded-talisman-slots]
-version = "1.1.3"
-file_id = "49012"
-asset = "Expanded Talisman Slots 10481 1.1.3 2026-08-10T05-37Z V3eOrwB1I.zip"
-sha256 = "45faa5f445c3286568b3c3b40d99e2142034e93d6be4e52eaf97ca4deee79899"
+version = "1.1.5"
+file_id = "50094"
+asset = "Expanded Talisman Slots 10481 1.1.5 2026-09-01T05-08Z sVKWduzSV.zip"
+sha256 = "f166ba82d6a2c36dc6e1efc6ae735f017cba6d523fe165ccac554c0f607cb940"
 source = "nexus"
 
 [faster-respawn]
@@ -111,10 +111,10 @@ sha256 = "f243fc38f583c1fa9062628c2060a70933da90ee3f4d2b79d1dea824b4324cf0"
 source = "nexus"
 
 [great-rune-overhaul]
-version = "1.1.6"
-file_id = "31870"
-asset = "Great Rune Overhaul-2869-1-1-6-1729540057.rar"
-sha256 = "e5e9c4db0917f1c533da8ac3f5f8265cdac6e04e8ecb85f801eb28f683aa2491"
+version = "1.1.7"
+file_id = "50382"
+asset = "Great Rune Overhaul 2869 1.1.7 2026-09-05T22-17Z 9KB6bvSOz.rar"
+sha256 = "0c63d04bb517a123e46d2d5b0de90597fa6c4ae905c77bc92d77cb7bffde80e4"
 source = "nexus"
 
 [increase-animation-distance]
@@ -138,10 +138,10 @@ sha256 = "c7981869c2f2ae983cb08e9f1cb2448472a87654ae3a67de00b3c6ec3fde7b3e"
 source = "nexus"
 
 [map-for-goblins]
-version = "v2.1.2"
-file_id = "48939"
-asset = "Vanilla or Randomizer - v2.1.2 10062 v2.1.2 2026-08-06T08-53Z 6Ms7ahY3W.zip"
-sha256 = "9fe4ffe6fc7157a14b2f2f7c98064f1d736eef048ac1417fa5c11acd9bda0268"
+version = "v2.1.3"
+file_id = "50069"
+asset = "Vanilla or Randomizer - v2.1.3 10062 v2.1.3 2026-08-31T21-46Z AHk37cNru.zip"
+sha256 = "44ffc14fa56544d821841e40b96e582499043982abcab39efe3b1df6155e6229"
 source = "nexus"
 
 [me3-host]
@@ -178,10 +178,10 @@ sha256 = "fa5f2ebda4ff35a77416414076beb9223d3cea65d2c31cb75035548418306e75"
 source = "nexus"
 
 [radialmenu]
-version = "1.3.1"
-file_id = "46913"
-asset = "RadialMenu-9832-1-3-1-1779978112.zip"
-sha256 = "38d08f45e7363dc0c2f00b01fb31921965bf76b458804a834c38656641736243"
+version = "1.4.0"
+file_id = "50310"
+asset = "RadialMenu 9832 1.4.0 2026-09-03T19-26Z b0gaS9wcw.zip"
+sha256 = "bbfebdc58f3cd040e955a5c2680c9908f4acbea586bf91e89dac8db5c0bf64dc"
 source = "nexus"
 
 [remove-chromatic-aberration]
@@ -199,10 +199,10 @@ sha256 = "cdd9a3faf127d7f6fdf57e0e3772d1e849603b2c20ad32a41b8883fb6e3600d6"
 source = "nexus"
 
 [seamless-coop]
-version = "1.9.9"
-file_id = "45761"
-asset = "Seamless Co-op v1.9.9-510-1-9-9-1776812412.zip"
-sha256 = "95e9db8fcec02c9148eee42d0d20234eae0729ded5f91b2bedb17d84037e0dfa"
+version = "2.0.1"
+file_id = "50243"
+asset = "Seamless Co-op v2.0.1 510 2.0.1 2026-09-02T23-30Z luvfLWq6V.zip"
+sha256 = "848ae27e1c77217590dac401c012a17d9b4f05b9b9a24aa33af54d8d7b8ba2a1"
 source = "nexus"
 
 [skip-the-intro]
