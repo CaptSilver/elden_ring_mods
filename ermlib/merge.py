@@ -33,6 +33,13 @@ class RowCollision(NamedTuple):
     row_id: int
 
 
+class StaleContributor(NamedTuple):
+    """A merge names a mod that is installed but ships nothing at the path, so
+    the declaration has gone stale -- the mod dropped the file in an update."""
+    path: str
+    mods: tuple
+
+
 class RivalRow(NamedTuple):
     """Two mods each added a different row under one id, with no ancestor row
     to locate either edit against. The merge spec's `prefer` leads the fold, so
@@ -555,6 +562,11 @@ def describe_note(note):
         return (f"entry {note.entry_id} row {note.row_id}: the game and a mod "
                 f"each added a different row under this id — kept the mod's, "
                 f"dropped the game's")
+    if isinstance(note, StaleContributor):
+        return (f"{', '.join(note.mods)} no longer ship this path, so the merge "
+                f"naming them isn't happening — whatever still provides it now "
+                f"mounts whole. Drop them from the [[merges]] entry, and prune "
+                f"the survivor if it's a stale copy of a game file")
     if isinstance(note, RivalRow):
         return (f"entry {note.entry_id} row {note.row_id}: two mods each added "
                 f"a different row under this id — kept the preferred mod's, "

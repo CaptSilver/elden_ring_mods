@@ -1,6 +1,6 @@
 import pytest
 
-from ermlib import conflicts
+from ermlib import conflicts, merge
 
 
 def _package(me3_dir, mod_id, files):
@@ -756,3 +756,72 @@ def test_resolve_drives_the_real_esd_three_way_strategy_and_returns_its_note(
     assert len(entries) == 7
     for entry in entries:
         esdmerge.check(esd.read(entry.data))
+
+
+def test_a_declared_contributor_that_no_longer_ships_the_path_is_reported(
+        tmp_path, monkeypatch):
+    """Clever's stopped shipping menu_dlc02 while gameplay-extras still named it
+    in the merge. Providers fell to one, the merge silently skipped, and Boss
+    Res's whole 2024 copy mounted over the game's own menu text. A contributor
+    that IS installed and simply has nothing at the path has to be said out
+    loud -- the declaration has gone stale and the merge is not happening."""
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"only a ships this now"})
+    _package(tmp_path, "b", {"chr/elsewhere.dcx": b"b is installed, just not here"})
+    merges = [{"path": "msg/x.dcx", "strategy": "fmg-union",
+               "mods": ["a", "b"], "prefer": "a"}]
+    notes = []
+
+    conflicts.resolve(tmp_path, ["a", "b"], merges, notes=notes)
+
+    assert [rel for rel, _ in notes] == ["msg/x.dcx"]
+    assert notes[0][1] == merge.StaleContributor("msg/x.dcx", ("b",))
+
+
+def test_a_declared_contributor_that_is_not_installed_stays_quiet(
+        tmp_path, monkeypatch):
+    """Profiles compose, so a merge routinely names mods this profile never
+    installs. That is the case the silent skip exists for and it must stay
+    silent, or every apply of a subset profile cries wolf."""
+    monkeypatch.chdir(tmp_path)
+    _package(tmp_path, "a", {"msg/x.dcx": b"only a"})
+    merges = [{"path": "msg/x.dcx", "strategy": "fmg-union",
+               "mods": ["a", "b"], "prefer": "a"}]
+    notes = []
+
+    conflicts.resolve(tmp_path, ["a"], merges, notes=notes)
+
+    assert notes == []
+
+
+def test_prune_removes_a_declared_directory(tmp_path):
+    """Editor workspaces arrive as a directory, not a file list -- forever-buffs
+    ships 242 files of Smithbox state around one regulation.bin. Listing them
+    individually goes stale the moment the mod updates, so a prune has to be
+    able to name the directory. It only removed files, so naming a directory
+    silently did nothing at all."""
+    _package(tmp_path, "a", {".smithbox/Workflow/notes.txt": b"editor state",
+                             ".smithbox/project.json": b"more editor state",
+                             "regulation.bin": b"real content"})
+
+    removed = conflicts.apply_prunes(tmp_path, [{"mod": "a", "paths": [".smithbox"]}])
+
+    assert removed == ["a:.smithbox"]
+    assert not (tmp_path / "mods" / "a" / ".smithbox").exists()
+    assert (tmp_path / "mods" / "a" / "regulation.bin").read_bytes() == b"real content"
+
+
+def test_prune_unlinks_a_symlinked_directory_without_following_it(tmp_path):
+    """rmtree on a symlink raises, and following one would delete whatever it
+    points at -- outside the package, if the link says so."""
+    outside = tmp_path / "outside"
+    (outside / "keep").mkdir(parents=True)
+    (outside / "keep" / "precious.bin").write_bytes(b"not the mod's to delete")
+    _package(tmp_path, "a", {"regulation.bin": b"content"})
+    (tmp_path / "mods" / "a" / "link").symlink_to(outside / "keep")
+
+    removed = conflicts.apply_prunes(tmp_path, [{"mod": "a", "paths": ["link"]}])
+
+    assert removed == ["a:link"]
+    assert not (tmp_path / "mods" / "a" / "link").exists()
+    assert (outside / "keep" / "precious.bin").exists(), "followed the symlink out"

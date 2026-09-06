@@ -300,6 +300,10 @@ mod = "forever-buffs"
 paths = [
     "param/systemparam/systemparam.parambnd.dcx",
     "param/systemparam/systemparam.parambnd.dcx.prev",
+    # The rest of that workspace: 3.8 MB of Smithbox state across ~240 files,
+    # none of it a path the game asks for. Named as the directory rather than
+    # file by file, so it doesn't go stale the next time the mod updates.
+    ".smithbox",
 ]
 
 [[prunes]]

@@ -11,7 +11,8 @@ import zipfile
 from pathlib import Path
 
 from .errors import ErmError
-from .merge import NEEDS_NOTES, NEEDS_VANILLA, STRATEGIES, TAKES_GAME_BASE
+from .merge import (NEEDS_NOTES, NEEDS_VANILLA, STRATEGIES, TAKES_GAME_BASE,
+                    StaleContributor)
 from .paths import is_safe_relpath
 
 MERGED_ID = "_merged"
@@ -55,9 +56,18 @@ def apply_prunes(me3_dir, prunes):
             if not is_safe_relpath(rel):
                 raise ConflictError(f"unsafe prune path (refusing to delete): {rel}")
             target = _package_dir(me3_dir, mod_id) / rel
-            if target.is_file():
+            # A symlink is removed as a link, never followed: rmtree refuses one
+            # anyway, and following it would delete whatever it points at --
+            # outside the package, if the link says so.
+            if target.is_symlink() or target.is_file():
                 target.unlink()
-                removed.append(f"{mod_id}:{rel}")
+            elif target.is_dir():
+                # Editor workspaces arrive as a directory, not a file list.
+                # Naming one used to match nothing and prune nothing, silently.
+                shutil.rmtree(target)
+            else:
+                continue
+            removed.append(f"{mod_id}:{rel}")
     return removed
 
 
@@ -273,6 +283,20 @@ def resolve(me3_dir, mod_ids, merges, lock=None, notes=None, bases=None):
     declared = _declare_merges(merges)
     index = index_paths(me3_dir, mod_ids)
     _check_no_case_only_collisions(index)
+
+    # A declared contributor that is installed but ships nothing at the path
+    # means the declaration went stale -- the mod dropped the file in an update.
+    # Providers can then fall below two, the merge skips, and the last remaining
+    # copy mounts whole over the game's own file. Not installed at all is a
+    # different thing and stays quiet: profiles compose, so naming a mod this
+    # profile doesn't install is normal and says nothing about the declaration.
+    if notes is not None:
+        installed = set(mod_ids)
+        for rel, spec in sorted(declared.items()):
+            gone = tuple(m for m in spec["mods"]
+                         if m in installed and m not in set(index.get(rel, ())))
+            if gone:
+                notes.append((rel, StaleContributor(rel, gone)))
 
     planned = []
     for rel, providers in sorted(index.items()):
