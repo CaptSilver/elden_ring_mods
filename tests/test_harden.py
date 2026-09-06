@@ -211,3 +211,25 @@ def test_unharden_restore_wraps_oserror_as_patherror(game, monkeypatch):
     monkeypatch.setattr(shutil, "move", _boom)
     with pytest.raises(PathError):
         harden.unharden_restore(game)
+
+
+def test_the_appended_safety_check_runs_the_same_checks_as_erm_doctor(
+        game, monkeypatch, capsys):
+    """Commands that finish with "Safety check (erm doctor)" ran a strict
+    subset of it: only cmd_doctor added the build-drift and merged-regulation
+    checks, so apply/update/uninstall/harden/unharden reported a clean bill
+    without ever looking at whether the stack still matches the game build --
+    which is exactly when it can stop matching."""
+    monkeypatch.setattr(harden, "set_immutable", lambda path, on: None)
+    monkeypatch.setattr(paths, "find_steam_root", lambda: game.parent)
+    monkeypatch.setattr(paths, "find_game_dir", lambda root: game)
+    monkeypatch.chdir(game.parent)
+
+    cli.cmd_doctor(_args())
+    standalone = capsys.readouterr().out
+    cli.cmd_harden(_args())
+    embedded = capsys.readouterr().out
+
+    assert "game build" in standalone, "fixture wrong: doctor never reached the build checks"
+    assert "game build" in embedded, (
+        "the appended safety check skipped the build checks erm doctor runs")

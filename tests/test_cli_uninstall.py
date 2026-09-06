@@ -529,7 +529,11 @@ def test_uninstall_json_is_one_document_with_the_doctor_nested(
     data = json.loads(capsys.readouterr().out)
 
     assert rc == 0
-    assert data["doctor"]["worst"] == "ok"
+    # The fake Game/ has no regulation.bin, so the nested doctor cannot identify
+    # a build and warns -- which is the proof that it ran the build checks at all.
+    assert data["doctor"]["worst"] == "warn"
+    assert any("game build" in i["message"] for i in data["doctor"]["items"]), (
+        "the nested doctor must run the same checks erm doctor runs")
     assert any("seamless-coop" in i["message"] for i in data["items"])
 
 
@@ -653,4 +657,8 @@ def test_switch_json_is_one_document(tmp_path, monkeypatch, capsys, tmp_game):
     assert rc == 0
     assert any("switching to seamless-only" in i["message"] for i in data["items"])
     assert any("old-mod" in i["message"] for i in data["items"])
-    assert data["doctor"]["worst"] == "ok"
+    # The fake Game/ has no regulation.bin, so the nested doctor cannot identify
+    # a build and warns -- which is the proof that it ran the build checks at all.
+    assert data["doctor"]["worst"] == "warn"
+    assert any("game build" in i["message"] for i in data["doctor"]["items"]), (
+        "the nested doctor must run the same checks erm doctor runs")

@@ -143,28 +143,43 @@ def cmd_status(args):
     return _emit(args, r)
 
 
-def cmd_doctor(args):
-    root = paths.find_steam_root()
-    game = paths.find_game_dir(root)
+def doctor_report(game, root=None):
+    """The whole of what `erm doctor` reports: the artifact/EAC scan plus the
+    build-drift and merged-regulation checks.
+
+    Every command that finishes with a "Safety check (erm doctor)" block runs
+    this, not run_doctor alone. A block labelled `erm doctor` that reports less
+    than `erm doctor` does is worse than no block: the build checks are the
+    ones that matter right after an apply or an update, which is precisely
+    when the stack can stop matching the installed game build.
+    """
     r = run_doctor(game, Report())
+    if root is None:
+        root = paths.find_steam_root()
     try:
         live = gamebuild.identify(game, root)
     except GameBuildError as exc:
         r.warn(f"can't identify the game build: {exc}")
-    else:
-        try:
-            state = state_mod.load_state()
-        except ErmError as exc:
-            r.warn(str(exc))
-            state = {}
-        try:
-            stamped = state_mod.stamped_build(state)
-        except ErmError as exc:
-            r.warn(str(exc))
-            stamped = None
-        doctor_mod.run_build_checks(game, stamped, live, r, state=state,
-                                    lock=manifest.load_lock("mods.lock.toml"))
-    return _emit(args, r)
+        return r
+    try:
+        state = state_mod.load_state()
+    except ErmError as exc:
+        r.warn(str(exc))
+        state = {}
+    try:
+        stamped = state_mod.stamped_build(state)
+    except ErmError as exc:
+        r.warn(str(exc))
+        stamped = None
+    doctor_mod.run_build_checks(game, stamped, live, r, state=state,
+                                lock=manifest.load_lock("mods.lock.toml"))
+    return r
+
+
+def cmd_doctor(args):
+    root = paths.find_steam_root()
+    game = paths.find_game_dir(root)
+    return _emit(args, doctor_report(game, root))
 
 
 def cmd_refresh(args):
@@ -904,7 +919,7 @@ def _apply(args, r):
             # the user the lock didn't complete. Mods are already installed, so
             # this warns rather than aborting the rest of apply.
             r.warn(f"auto-harden incomplete: {exc} — run `erm harden` to finish (or `erm unharden` to revert)")
-    return _emit(args, r, doctor=run_doctor(game, Report()))
+    return _emit(args, r, doctor=doctor_report(game))
 
 
 def cmd_update(args):
@@ -938,7 +953,7 @@ def cmd_update(args):
             r.info(f"{mod_id} already latest ({new})")
 
     installed_version = None
-    doctor_report = None
+    doctor = None
     if "seamless-coop" in changed:
         game = paths.find_game_dir(paths.find_steam_root())
         installed_version, had_password = _install_ersc(game, after)
@@ -955,7 +970,7 @@ def cmd_update(args):
             r.warn(f"could not regenerate the me3 profile ({exc}) — run `erm apply` again")
         if not had_password:
             r.warn("no COOP_PASSWORD in secrets.env — password left blank")
-        doctor_report = run_doctor(game, Report())
+        doctor = doctor_report(game)
 
     # The closing summary is report items too, so --json carries the LOCKSTEP
     # warning and the unchecked-pin list instead of trailing them as prose that
@@ -970,7 +985,7 @@ def cmd_update(args):
                f"{', '.join(sorted(skipped))}. Their pins are unverified.")
     else:
         r.ok("already up to date — nothing to install")
-    return _emit(args, r, doctor=doctor_report)
+    return _emit(args, r, doctor=doctor)
 
 
 def _uninstall_one(game, mod_id, state, r):
@@ -1272,7 +1287,7 @@ def cmd_uninstall(args):
         me3profile.reconcile(state, ME3_DIR, game)
     except OSError as exc:
         r.warn(f"could not regenerate the me3 profile ({exc}) — run `erm apply` again")
-    return _emit(args, r, doctor=run_doctor(game, Report()))
+    return _emit(args, r, doctor=doctor_report(game))
 
 
 def cmd_switch(args):
@@ -1449,7 +1464,7 @@ def cmd_harden(args):
     r.ok("start_protected_game.exe is now immutable — Steam Verify/patch can't restore EAC")
     r.warn("run `erm unharden` before any Steam game update, or the update will fail on the immutable file")
     r.warn("vanilla online (invasions/summons) is disabled while hardened")
-    return _emit(args, r, doctor=run_doctor(game, Report()))
+    return _emit(args, r, doctor=doctor_report(game))
 
 
 def cmd_unharden(args):
@@ -1462,7 +1477,7 @@ def cmd_unharden(args):
         r.ok("removed immutable flag and restored the real start_protected_game.exe (EAC)")
     else:
         r.info("not hardened — nothing to restore")
-    return _emit(args, r, doctor=run_doctor(game, Report()))
+    return _emit(args, r, doctor=doctor_report(game))
 
 
 def register(subparsers):

@@ -271,4 +271,8 @@ def test_update_json_is_one_document_carrying_the_lockstep_warning(
     assert rc == 0
     assert any("LOCKSTEP" in i["message"] for i in data["items"])
     assert any("v1.9.8 -> v2.0.0" in i["message"] for i in data["items"])
-    assert data["doctor"]["worst"] == "ok"
+    # The fake Game/ has no regulation.bin, so the nested doctor cannot identify
+    # a build and warns -- which is the proof that it ran the build checks at all.
+    assert data["doctor"]["worst"] == "warn"
+    assert any("game build" in i["message"] for i in data["doctor"]["items"]), (
+        "the nested doctor must run the same checks erm doctor runs")

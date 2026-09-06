@@ -576,7 +576,11 @@ def test_apply_json_is_one_document_with_the_doctor_nested(tmp_path, monkeypatch
     data = _one_json_document(capsys)
 
     assert rc == 0
-    assert data["doctor"]["worst"] == "ok"
+    # The fake Game/ has no regulation.bin, so the nested doctor cannot identify
+    # a build and warns -- which is the proof that it ran the build checks at all.
+    assert data["doctor"]["worst"] == "warn"
+    assert any("game build" in i["message"] for i in data["doctor"]["items"]), (
+        "the nested doctor must run the same checks erm doctor runs")
     assert any("seamless-coop" in i["message"] for i in data["items"])
 
 
@@ -662,7 +666,11 @@ def test_unharden_json_is_one_document_with_the_doctor_nested(tmp_path, monkeypa
     data = _one_json_document(capsys)
 
     assert rc == 0
-    assert data["doctor"]["worst"] == "ok"
+    # The fake Game/ has no regulation.bin, so the nested doctor cannot identify
+    # a build and warns -- which is the proof that it ran the build checks at all.
+    assert data["doctor"]["worst"] == "warn"
+    assert any("game build" in i["message"] for i in data["doctor"]["items"]), (
+        "the nested doctor must run the same checks erm doctor runs")
 
 
 def test_harden_json_is_one_document_with_the_doctor_nested(tmp_path, monkeypatch, capsys):
