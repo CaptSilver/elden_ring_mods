@@ -33,6 +33,14 @@ class RowCollision(NamedTuple):
     row_id: int
 
 
+class RivalRow(NamedTuple):
+    """Two mods each added a different row under one id, with no ancestor row
+    to locate either edit against. The merge spec's `prefer` leads the fold, so
+    the leading mod's row is the one kept."""
+    entry_id: int
+    row_id: int
+
+
 class UnreadableParam(NamedTuple):
     """A param entry the reader refuses, where only the other side had an edit,
     so its whole table was taken rather than merged row by row."""
@@ -324,22 +332,28 @@ def _merge_param(base_blob, other_blob, van_blob, entry_id, notes=None,
                 continue
             if bd is not None and od is not None and _content_equal(bd, od):
                 continue                   # both sides made the same edit
-            if base_is_game and vd is None and bd is not None and od is not None:
-                # Neither side inherited this row: the game added one in a
-                # patch and a mod added a different one under the same id, so
-                # there is no ancestor to locate either edit against. The mod's
-                # wins. Renumbering the loser keeps its bytes and loses its
-                # behaviour -- a shop row is reached by id range, so a fresh id
-                # puts it outside the block that reaches it.
-                #
-                # Only against the game. Two mods each inventing a row under
-                # one id is the same shape and a different question: neither
-                # has a claim on the id, and dropping whichever folded first
-                # would lose a mod's content on nothing but fold order. That
-                # falls through to the refusal below.
+            if vd is None and bd is not None and od is not None:
+                # Neither side inherited this row, so there is no ancestor to
+                # locate either edit against. Renumbering the loser is not an
+                # option either: it keeps the bytes and loses the behaviour --
+                # a shop row is reached by id range, so a fresh id puts it
+                # outside the block that reaches it. Someone has to win.
+                if base_is_game:
+                    # The game added one in a patch and a mod added a different
+                    # one under the same id. The mod's wins: the point of the
+                    # stack is the mod's content.
+                    if notes is not None:
+                        notes.append(RowCollision(entry_id, rid))
+                    overwrite[rid] = od
+                    continue
+                # Two mods each invented a row under one id. Fold order decides
+                # it, and fold order is not incidental -- `prefer` in the merge
+                # spec sets which mod leads, so the profile has already said
+                # which one wins a tie. Keeping the leader's row (no overwrite)
+                # is that answer. Named, never silent: the dropped row is a
+                # mod's authored content and the report has to say it went.
                 if notes is not None:
-                    notes.append(RowCollision(entry_id, rid))
-                overwrite[rid] = od
+                    notes.append(RivalRow(entry_id, rid))
                 continue
             merged = _merge_row(bd, od, vd, entry_id, rid)
             if merged == bd:
@@ -541,6 +555,10 @@ def describe_note(note):
         return (f"entry {note.entry_id} row {note.row_id}: the game and a mod "
                 f"each added a different row under this id — kept the mod's, "
                 f"dropped the game's")
+    if isinstance(note, RivalRow):
+        return (f"entry {note.entry_id} row {note.row_id}: two mods each added "
+                f"a different row under this id — kept the preferred mod's, "
+                f"dropped the other's")
     if isinstance(note, UnreadableParam):
         return (f"entry {note.entry_id} can't be read as a PARAM — the base "
                 f"still matched vanilla there, so the mod's whole table was "

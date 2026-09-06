@@ -310,20 +310,6 @@ def test_param_rows_keeps_the_mods_row_when_the_game_and_a_mod_each_invent_one()
     assert notes == [merge.RowCollision(1, 101896)]
 
 
-def test_param_rows_refuses_when_two_mods_each_invent_the_same_row():
-    """Only the game gets its row dropped for a mod's. Between two mods there
-    is no reason to prefer either, and picking the last one folded discards a
-    mod's content with nothing but a note about a game blob that was never
-    involved."""
-    van = _regulation({1: (SP, {1: b"\xab" * 8}, 8)})
-    base = _regulation({1: (SP, {1: b"\xab" * 8, 500: b"\x11" * 8}, 8)})
-    other = _regulation({1: (SP, {1: b"\xab" * 8, 500: b"\x22" * 8}, 8)})
-    notes = []
-    with pytest.raises(merge.MergeError, match="row 500"):
-        merge.param_rows(base, other, van, notes=notes)
-    assert notes == []
-
-
 def test_param_rows_keeps_a_row_only_the_game_added():
     """18 of the 19 rows 1.17 added are in no mod's file at all. Losing them
     to the new collision rule would silently strip the patch's own content --
@@ -363,6 +349,12 @@ def test_describe_note_renders_a_row_collision():
     text = merge.describe_note(merge.RowCollision(145, 101896))
     assert "145" in text and "101896" in text
     assert "mod" in text.lower() and "drop" in text.lower()
+
+
+def test_describe_note_renders_a_rival_row():
+    text = merge.describe_note(merge.RivalRow(123, 80020000))
+    assert "123" in text and "80020000" in text
+    assert "two mods" in text.lower() and "drop" in text.lower()
 
 
 def test_param_rows_refuses_when_the_base_dropped_a_row_the_other_side_edited():
