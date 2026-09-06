@@ -146,20 +146,24 @@ def test_gameplay_extras_is_a_shared_coop_overlay():
     assert not any(m.get("kind") == "loader" for m in prof["mods"])
 
 
-def test_boss_resurrection_conflict_is_declared():
-    """Boss Res and Clever's both ship menu_dlc02, and me3 mounts one file per
-    path. Without the merge declaration one of them silently isn't in the game."""
+def test_boss_resurrections_stale_game_files_are_pruned():
+    """Boss Res ships July-2024 copies of three game files it barely edits --
+    menu_dlc02's only change is one comma. Mounting any of them rolls back text
+    the game has added since, which is what turned new menu strings into
+    ?menutext?. None of them may reach the game."""
     prof = load_profile("gameplay-extras", base=Path("profiles"))
-    merge = next(m for m in prof["merges"]
-                 if m["path"] == "msg/engus/menu_dlc02.msgbnd.dcx")
-    assert merge["strategy"] == "fmg-union"
-    assert set(merge["mods"]) == {"clevers-moveset", "boss-resurrection-lite"}
-    assert merge["prefer"] == "clevers-moveset"
-
-    # Boss Res also ships item_dlc02 and systemparam byte-identical to its own
-    # baseline; its item_dlc02 is older vanilla that would regress item text.
     prune = next(p for p in prof["prunes"] if p["mod"] == "boss-resurrection-lite")
-    assert "msg/engus/item_dlc02.msgbnd.dcx" in prune["paths"]
+    assert set(prune["paths"]) >= {
+        "msg/engus/item_dlc02.msgbnd.dcx",
+        "msg/engus/menu_dlc02.msgbnd.dcx",
+        "param/systemparam/systemparam.parambnd.dcx",
+    }
+    # A merge may still name the path -- prunes are per-mod, and the other three
+    # mods really do merge item_dlc02. What it must never do is name a mod whose
+    # copy it just pruned: that contributor can contribute nothing.
+    pruned = {(p["mod"], path) for p in prof["prunes"] for path in p["paths"]}
+    assert not [(m["path"], mod) for m in prof["merges"] for mod in m["mods"]
+                if (mod, m["path"]) in pruned]
     assert "param/systemparam/systemparam.parambnd.dcx" in prune["paths"]
 
 
@@ -664,3 +668,50 @@ def test_no_profile_unpacks_the_windows_me3_build_into_tools():
             if mod.get("install") == "me3":
                 unpackers.setdefault(path.stem, []).append(mod["id"])
     assert not unpackers, f"profiles still unpacking the Windows me3 build: {unpackers}"
+
+
+def _archive_names(path):
+    """Every path inside a vendor archive, or None when it takes an extractor
+    this machine hasn't got. Same reader-picking as _ships_regulation."""
+    try:
+        z = zipfile.ZipFile(path)
+    except zipfile.BadZipFile:
+        if shutil.which(install.EXTRACTOR) is None:
+            return None
+        return install._list_archive(path)
+    with z:
+        return z.namelist()
+
+
+def test_every_mod_named_in_a_merge_still_ships_the_path():
+    """A merge whose declaration outlives one contributor is worse than no
+    merge. erm skips a merge with fewer than two providers, so when a mod stops
+    shipping the path the survivor's whole file mounts unmerged -- and if that
+    file is an old copy of a game asset, it rolls the game's own version back
+    silently. Read the archives: a declaration alone proves nothing, which is
+    how a stale menu_dlc02 merge went unnoticed while it reverted menu text."""
+    lock = load_lock("mods.lock.toml")
+    unreadable, checked, stale = [], 0, []
+    for prof_name in ("gameplay-extras", "seamless-full", "single-full"):
+        prof = load_profile(prof_name, base=Path("profiles"))
+        for merge in prof.get("merges", []):
+            want = merge["path"].lower()
+            for mod_id in merge["mods"]:
+                asset = (lock.get(mod_id) or {}).get("asset")
+                if not asset or not (Path("vendor") / asset).exists():
+                    continue
+                names = _archive_names(Path("vendor") / asset)
+                if names is None:
+                    unreadable.append(asset)
+                    continue
+                checked += 1
+                if not any(n.lower().endswith(want) for n in names):
+                    stale.append((prof_name, merge["path"], mod_id))
+    if unreadable:
+        warnings.warn(f"not read, {install.EXTRACTOR} is not installed: "
+                      f"{', '.join(sorted(set(unreadable)))}")
+    if not checked:
+        pytest.skip("no vendor archives present to read")
+    assert not stale, (
+        "declared in a merge but no longer ships the path: "
+        + "; ".join(f"{p}: {path} <- {mod}" for p, path, mod in sorted(set(stale))))
