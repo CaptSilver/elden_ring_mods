@@ -1,4 +1,9 @@
-"""AES-256-CBC, the outermost layer of Elden Ring's regulation.bin.
+"""AES for the two places Elden Ring uses it.
+
+AES-256-CBC is the outermost layer of regulation.bin. AES-128-ECB wraps
+each file payload inside the packed Data*.bdt archives, which is how
+`bhd5.py` reads the game's own copy of a file. Same S-box and key
+schedule serve both — Nk and Nr come from the key length.
 
 Two backends, tried in order: the system libcrypto through ctypes, then a pure
 Python implementation. The native one matters more than it looks — AES wraps the
@@ -22,9 +27,13 @@ import ctypes.util
 from ..errors import ErmError
 
 BLOCK = 16
-_KEY_BYTES = 32     # AES-256
+_KEY_BYTES = 32     # AES-256, the only key size CBC is offered for here
 _ROUNDS = 14        # Nr for a 256-bit key
 _NK = 8             # key length in 32-bit words
+
+# Nr per key size. The key schedule reads this rather than the constants above,
+# so one implementation covers regulation.bin (256) and .bdt payloads (128).
+_ROUNDS_FOR = {16: 10, 32: 14}
 
 
 class AesError(ErmError):
@@ -82,28 +91,42 @@ for _i, _v in enumerate(SBOX):
 # Column-mix coefficients, precomputed so the round functions stay table lookups.
 _MUL = {c: [_mul(x, c) for x in range(256)] for c in (2, 3, 9, 11, 13, 14)}
 
-# Round constants: 1, 2, 4, 8, ... in GF(2^8). Only 7 are reachable at Nk=8.
+# Round constants: 1, 2, 4, 8, ... in GF(2^8). Nk=4 reaches all ten; Nk=8
+# only the first seven.
 _RCON = [1]
 for _ in range(9):
     _RCON.append(_xtime(_RCON[-1]))
 
 
 def _expand_key(key):
-    """Return `_ROUNDS + 1` round keys of 16 bytes each."""
-    words = [list(key[i:i + 4]) for i in range(0, _KEY_BYTES, 4)]
-    total = 4 * (_ROUNDS + 1)
-    for i in range(_NK, total):
+    """Return `Nr + 1` round keys of 16 bytes each, for a 128- or 256-bit key.
+
+    Nk and Nr are derived from the key rather than read from module constants:
+    the two callers disagree, and a schedule that silently ran 14 rounds over a
+    16-byte key would produce a cipher that round-trips against itself and
+    agrees with nothing else — the same failure mode the derived S-box avoids.
+    """
+    rounds = _ROUNDS_FOR.get(len(key))
+    if rounds is None:
+        raise AesError(
+            f"AES needs a 16- or 32-byte key, got {len(key)}")
+    nk = len(key) // 4
+    words = [list(key[i:i + 4]) for i in range(0, len(key), 4)]
+    total = 4 * (rounds + 1)
+    for i in range(nk, total):
         t = list(words[i - 1])
-        if i % _NK == 0:
+        if i % nk == 0:
             t = t[1:] + t[:1]                       # RotWord
             t = [SBOX[b] for b in t]                # SubWord
-            t[0] ^= _RCON[i // _NK - 1]
-        elif i % _NK == 4:
-            # AES-256 only: an extra SubWord halfway through each expansion step.
+            t[0] ^= _RCON[i // nk - 1]
+        elif nk > 6 and i % nk == 4:
+            # AES-256 only: an extra SubWord halfway through each expansion
+            # step. Unreachable at Nk=4 anyway, where the remainder never
+            # reaches 4 — the guard says so rather than leaving it to arithmetic.
             t = [SBOX[b] for b in t]
-        words.append([a ^ b for a, b in zip(words[i - _NK], t)])
+        words.append([a ^ b for a, b in zip(words[i - nk], t)])
     return [bytes(b for w in words[r * 4:r * 4 + 4] for b in w)
-            for r in range(_ROUNDS + 1)]
+            for r in range(rounds + 1)]
 
 
 def _add_round_key(state, rk):
@@ -113,14 +136,15 @@ def _add_round_key(state, rk):
 
 def _encrypt_block(state, round_keys):
     """In-place forward cipher on a 16-byte `state` laid out column-major."""
+    rounds = len(round_keys) - 1
     _add_round_key(state, round_keys[0])
-    for rnd in range(1, _ROUNDS + 1):
+    for rnd in range(1, rounds + 1):
         for i in range(BLOCK):
             state[i] = SBOX[state[i]]
         # ShiftRows: row r rotates left by r. Byte i holds row i%4, column i//4.
         state[:] = bytearray(state[(i % 4) + 4 * ((i // 4 + i % 4) % 4)]
                              for i in range(BLOCK))
-        if rnd != _ROUNDS:              # the last round omits MixColumns
+        if rnd != rounds:               # the last round omits MixColumns
             m2, m3 = _MUL[2], _MUL[3]
             for c in range(0, BLOCK, 4):
                 a0, a1, a2, a3 = state[c], state[c + 1], state[c + 2], state[c + 3]
@@ -133,8 +157,9 @@ def _encrypt_block(state, round_keys):
 
 def _decrypt_block(state, round_keys):
     """In-place inverse cipher, mirroring `_encrypt_block` step for step."""
-    _add_round_key(state, round_keys[_ROUNDS])
-    for rnd in range(_ROUNDS - 1, -1, -1):
+    rounds = len(round_keys) - 1
+    _add_round_key(state, round_keys[rounds])
+    for rnd in range(rounds - 1, -1, -1):
         # InvShiftRows: row r rotates right by r.
         state[:] = bytearray(state[(i % 4) + 4 * ((i // 4 - i % 4) % 4)]
                              for i in range(BLOCK))
@@ -160,6 +185,16 @@ def _check(key, iv, data):
         raise AesError(
             f"CBC works in whole 16-byte blocks; got {len(data)} bytes, which is "
             f"not a multiple of 16 — the caller sliced the buffer wrong")
+
+
+def _check_ecb(key, data):
+    if len(key) != 16:
+        raise AesError(f"AES-128-ECB needs a key of 16 bytes, got {len(key)}")
+    if len(data) % BLOCK:
+        raise AesError(
+            f"ECB works in whole 16-byte blocks; got {len(data)} bytes, which "
+            f"is not a multiple of 16 — a .bdt slice was cut to the unpadded "
+            f"size instead of the padded one")
 
 
 def _encrypt_cbc_py(key, iv, plaintext):
@@ -194,9 +229,22 @@ def _decrypt_cbc_py(key, iv, ciphertext):
     return bytes(out)
 
 
+def _decrypt_ecb_py(key, ciphertext):
+    """Decipher each block on its own. No IV and no chaining — ECB leaks which
+    plaintext blocks are equal, which is why this is exposed for reading
+    FromSoft's archives and nothing else."""
+    round_keys = _expand_key(key)
+    out = bytearray()
+    for off in range(0, len(ciphertext), BLOCK):
+        state = bytearray(ciphertext[off:off + BLOCK])
+        _decrypt_block(state, round_keys)
+        out += state
+    return bytes(out)
+
+
 def _pure_python():
     """The implementation above. Needs nothing installed, so it never fails."""
-    return _encrypt_cbc_py, _decrypt_cbc_py
+    return _encrypt_cbc_py, _decrypt_cbc_py, _decrypt_ecb_py
 
 
 def _ctypes_libcrypto():
@@ -213,6 +261,7 @@ def _ctypes_libcrypto():
         lib.EVP_CIPHER_CTX_new.restype = ctypes.c_void_p
         lib.EVP_CIPHER_CTX_free.argtypes = [ctypes.c_void_p]
         lib.EVP_aes_256_cbc.restype = ctypes.c_void_p
+        lib.EVP_aes_128_ecb.restype = ctypes.c_void_p
         lib.EVP_CIPHER_CTX_set_padding.argtypes = [ctypes.c_void_p, ctypes.c_int]
         lib.EVP_CIPHER_CTX_set_padding.restype = ctypes.c_int
         directions = {}
@@ -233,36 +282,43 @@ def _ctypes_libcrypto():
     except (OSError, AttributeError) as exc:
         raise ImportError(f"libcrypto not usable via ctypes ({exc})") from exc
 
-    def check(ok, what):
+    def check(ok, what, cipher):
         if ok != 1:
-            raise AesError(f"libcrypto refused the AES-256-CBC {what}")
+            raise AesError(f"libcrypto refused the {cipher} {what}")
 
-    def run(way, key, iv, data):
+    def run(way, cipher_fn, name, key, iv, data):
         init, update, final = directions[way]
         ctx = lib.EVP_CIPHER_CTX_new()
         if not ctx:
-            raise AesError("libcrypto could not allocate an AES-256-CBC context")
+            raise AesError(f"libcrypto could not allocate a {name} context")
         try:
-            check(init(ctx, lib.EVP_aes_256_cbc(), None, bytes(key), bytes(iv)),
-                  "key and IV")
+            # ECB takes no IV; passing NULL is what tells EVP so.
+            check(init(ctx, cipher_fn(), None, bytes(key),
+                       bytes(iv) if iv is not None else None),
+                  "key and IV", name)
             # The module's contract is that no padding is added or stripped —
             # regulation.pack appends its own block and sizes the DCX frame
             # around it. Left on, EVP would silently add a 17th block.
-            check(lib.EVP_CIPHER_CTX_set_padding(ctx, 0), "padding mode")
+            check(lib.EVP_CIPHER_CTX_set_padding(ctx, 0), "padding mode", name)
             data = bytes(data)
             out = ctypes.create_string_buffer(len(data) + BLOCK)
             written = ctypes.c_int(0)
-            check(update(ctx, out, ctypes.byref(written), data, len(data)), "body")
+            check(update(ctx, out, ctypes.byref(written), data, len(data)),
+                  "body", name)
             total = written.value
             check(final(ctx,
                         ctypes.cast(ctypes.addressof(out) + total, ctypes.c_void_p),
-                        ctypes.byref(written)), "final block")
+                        ctypes.byref(written)), "final block", name)
             return out.raw[:total + written.value]
         finally:
             lib.EVP_CIPHER_CTX_free(ctypes.c_void_p(ctx))
 
-    return (lambda key, iv, plaintext: run("Encrypt", key, iv, plaintext),
-            lambda key, iv, ciphertext: run("Decrypt", key, iv, ciphertext))
+    cbc, ecb = lib.EVP_aes_256_cbc, lib.EVP_aes_128_ecb
+    return (
+        lambda key, iv, pt: run("Encrypt", cbc, "AES-256-CBC", key, iv, pt),
+        lambda key, iv, ct: run("Decrypt", cbc, "AES-256-CBC", key, iv, ct),
+        lambda key, ct: run("Decrypt", ecb, "AES-128-ECB", key, None, ct),
+    )
 
 
 # Native first: the Python fallback always loads, so putting it anywhere but
@@ -301,3 +357,20 @@ def decrypt_cbc(key, iv, ciphertext):
     """
     _check(key, iv, ciphertext)
     return _cipher()[1](key, iv, ciphertext)
+
+
+def decrypt_ecb(key, ciphertext):
+    """ECB-decrypt `ciphertext` with a 128-bit key.
+
+    This exists for one caller: the file payloads inside Elden Ring's packed
+    `Data*.bdt` archives, which FromSoft encrypts per file with a 16-byte key
+    stored in the archive header. Never reach for ECB for anything else — it
+    encrypts equal plaintext blocks to equal ciphertext, so it hides nothing
+    about structure.
+
+    Checked here rather than in the backends for the same reason as
+    `decrypt_cbc`: libcrypto reads 16 bytes off the key pointer whatever the
+    caller passed, so a short key is an out-of-bounds read, not an error.
+    """
+    _check_ecb(key, ciphertext)
+    return _cipher()[2](key, ciphertext)
