@@ -36,10 +36,10 @@ sha256 = "33fa0a85da2bc61f89b48af3ef0377a2fe01bac5dcc122203a0fc682e5e794e5"
 source = "nexus"
 
 [damage-competition]
-version = "1.8c"
-file_id = "49644"
-asset = "Damage Competition 10461 1.8c 2026-08-28T03-02Z sVKWduz4E.7z"
-sha256 = "e356cee8526f424d43492e7cf2cf99936c6cf43bc1cef56cafd8122930f9e861"
+version = "1.8d"
+file_id = "50524"
+asset = "Damage Competition 10461 1.8d 2026-09-08T23-06Z mNCBFnZHu.7z"
+sha256 = "d1590fd9db4b7e1b4c38b9246a6c4b457f6fbe470f2787307ce092be1c617082"
 source = "nexus"
 
 [disable-rune-loss]
@@ -138,10 +138,10 @@ sha256 = "c7981869c2f2ae983cb08e9f1cb2448472a87654ae3a67de00b3c6ec3fde7b3e"
 source = "nexus"
 
 [map-for-goblins]
-version = "v2.1.3"
-file_id = "50069"
-asset = "Vanilla or Randomizer - v2.1.3 10062 v2.1.3 2026-08-31T21-46Z AHk37cNru.zip"
-sha256 = "44ffc14fa56544d821841e40b96e582499043982abcab39efe3b1df6155e6229"
+version = "v2.1.4"
+file_id = "50940"
+asset = "Vanilla or Randomizer - v2.1.4 10062 v2.1.4 2026-09-16T15-03Z 9KB6bvSvw.zip"
+sha256 = "7e2494756e5b8be19182311e63a2b9bfe075a52afa6ca978c4cfba933e39b07b"
 source = "nexus"
 
 [me3-host]
