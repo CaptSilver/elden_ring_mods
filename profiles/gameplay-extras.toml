@@ -7,10 +7,11 @@ excludes = ["randomizer"]
 # slot and won't collide with the randomizer. v2.0.1 is DLC-current. Every player
 # needs the identical file.
 #
-# Its item_dlc02, menu_dlc02 and systemparam are all July-2024 copies of game
-# files carrying nothing (or, for menu_dlc02, one comma) of the author's own, so
-# mounting them rolls back text the game has added since. All three are pruned;
-# see the [[prunes]] block below for the menu_dlc02 story in particular.
+# Its item_dlc02 and systemparam are July-2024 copies of game files carrying
+# nothing of the author's own, so mounting them rolls back text the game has
+# added since; both are pruned. Its menu_dlc02 is NOT in that category — it
+# carries the grace menu's own 269 strings — and is merged onto the game's own
+# copy instead. See the [[merges]] entry for it.
 [[mods]]
 id = "boss-resurrection-lite"
 source = "nexus"
@@ -237,6 +238,34 @@ mods = ["clevers-moveset", "nofalldead", "great-rune-overhaul"]
 prefer = "clevers-moveset"
 vanilla = { mod = "item-enemy-randomizer", member = "randomizer/diste/Vanilla/msg/engus/item_dlc02.msgbnd.dcx" }
 
+# The grace menu's own text: 269 strings this mod adds in its own id range
+# from 80000000 -- "Boss Resurrection", "Resurrect", "Alive"/"Dead", and a name
+# for every boss and region. The ESD state machine draws its labels from these,
+# so without them the menu opens with nothing written in it.
+#
+# They arrive inside a July-2024 copy of the game's whole menu_dlc02, which is
+# the problem: mounting that file whole also rolls the game's own text back to
+# July 2024, and 1.17 added 27 strings since (the spectral-steed appearance
+# menu, Knight Leontiel). Pruning the file loses the 269; mounting it loses the
+# 27. Both have been tried in this profile and both were wrong.
+#
+# So the base is the GAME's own copy, read out of Data0.bdt. fmg-union keeps
+# base text wherever the base has any, which with the game as base means every
+# one of its strings wins, and adds only ids the base lacks -- exactly the 269.
+# Nothing the mod has that is merely an older copy of a game string can win,
+# because the game always holds that id.
+#
+# Union is safe here for a reason that does not generalise: its known weakness
+# is that it cannot tell an authored string from an untouched vanilla one, and
+# that only bites when the base is another MOD. The game's own file has no
+# untouched-vanilla ambiguity -- every id it holds is authoritative.
+[[merges]]
+path = "msg/engus/menu_dlc02.msgbnd.dcx"
+strategy = "fmg-union"
+base = "game"
+mods = ["boss-resurrection-lite"]
+prefer = "boss-resurrection-lite"
+
 # Great Rune Overhaul ships its text under msg/engUS/; Clever's, NoFallDead and
 # Boss Res all use msg/engus/. me3 mounts one file per path, so the two
 # spellings are two different slots — the merge above would never see this mod's
@@ -310,15 +339,6 @@ paths = [
 mod = "boss-resurrection-lite"
 paths = [
     "msg/engus/item_dlc02.msgbnd.dcx",
-    # Same story as the item_dlc02 above, and it bit: this is a July-2024 copy
-    # of the game's menu text whose ONLY edit is a comma -- "Midra Lord of
-    # Frenzied Flame" -> "Midra, Lord of Frenzied Flame". Nothing added, nothing
-    # removed. Clever's used to ship menu_dlc02 too, so a union merge kept both
-    # sides; it stopped, the merge fell below two providers and skipped, and
-    # this file mounted whole over the game's own. Every menu string added since
-    # July 2024 then rendered as ?menutext?. Vanilla text is worth more than the
-    # comma.
-    "msg/engus/menu_dlc02.msgbnd.dcx",
     "param/systemparam/systemparam.parambnd.dcx",
     # Smithbox's own backups and workspace file, same as the ones pruned from
     # forever-buffs and Great Rune Overhaul. The game never asks for these

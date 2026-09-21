@@ -146,25 +146,36 @@ def test_gameplay_extras_is_a_shared_coop_overlay():
     assert not any(m.get("kind") == "loader" for m in prof["mods"])
 
 
-def test_boss_resurrections_stale_game_files_are_pruned():
-    """Boss Res ships July-2024 copies of three game files it barely edits --
-    menu_dlc02's only change is one comma. Mounting any of them rolls back text
-    the game has added since, which is what turned new menu strings into
-    ?menutext?. None of them may reach the game."""
+def test_boss_resurrections_editor_artifacts_are_pruned_but_its_menu_text_is_not():
+    """Boss Res ships four game files. Three carry nothing of the author's and
+    are pruned. The fourth, menu_dlc02, carries the grace menu's own 269
+    strings -- pruning it blanked the menu in game -- so it is merged onto the
+    game's own copy instead."""
     prof = load_profile("gameplay-extras", base=Path("profiles"))
     prune = next(p for p in prof["prunes"] if p["mod"] == "boss-resurrection-lite")
     assert set(prune["paths"]) >= {
         "msg/engus/item_dlc02.msgbnd.dcx",
-        "msg/engus/menu_dlc02.msgbnd.dcx",
         "param/systemparam/systemparam.parambnd.dcx",
     }
-    # A merge may still name the path -- prunes are per-mod, and the other three
-    # mods really do merge item_dlc02. What it must never do is name a mod whose
-    # copy it just pruned: that contributor can contribute nothing.
+    assert "msg/engus/menu_dlc02.msgbnd.dcx" not in prune["paths"]
+    # The .prev beside it stays pruned: that one really is an editor artifact.
+    assert "msg/engus/menu_dlc02.msgbnd.dcx.prev" in prune["paths"]
+
+    merge = next(m for m in prof["merges"]
+                 if m["path"] == "msg/engus/menu_dlc02.msgbnd.dcx")
+    assert merge["strategy"] == "fmg-union"
+    # Against the GAME's own file, not a mod-bundled snapshot: every other
+    # baseline available lags the installed build and would revert whatever
+    # the newest patch added to this file.
+    assert merge["base"] == "game"
+    assert merge["mods"] == ["boss-resurrection-lite"]
+
+    # A merge may still name a path some OTHER mod's copy is pruned at --
+    # prunes are per-mod. What it must never do is name a mod whose copy it
+    # just pruned: that contributor can contribute nothing.
     pruned = {(p["mod"], path) for p in prof["prunes"] for path in p["paths"]}
     assert not [(m["path"], mod) for m in prof["merges"] for mod in m["mods"]
                 if (mod, m["path"]) in pruned]
-    assert "param/systemparam/systemparam.parambnd.dcx" in prune["paths"]
 
 
 def test_seamless_randomizer_me3_uses_numeric_id():
@@ -717,3 +728,89 @@ def test_every_mod_named_in_a_merge_still_ships_the_path():
     assert not stale, (
         "declared in a merge but no longer ships the path: "
         + "; ".join(f"{p}: {path} <- {mod}" for p, path, mod in sorted(set(stale))))
+
+
+def _extract_member(archive, suffix, dest):
+    """Pull the one member whose path ends with `suffix` out of a vendor
+    archive, or None when it isn't there / needs a reader we haven't got."""
+    import subprocess
+    try:
+        z = zipfile.ZipFile(archive)
+    except zipfile.BadZipFile:
+        exe = install.find_extractor()
+        if exe is None:
+            return None
+        names = install._list_archive(archive)
+        hit = next((n for n in names if n.lower().endswith(suffix)), None)
+        if hit is None:
+            return None
+        subprocess.run([exe, "-xf", str(archive), "-C", str(dest), hit],
+                       check=True, capture_output=True)
+        return next(Path(dest).rglob(Path(suffix).name), None)
+    with z:
+        hit = next((n for n in z.namelist() if n.lower().endswith(suffix)), None)
+        if hit is None:
+            return None
+        out = Path(dest) / Path(hit).name
+        out.write_bytes(z.read(hit))
+        return out
+
+
+def _fmg_ids(blob):
+    from ermlib.formats import bnd4, dcx, fmg
+    ids = set()
+    for e in bnd4.read(dcx.read(blob)):
+        name = (e.name or "").split("\\")[-1]
+        ids.update((name, i) for i in fmg.read(e.data))
+    return ids
+
+
+def test_no_pruned_msgbnd_carries_text_the_game_does_not_have(tmp_path):
+    """A prune deletes a mod's copy of a game file outright. That is only safe
+    while the copy adds nothing of its own: any id the mod holds and the game
+    does not is content the prune destroys, and the only symptom is text
+    missing in game.
+
+    This is the check that was absent when Boss Resurrection's grace menu went
+    blank. The prune had been justified against the mod's own `.prev`, which
+    is the author's previous save and so can only ever show what changed since
+    they last hit save -- never what the file adds to the game.
+    """
+    from ermlib.formats import bhd5
+    game = bhd5.find_game_archives_dir()
+    if game is None:
+        pytest.skip("Elden Ring is not installed on this machine")
+    lock = load_lock("mods.lock.toml")
+    checked, offenders, unread = 0, [], []
+    for prof_name in ("gameplay-extras", "seamless-full", "single-full"):
+        prof = load_profile(prof_name, base=Path("profiles"))
+        for prune in prof.get("prunes", []):
+            asset = (lock.get(prune["mod"]) or {}).get("asset")
+            if not asset or not (Path("vendor") / asset).exists():
+                continue
+            for rel in prune["paths"]:
+                if not rel.lower().endswith(".msgbnd.dcx"):
+                    continue          # .prev, project.json, params: not text
+                member = _extract_member(Path("vendor") / asset,
+                                         rel.lower(), tmp_path)
+                if member is None:
+                    unread.append(f"{prune['mod']}:{rel}")
+                    continue
+                try:
+                    theirs = _fmg_ids(Path(member).read_bytes())
+                    ours = _fmg_ids(bhd5.read_file(game, rel))
+                except Exception as exc:          # noqa: BLE001 - reported below
+                    unread.append(f"{prune['mod']}:{rel} ({exc})")
+                    continue
+                checked += 1
+                extra = theirs - ours
+                if extra:
+                    offenders.append(
+                        f"{prune['mod']} is pruned at {rel} but adds "
+                        f"{len(extra)} text id(s) the game has not, e.g. "
+                        f"{sorted(extra)[:3]}")
+    if unread:
+        warnings.warn("not compared: " + ", ".join(sorted(set(unread))))
+    if not checked:
+        pytest.skip("no pruned msgbnd could be compared against the game")
+    assert not offenders, "\n".join(offenders)
