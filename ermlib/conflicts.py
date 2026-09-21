@@ -11,6 +11,8 @@ import zipfile
 from pathlib import Path
 
 from .errors import ErmError
+from .formats import bhd5
+from .formats.bhd5 import Bhd5Error
 from .merge import (NEEDS_NOTES, NEEDS_VANILLA, STRATEGIES, TAKES_GAME_BASE,
                     StaleContributor)
 from .paths import is_safe_relpath
@@ -252,13 +254,43 @@ def declared_ancestor(merges, rel, lock):
     return _load_vanilla(rel, spec, lock)
 
 
+def load_game_bases(merges, game_dir):
+    """Bytes for every merge declaring `base = "game"`, read out of the game's
+    own packed archives.
+
+    This is what lets a mod that ships a whole game asset contribute only what
+    it actually authored. The alternative baselines are all snapshots bundled
+    by other mods, and those lag the installed build -- folding onto one
+    reverts whatever the newest patch added to that file.
+
+    A base that cannot be read is fatal rather than skipped. Dropping it would
+    leave a single-provider merge with nothing to fold onto, which `resolve`
+    then skips, which mounts the mod's stale copy over the game's own file
+    with no symptom until someone reads the text in game.
+    """
+    out = {}
+    for spec in merges or ():
+        if spec.get("base") != "game":
+            continue
+        rel = spec["path"]
+        try:
+            out[rel] = bhd5.read_file(game_dir, rel)
+        except Bhd5Error as exc:
+            raise ConflictError(
+                f"{rel}: the merge asks for the game's own copy as its base, "
+                f"and it could not be read ({exc}). Refusing rather than "
+                f"merging onto a mod's older snapshot of the same file.") from exc
+    return out
+
+
 def resolve(me3_dir, mod_ids, merges, lock=None, notes=None, bases=None):
     """Merge every declared conflict and refuse any undeclared one.
 
     `bases` maps a merged path to bytes that lead the fold. A rebase onto a
     patched game passes the game's own file there, so every mod -- `prefer`
     included -- folds onto it, and `prefer` keeps only its job of settling
-    mod-versus-mod conflicts.
+    mod-versus-mod conflicts. Supplying a base also makes a single-provider
+    merge legal: with the game's file on one side, one mod is still two sides.
 
     Merged output goes to a synthetic package and the path is removed from its
     sources, so the merged file is the only one providing it. That sidesteps
@@ -300,7 +332,12 @@ def resolve(me3_dir, mod_ids, merges, lock=None, notes=None, bases=None):
 
     planned = []
     for rel, providers in sorted(index.items()):
-        if len(providers) < 2:
+        # Two providers are a collision. ONE provider is also a real merge when
+        # a base was supplied for the path: the fold is then the game's own
+        # file against the mod, which is the only way a mod that ships a whole
+        # game asset to add a few strings can reach the game without either
+        # mounting its stale copy over the game's or being pruned away.
+        if len(providers) < 2 and rel not in (bases or {}):
             continue
         spec = declared.get(rel)
         if spec is None:

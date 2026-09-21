@@ -825,3 +825,95 @@ def test_prune_unlinks_a_symlinked_directory_without_following_it(tmp_path):
     assert removed == ["a:link"]
     assert not (tmp_path / "mods" / "a" / "link").exists()
     assert (outside / "keep" / "precious.bin").exists(), "followed the symlink out"
+
+
+def _msgbnd(fmgs):
+    """fmgs: {entry_id: {text_id: str}} -> a .msgbnd.dcx blob."""
+    from ermlib.formats import dcx, fmg
+    from tests.test_bnd4 import _synthetic_bnd4
+    entries = [(eid, f"{eid}.fmg", fmg.write(t)) for eid, t in sorted(fmgs.items())]
+    return dcx.write_dflt(_synthetic_bnd4(entries))
+
+
+def test_one_provider_still_merges_when_a_game_base_is_supplied(tmp_path):
+    """A mod can be the only one shipping a path and still need merging: when
+    the base is the GAME's own copy, "mod alone" is a real two-sided fold, not
+    the inherited-declaration case above. Without this the mod's file either
+    mounts whole over the game's or gets pruned away entirely -- the two ways
+    Boss Resurrection's grace menu has broken."""
+    from ermlib.formats import bnd4, dcx, fmg
+    game = _msgbnd({1: {100: "game text", 101: "added by a patch"}})
+    mod = _msgbnd({1: {100: "stale copy of the game's text", 900: "Resurrect"}})
+    _package(tmp_path, "a", {"msg/x.dcx": mod})
+    spec = [{"path": "msg/x.dcx", "strategy": "fmg-union",
+             "mods": ["a"], "prefer": "a"}]
+    merged = conflicts.resolve(tmp_path, ["a"], merges=spec,
+                               bases={"msg/x.dcx": game})
+    assert merged == ["msg/x.dcx"]
+    out = (tmp_path / "mods" / conflicts.MERGED_ID / "msg/x.dcx").read_bytes()
+    table = {e.id: fmg.read(e.data) for e in bnd4.read(dcx.read(out))}[1]
+    # The game's own text wins every id it holds, so nothing the patch added
+    # is rolled back; the mod's own id is grafted on.
+    assert table[100] == "game text"
+    assert table[101] == "added by a patch"
+    assert table[900] == "Resurrect"
+    # A merged path is stripped from its contributor, same as any other merge.
+    assert not (tmp_path / "mods" / "a" / "msg/x.dcx").exists()
+
+
+def test_one_provider_without_a_base_is_still_skipped(tmp_path):
+    """The inherited-declaration case must keep working: no base means no
+    merge, so a profile holding one of two declared mods is left untouched."""
+    _package(tmp_path, "a", {"msg/x.dcx": b"AAA"})
+    spec = [{"path": "msg/x.dcx", "strategy": "fmg-union",
+             "mods": ["a", "b"], "prefer": "a"}]
+    assert conflicts.resolve(tmp_path, ["a"], merges=spec, bases={}) == []
+    assert (tmp_path / "mods" / "a" / "msg/x.dcx").exists()
+
+
+def test_a_base_for_a_path_nobody_provides_merges_nothing(tmp_path):
+    """A game base is offered per declared path; if no installed mod ships it
+    there is nothing to fold, and the base must not be mounted on its own."""
+    _package(tmp_path, "a", {"msg/other.dcx": b"AAA"})
+    spec = [{"path": "msg/x.dcx", "strategy": "fmg-union",
+             "mods": ["a"], "prefer": "a"}]
+    assert conflicts.resolve(tmp_path, ["a"], merges=spec,
+                             bases={"msg/x.dcx": b"whatever"}) == []
+
+
+def test_game_bases_reads_only_the_merges_that_ask_for_one(tmp_path, monkeypatch):
+    from ermlib.formats import bhd5
+    seen = []
+
+    def fake_read(game_dir, rel):
+        seen.append(rel)
+        return b"GAME:" + rel.encode()
+
+    monkeypatch.setattr(bhd5, "read_file", fake_read)
+    merges = [{"path": "msg/a.dcx", "strategy": "fmg-union", "base": "game"},
+              {"path": "msg/b.dcx", "strategy": "fmg-union"},
+              {"path": "regulation.bin", "strategy": "param-rows"}]
+    assert conflicts.load_game_bases(merges, tmp_path) == {
+        "msg/a.dcx": b"GAME:msg/a.dcx"}
+    assert seen == ["msg/a.dcx"]
+
+
+def test_game_base_that_cannot_be_read_is_fatal(tmp_path, monkeypatch):
+    """Falling back to 'no base' would silently downgrade to the old
+    behaviour: a single-provider merge is skipped, so the mod's whole stale
+    copy of a game file mounts over the game's own and nothing says so."""
+    from ermlib.formats import bhd5
+
+    def boom(game_dir, rel):
+        raise bhd5.Bhd5Error("not in any archive")
+
+    monkeypatch.setattr(bhd5, "read_file", boom)
+    merges = [{"path": "msg/a.dcx", "strategy": "fmg-union", "base": "game"}]
+    with pytest.raises(conflicts.ConflictError) as exc:
+        conflicts.load_game_bases(merges, tmp_path)
+    assert "msg/a.dcx" in str(exc.value)
+
+
+def test_no_game_bases_is_an_empty_mapping(tmp_path):
+    assert conflicts.load_game_bases([], tmp_path) == {}
+    assert conflicts.load_game_bases(None, tmp_path) == {}

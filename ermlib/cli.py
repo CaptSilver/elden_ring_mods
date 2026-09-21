@@ -803,7 +803,7 @@ def _apply(args, r):
         # would be built out of game data the install no longer has. Fold every
         # contributor onto the installed game's own regulation instead, so the rows
         # the patch added survive alongside the mods' edits.
-        bases = {}
+        rebase_bases = {}
         try:
             live = gamebuild.identify(game, steam_root)
         except GameBuildError as exc:
@@ -821,9 +821,19 @@ def _apply(args, r):
                                                 heal.REGULATION, lock)
                     if len(reg_contributors) > 1 else None)
         if live is not None:
-            bases = heal.prepare_rebase(game, live, ancestor, reg_contributors)
-        if bases:
+            rebase_bases = heal.prepare_rebase(game, live, ancestor, reg_contributors)
+        if rebase_bases:
             r.info(f"rebasing merges onto the installed build {live.app}")
+        # A merge can also ask for the game's own copy of its path as the base,
+        # read out of the packed archives. That is what lets a mod shipping a
+        # whole game asset contribute only the strings it actually authored
+        # instead of reverting the file to whenever the mod was built.
+        game_bases = conflicts.load_game_bases(profile.get("merges", []), game)
+        for rel in sorted(game_bases):
+            r.info(f"folding {rel} onto the game's own copy")
+        # Kept apart above so the rebase checks below stay about the rebase:
+        # a game-sourced base says nothing about whether regulation.bin moved.
+        bases = {**rebase_bases, **game_bases}
         # A declared merge's sources must be faithful before we let resolve()
         # near them: resolve() strips the merged path out of every contributor
         # once a merge succeeds, so a mod that isn't in reinstalled_packages
@@ -837,7 +847,7 @@ def _apply(args, r):
         merge_notes = []
         merged = conflicts.resolve(ME3_DIR, package_ids, profile.get("merges", []),
                                    lock=lock, notes=merge_notes, bases=bases)
-        if bases:
+        if rebase_bases:
             # Prove the rebase did what it claims before anything mounts it. By
             # now the merged file is the only copy of every contributor's rows,
             # and both ways it can go wrong are invisible from the outside: a
@@ -851,7 +861,7 @@ def _apply(args, r):
                     f"changed underneath the apply; re-run it")
             problems = heal.verify_rebase(
                 (ME3_DIR / "mods" / conflicts.MERGED_ID / heal.REGULATION).read_bytes(),
-                bases[heal.REGULATION], reg_contributors, live)
+                rebase_bases[heal.REGULATION], reg_contributors, live)
             if problems:
                 raise heal.HealError(
                     f"the merged {heal.REGULATION} is not a faithful rebase onto "
@@ -878,7 +888,11 @@ def _apply(args, r):
         state_mod.record_merged(state, f"tools/me3/mods/{conflicts.MERGED_ID}",
                                 merged_paths)
         for rel in merged:
-            r.ok(f"merged {rel} (content from {len(merged_paths[rel])} mods kept)")
+            # Named, not counted: a count reads the same whether the merge
+            # folded the mods you expected or a different set, and a
+            # single-contributor merge onto the game's own file is legitimate,
+            # so "1 mods" is reachable.
+            r.ok(f"merged {rel} (kept: {', '.join(merged_paths[rel])})")
         # Something a strategy couldn't carry over cleanly -- e.g. two mods'
         # ESD edits landing on the same state machine differently. The merge
         # still happened and one mod's package is still installed; this is the

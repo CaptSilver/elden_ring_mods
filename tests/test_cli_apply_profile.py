@@ -1746,11 +1746,12 @@ _MERGE_THREE_MODS = (
 )
 
 
-def test_apply_reports_how_many_mods_a_merge_actually_combined(
+def test_apply_names_the_mods_a_merge_actually_combined(
         tmp_path, monkeypatch, capsys, tmp_game):
-    """A merge is not limited to two contributors -- regulation.bin has six.
-    Reporting "both mods" regardless understates what was combined, and a
-    declared-but-not-installed mod must not be counted as one of them."""
+    """A merge is not limited to two contributors -- regulation.bin has six --
+    so reporting "both mods" understates what was combined. Naming them also
+    shows a declared-but-not-installed mod did not take part, which a bare
+    count cannot."""
     from ermlib import conflicts
 
     game_dir = tmp_game
@@ -1772,7 +1773,7 @@ def test_apply_reports_how_many_mods_a_merge_actually_combined(
 
     assert cli.cmd_apply(_apply_args("unit-merge-three")) == 0
     out = capsys.readouterr().out
-    assert "merged msg/x.dcx (content from 2 mods kept)" in out, out
+    assert "merged msg/x.dcx (kept: mod-x, mod-y)" in out, out
 
 
 def test_apply_surfaces_a_merge_note_as_a_warning(tmp_path, monkeypatch, capsys, tmp_game):
